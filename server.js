@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -156,7 +156,10 @@ function buildPrompt(agent, text, opts = {}) {
   const header = opts.taskId ? tasks.promptHeader(agent, opts) : freeHeader(agent);
   let body;
   const fromAgent = opts.from && agentById(opts.from);
-  if (opts.taskId) {
+  if (opts.interject) {
+    body = '【使用者插話：你剛才的工作被暫停了】\n' + text +
+      '\n\n請依照這個指示調整，然後繼續完成你原本的工作（之前做到哪裡，可以從對話紀錄與工作資料夾的檔案判斷）。';
+  } else if (opts.taskId) {
     body = opts.from ? text : opts.system ? '【系統訊息】\n' + text : '【使用者訊息】\n' + text;
   } else if (fromAgent) {
     body = '【來自同事 ' + fromAgent.name + ' 的訊息】\n' + text +
@@ -195,11 +198,20 @@ const cwdBusy = (cwd) => [...runs.values()].some((r) => r.cwd === cwd);
 function dispatch(agent, text, opts = {}) {
   if (runs.has(agent.id) || cwdBusy(agent.cwd)) {
     pending.push({ agentId: agent.id, text, opts });
-    broadcast({ agentId: agent.id, kind: 'queued', count: pending.filter((p) => p.agentId === agent.id).length });
+    broadcast({ agentId: '*', kind: 'queue' });
     return 'queued';
   }
   startRun(agent, text, opts);
   return 'started';
+}
+// 排隊狀態：排了幾則、在等誰（給網頁顯示）
+function queueInfo(agentId) {
+  const items = pending.filter((p) => p.agentId === agentId);
+  if (!items.length) return null;
+  const a = agentById(agentId);
+  const blocker = a && [...runs.entries()].find(([id, r]) => id !== agentId && r.cwd === a.cwd);
+  return { count: items.length, waitingOn: blocker ? blocker[0] : null,
+    items: items.map((p) => ({ text: p.text, from: p.opts.from || null, via: p.opts.via || null, taskId: p.opts.taskId || null })) };
 }
 function pump() {
   for (let i = 0; i < pending.length; i++) {
@@ -209,6 +221,7 @@ function pump() {
     pending.splice(i--, 1);
     startRun(agent, item.text, item.opts);
   }
+  broadcast({ agentId: '*', kind: 'queue' });
 }
 function cancelTask(taskId) {
   for (let i = pending.length - 1; i >= 0; i--) if (pending[i].opts.taskId === taskId) pending.splice(i, 1);
@@ -304,7 +317,7 @@ function startRun(agent, userText, opts = {}) {
   const { cmd, args } = buildCommand(agent, sid);
   const hops = opts.hops || 0;
   const prompt = buildPrompt(agent, userText, opts);
-  const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system };
+  const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system, interject: opts.interject };
 
   appendHistory(agent.id, { role: 'user', text: userText, ...meta, ts: Date.now() });
   broadcast({ agentId: agent.id, kind: 'user', text: userText, ...meta });
@@ -373,6 +386,18 @@ function startRun(agent, userText, opts = {}) {
     emit({ kind: 'error', text: '無法啟動「' + cmd + '」：' + err.message + '。請確認已安裝並在終端機能執行。' });
   });
   proc.on('close', (code) => {
+    if (run.interrupt) {
+      // 使用者插話：結束這一輪（不轉交、不判斷任務交接），馬上帶著指示接著做同一段對話
+      emit({ kind: 'tool', text: '⚡ 使用者插話，這一輪先暫停' });
+      finish();
+      hooks.emit('done', { agent, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
+      if (opts.taskId) tasks.noteInterrupt(agent, opts, before, run.interrupt.text);
+      if (agent.engine === 'codex') setTimeout(readCodexUsage, 500);
+      startRun(agentById(agent.id) || agent, run.interrupt.text,
+        { taskId: opts.taskId, stageId: opts.stageId, hops: opts.hops, via: run.interrupt.via, interject: true });
+      pump();
+      return;
+    }
     if (run.stopped) emit({ kind: 'error', text: '⏹ 已手動停止' });
     else if (code && !run.finished && !run.segments.some((s) => s.type === 'error')) {
       const tail = decodeOutput(run.stderr).trim().split(/\r?\n/).slice(-6).join('\n');
@@ -402,6 +427,7 @@ function startRun(agent, userText, opts = {}) {
 // silent：任務被整個停止時，不再觸發任務的後續判斷
 function stopRun(id, silent) {
   for (let i = pending.length - 1; i >= 0; i--) if (pending[i].agentId === id) pending.splice(i, 1);
+  broadcast({ agentId: '*', kind: 'queue' });
   const run = runs.get(id);
   if (!run || !run.proc) return false;
   run.stopped = true;
@@ -409,6 +435,23 @@ function stopRun(id, silent) {
   if (IS_WIN) spawn('taskkill', ['/pid', String(run.proc.pid), '/T', '/F'], { windowsHide: true });
   else run.proc.kill('SIGTERM');
   return true;
+}
+
+// 插話：中斷正在工作的成員，結束後馬上用同一段對話帶著使用者的指示繼續
+function interruptRun(id, text, via) {
+  const run = runs.get(id);
+  if (!run || !run.proc) return false;
+  if (run.interrupt) { run.interrupt.text += '\n' + text; return true; }
+  run.interrupt = { text, via };
+  if (IS_WIN) spawn('taskkill', ['/pid', String(run.proc.pid), '/T', '/F'], { windowsHide: true });
+  else run.proc.kill('SIGTERM');
+  return true;
+}
+// 送給某位成員：正在工作就插話，否則照常送出
+function interject(agent, text, via) {
+  if (interruptRun(agent.id, text, via)) return 'interrupted';
+  dispatch(agent, text, { via });
+  return runs.has(agent.id) ? 'started' : 'queued';
 }
 
 function resetAgent(id) {
@@ -627,6 +670,7 @@ const publicAgent = (a) => ({
   id: a.id, name: a.name, avatar: a.avatar, engine: a.engine, model: a.model || '', effort: a.effort || '', role: a.role || '',
   canHandoffTo: allowedTargets(a).map((t) => t.id),
   busy: runs.has(a.id), hasSession: !!state.sessions[a.id],
+  queued: (queueInfo(a.id) || {}).count || 0, waitingOn: (queueInfo(a.id) || {}).waitingOn || null,
 });
 
 const server = http.createServer(async (req, res) => {
@@ -668,6 +712,14 @@ const server = http.createServer(async (req, res) => {
       saveConfig(); broadcast({ agentId: '*', kind: 'telegram' });
       return send(res, 200, telegram.status());
     }
+    // ---- 插話 ----
+    if ((m0 = p.match(/^\/api\/interject\/([\w-]+)$/)) && req.method === 'POST') {
+      const agent = agentById(m0[1]);
+      if (!agent) return send(res, 404, { error: '找不到成員' });
+      const { text } = await readBody(req);
+      if (!String(text || '').trim()) return send(res, 400, { error: '訊息是空的' });
+      return send(res, 200, { ok: true, result: interject(agent, String(text), 'web') });
+    }
     // ---- 任務 ----
     if (p === '/api/tasks' && req.method === 'GET') return send(res, 200, { active: tasks.active() || null, tasks: tasks.list() });
     if (p === '/api/tasks' && req.method === 'POST') {
@@ -678,12 +730,13 @@ const server = http.createServer(async (req, res) => {
     if ((m0 = p.match(/^\/api\/tasks\/(\d+)$/)) && req.method === 'GET') {
       const d = tasks.detail(m0[1]); return d ? send(res, 200, d) : send(res, 404, { error: '找不到任務' });
     }
-    if ((m0 = p.match(/^\/api\/tasks\/(\d+)\/(approve|reject|reply|stop)$/)) && req.method === 'POST') {
+    if ((m0 = p.match(/^\/api\/tasks\/(\d+)\/(approve|reject|reply|stop|note)$/)) && req.method === 'POST') {
       const body = await readBody(req);
       try {
         if (m0[2] === 'approve') tasks.approve(m0[1], body.note);
         else if (m0[2] === 'reject') tasks.reject(m0[1], body.feedback);
         else if (m0[2] === 'reply') { if (!String(body.text || '').trim()) throw new Error('訊息是空的'); tasks.reply(m0[1], body.text, 'web'); }
+        else if (m0[2] === 'note') { if (!String(body.text || '').trim()) throw new Error('訊息是空的'); tasks.addNote(m0[1], body.text, 'web'); }
         else tasks.stop(m0[1]);
         return send(res, 200, { ok: true });
       } catch (e) { return send(res, 400, { error: e.message }); }
@@ -787,7 +840,7 @@ const server = http.createServer(async (req, res) => {
     let m;
     if ((m = p.match(/^\/api\/history\/([\w-]+)$/))) {
       const run = runs.get(m[1]);
-      return send(res, 200, { history: loadHistory(m[1]), live: run ? run.segments : null });
+      return send(res, 200, { history: loadHistory(m[1]), live: run ? run.segments : null, queue: queueInfo(m[1]) });
     }
     if ((m = p.match(/^\/api\/chat\/([\w-]+)$/)) && req.method === 'POST') {
       const agent = agentById(m[1]);
@@ -843,7 +896,7 @@ server.listen(PORT, HOST, () => {
 const telegram = require('./telegram');
 const tgCtx = {
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,
-  dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks,
+  dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,
 };
 telegram.start(tgCtx);
 

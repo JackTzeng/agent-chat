@@ -180,6 +180,10 @@ exports.create = function create(ctx) {
     lines.push('', '【團隊成員】');
     for (const a of ctx.AGENTS) lines.push('- ' + a.name + '：' + (a.role || a.engine) + (a.id === agent.id ? '（就是你）' : ''));
     if (task) lines.push('', '【目前任務 #' + task.id + '】', task.goal);
+    if (task && task.notes && task.notes.length) {
+      lines.push('', '【使用者在任務進行中的補充指示（一定要遵守；和前面的內容衝突時，以越新的為準）】');
+      for (const n of task.notes) lines.push('- ' + fmt(n.ts) + '：' + n.text);
+    }
     lines.push('', '【工作流程：' + w.name + '】');
     w.stages.forEach((s, i) => {
       const nx = s.next.map((n) => (stage(n) || {}).name).filter(Boolean);
@@ -276,6 +280,25 @@ exports.create = function create(ctx) {
     ctx.dispatch(owner, msg, { taskId: task.id, stageId: to.id, from: pend.from });
   }
 
+  // 使用者插話中斷了某一輪：把那一輪的檔案變更記進這個階段，並記下插話內容
+  function noteInterrupt(agent, opts, before, text) {
+    const task = get(opts.taskId);
+    if (!task || !ACTIVE.includes(task.status)) return;
+    const changes = before ? diffSnapshots(before, snapshot(agent.cwd)) : [];
+    task.stageChanges = mergeChanges(task.stageChanges, changes);
+    log(task, { type: 'interject', to: agent.id, text: short(text, 300) });
+    changed(task);
+  }
+  // 不中斷：加入任務指示，之後每位成員的每一輪都會看到
+  function addNote(id, text, via) {
+    const t = need(id, ACTIVE);
+    t.notes = t.notes || [];
+    t.notes.push({ ts: Date.now(), text: String(text).trim().slice(0, 2000), via });
+    log(t, { type: 'note', text: short(text, 300) });
+    changed(t, 'note', '📌 已加入任務指示：' + short(text, 200));
+    return t;
+  }
+
   // ---------- 使用者操作 ----------
   function start(goal, via) {
     goal = String(goal || '').trim();
@@ -356,6 +379,8 @@ exports.create = function create(ctx) {
       } else if (e.type === 'approved') L.push('- ' + fmt(e.ts) + ' ✅ 使用者核准' + (e.text ? '：' + e.text : ''));
       else if (e.type === 'rejected') L.push('- ' + fmt(e.ts) + ' ↩️ 使用者退回：' + e.text);
       else if (e.type === 'reply') L.push('- ' + fmt(e.ts) + ' 💬 使用者回覆 ' + name(e.to) + '：' + e.text);
+      else if (e.type === 'interject') L.push('- ' + fmt(e.ts) + ' ⚡ 使用者插話給 ' + name(e.to) + '：' + e.text);
+      else if (e.type === 'note') L.push('- ' + fmt(e.ts) + ' 📌 使用者加入任務指示：' + e.text);
       else if (e.type === 'wait') L.push('- ' + fmt(e.ts) + ' ⏳ ' + name(e.agent) + ' 在等使用者：' + e.text);
       else if (e.type === 'error') L.push('- ' + fmt(e.ts) + ' ⚠️ ' + e.text);
       else if (e.type === 'done') L.push('- ' + fmt(e.ts) + ' 🎉 任務完成');
@@ -402,12 +427,12 @@ exports.create = function create(ctx) {
   const summary = (t) => t && ({
     id: t.id, title: t.title, goal: t.goal, status: t.status, statusText: STATUS_TEXT[t.status], stageId: t.stageId,
     waitingFor: t.waitingFor || null, pending: t.pending || null, turns: t.turns || 0, note: t.note || null,
-    createdAt: t.createdAt, updatedAt: t.updatedAt,
+    createdAt: t.createdAt, updatedAt: t.updatedAt, notes: t.notes || [],
     done: [...new Set(t.log.filter((e) => e.type === 'handoff').map((e) => e.fromStage))],
   });
 
   return {
-    promptHeader, snapshotFor, onTurnDone, start, approve, reject, reply, stop, workflowSaved, writeWorkflowDocs,
+    promptHeader, snapshotFor, onTurnDone, noteInterrupt, addNote, start, approve, reject, reply, stop, workflowSaved, writeWorkflowDocs,
     active: () => summary(active()),
     list: () => store.tasks.slice(-20).reverse().map(summary),
     detail: (id) => { const t = get(id); return t ? { task: summary(t), markdown: taskMarkdown(t) } : null; },

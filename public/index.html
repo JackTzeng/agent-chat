@@ -222,6 +222,15 @@
   .tg-code { font: 700 34px/1.2 ui-monospace, Consolas, monospace; letter-spacing: 8px; color: var(--accent); margin: 6px 0; }
   .tg-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .tg-row input[type=password], .tg-row input[type=text] { flex: 1; min-width: 220px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; }
+  /* 排隊與插話 */
+  .qline { font-size: 12px; color: #b07a10; }
+  .row.queued .bubble { opacity: .65; border-style: dashed; }
+  .modebar { max-width: 900px; margin: 0 auto 6px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12.5px; }
+  .modebar:empty { display: none; }
+  .modebar button { font-size: 12.5px; padding: 3px 10px; border-radius: 20px; }
+  .modebar button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .modebar .help { margin-left: 4px; }
+  #stopBtn { display: none; }
   .toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: var(--err); color: #fff;
     padding: 8px 14px; border-radius: 10px; font-size: 13px; display: none; z-index: 9; }
 
@@ -255,11 +264,13 @@
     <div class="msgs" id="msgs"></div>
     <div class="dropzone" id="dropzone">放開以附加檔案 📎</div>
     <div class="composer">
+      <div class="modebar" id="modebar"></div>
       <div class="chips" id="chips"></div>
       <div class="box">
         <button class="attach-btn" id="attachBtn" title="附加檔案（也可以直接拖曳或 Ctrl+V 貼上）">📎</button>
         <input type="file" id="attachInput" multiple style="display:none">
         <textarea id="input" rows="1" placeholder="輸入訊息…"></textarea>
+        <button class="danger" id="stopBtn" title="停止">⏹</button>
         <button class="primary" id="sendBtn">送出</button>
       </div>
       <div class="hint">Enter 送出 · Shift+Enter 換行 · 檔案可以拖曳進來或 Ctrl+V 貼上 · 成員之間用 @名字 互相呼叫</div>
@@ -278,7 +289,7 @@ const withToken = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + 
 
 const $ = (id) => document.getElementById(id);
 const ALL = '__all';
-const UI_VERSION = '2.2.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '2.3.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -357,6 +368,7 @@ function agentCard(a, extraClass = '') {
         <div class="name">${esc(a.name)}${a.engine ? `<span class="badge ${esc(a.engine)}">${esc(a.engine)}</span>` : ''}</div>
         <div class="role">${esc(a.role || '')}</div>
         ${a.engine ? `<div class="role">${esc([a.model || '預設模型', a.effort].filter(Boolean).join(' · '))}</div>` : ''}
+        ${a.queued ? `<div class="qline">🕒 排隊中${a.waitingOn && agentOf(a.waitingOn) ? '（等 ' + esc(agentOf(a.waitingOn).name) + ' 做完）' : ''}</div>` : ''}
       </div>
       <span class="unread"></span>
       ${a.id !== ALL ? `<button class="gear" data-edit="${esc(a.id)}" title="編輯成員">⚙️</button>` : ''}
@@ -373,24 +385,65 @@ function renderAgents() {
   $('addAgent').onclick = () => openAgentForm(null);
 }
 
+// 送出方式：依目前畫面與成員狀態決定可以選哪些
+// now = ⚡ 立即插話（中斷正在做的成員，帶著指示繼續）｜later = 🕒 這輪做完再給｜note = 📌 加入任務指示
+// task = 📋 開始新任務｜reply = 回覆等你的成員｜send = 一般送出
+let sendMode = null;
+function workingAgent() {
+  const t = TASKS && TASKS.active;
+  const busy = agents.filter((a) => a.busy);
+  if (t && t.stageId && WF) { const st = WF.stages.find((x) => x.id === t.stageId); const o = st && busy.find((a) => a.id === st.owner); if (o) return o; }
+  return busy[0] || null;
+}
+function sendModes() {
+  if (current === ALL) {
+    const t = TASKS && TASKS.active, w = workingAgent();
+    if (t && (t.status === 'waiting_user' || t.status === 'error')) return [{ id: 'reply', label: '回覆' }];
+    if (t) return [...(w ? [{ id: 'now', label: '⚡ 插話給 ' + w.name }] : []), { id: 'note', label: '📌 加入任務指示' }];
+    if (w) return [{ id: 'now', label: '⚡ 插話給 ' + w.name }, { id: 'task', label: '📋 開始新任務' }];
+    return [{ id: 'task', label: '開始任務' }];
+  }
+  const a = agentOf(current);
+  if (a && a.busy) return [{ id: 'now', label: '⚡ 立即插話' }, { id: 'later', label: '🕒 這輪做完再給' }];
+  return [{ id: 'send', label: '送出' }];
+}
+const MODE_HELP = {
+  now: '會中斷它正在做的這一輪，帶著你的指示接著做；之前的對話與檔案都保留',
+  later: '等它這一輪做完再送出',
+  note: '不中斷，之後每位成員的每一輪都會看到這條指示',
+  task: '依照工作流程開始一件新任務',
+};
+const MODE_BTN = { now: '⚡ 插話', later: '排隊送出', note: '📌 加入', task: '開始任務', reply: '回覆', send: '送出' };
+function renderModebar() {
+  const modes = sendModes();
+  if (!modes.some((m) => m.id === sendMode)) sendMode = modes[0].id;
+  $('modebar').innerHTML = modes.length > 1
+    ? modes.map((m) => `<button type="button" data-mode="${m.id}" class="${m.id === sendMode ? 'on' : ''}">${esc(m.label)}</button>`).join('') +
+      `<span class="help">${esc(MODE_HELP[sendMode] || '')}</span>` : '';
+  $('modebar').querySelectorAll('[data-mode]').forEach((b) => (b.onclick = () => { sendMode = b.dataset.mode; renderModebar(); $('input').focus(); }));
+  const btn = $('sendBtn');
+  btn.textContent = MODE_BTN[sendMode] || '送出'; btn.className = 'primary'; btn.disabled = false;
+  // 停止按鈕：單一成員畫面停止這位；全員畫面停止全部
+  const stopVisible = current === ALL ? agents.some((a) => a.busy) : !!(agentOf(current) || {}).busy;
+  $('stopBtn').style.display = stopVisible ? 'inline-block' : 'none';
+  $('stopBtn').title = current === ALL ? '全部停止' : '停止這位成員';
+}
+
 function updateTop() {
-  const btn = $('sendBtn'), inp = $('input');
+  const inp = $('input');
+  inp.disabled = false;
   if (current === ALL) {
     $('title').innerHTML = '👥 全員<span class="sub">所有成員的對話，依時間排列</span>';
     $('resetBtn').style.display = 'none';
     $('settingsBtn').textContent = '⚙️ 團隊設定';
-    const t = TASKS && TASKS.active, busy = agents.some((a) => a.busy);
-    if (!t) {
+    renderModebar();
+    const t = TASKS && TASKS.active, w = workingAgent();
+    if (sendMode === 'reply') { const who = agentOf(t.waitingFor); inp.placeholder = '回覆 ' + (who ? label(who) : '成員') + '…'; }
+    else if (sendMode === 'now') inp.placeholder = '給 ' + label(w) + ' 的即時指示…';
+    else if (sendMode === 'note') inp.placeholder = '給團隊的補充指示，例如：檔案一律放在 workspace\\lite…';
+    else {
       const first = WF && WF.stages[0], owner = first && agentOf(first.owner);
-      inp.disabled = false; btn.disabled = false; btn.textContent = '開始任務'; btn.className = 'primary';
       inp.placeholder = first && owner ? '輸入新任務的目標，按 Enter 開始（從「' + first.name + '」開始，交給 ' + label(owner) + '）' : '請先到「⚙️ 團隊設定」定義工作流程';
-    } else if (t.status === 'waiting_user' || t.status === 'error') {
-      const who = agentOf(t.waitingFor);
-      inp.disabled = false; btn.disabled = false; btn.textContent = '回覆'; btn.className = 'primary';
-      inp.placeholder = '回覆 ' + (who ? label(who) : '成員') + '…';
-    } else {
-      inp.disabled = true; btn.textContent = '全部停止'; btn.className = busy ? 'danger' : ''; btn.disabled = !busy;
-      inp.placeholder = t.status === 'awaiting_approval' ? '請在上方核准或退回' : '任務進行中…（可以在上方停止任務）';
     }
     renderTaskbar();
     return;
@@ -400,10 +453,8 @@ function updateTop() {
   $('resetBtn').style.display = '';
   $('settingsBtn').textContent = '⚙️ 設定';
   $('taskbar').classList.remove('show');
-  inp.disabled = false; inp.placeholder = '輸入訊息…（寫 @名字 可以請它找同事協助）';
-  btn.disabled = false;
-  if (a.busy) { btn.textContent = '停止'; btn.className = 'danger'; }
-  else { btn.textContent = '送出'; btn.className = 'primary'; }
+  renderModebar();
+  inp.placeholder = a.busy ? a.name + ' 正在工作，可以直接插話給它…' : '輸入訊息…（寫 @名字 可以請它找同事協助）';
 }
 
 // ---- 訊息列 ----
@@ -487,6 +538,7 @@ async function selectAgent(id) {
   }
   for (const m of items) m.role === 'user' ? addUserRow(m, m.agentId) : addBotRow(m.segments, m.meta, false, m.agentId, m.ts);
   ids.forEach((aid, k) => { if (data[k].live) addBotRow(data[k].live, '', true, aid); });
+  if (id !== ALL) renderQueued(data[0].queue);
   scrollDown(true);
   if (id !== ALL) $('input').focus();
 }
@@ -505,45 +557,47 @@ function composeText() {
 function clearAttach() { ATTACH = []; renderChips(); }
 
 async function send() {
-  if (current === ALL) {
-    const t = TASKS && TASKS.active, raw = $('input').value.trim();
-    const text = composeText(); if (text === null) return;
-    try {
-      if (!t) {
-        if (!text) return;
-        clearAttach();
-        $('input').value = ''; autoGrow();
-        await api('/api/tasks', { method: 'POST', body: JSON.stringify({ goal: text }) });
-        toast('✅ 任務開始');
-      } else if (t.status === 'waiting_user' || t.status === 'error') {
-        if (!text) return;
-        clearAttach();
-        $('input').value = ''; autoGrow();
-        await api('/api/tasks/' + t.id + '/reply', { method: 'POST', body: JSON.stringify({ text }) });
-      } else await api('/api/stopall', { method: 'POST' });
-    } catch (e) { toast(e.message); if (raw && !$('input').value) $('input').value = raw; }
-    return;
-  }
-  const a = agentOf(current); if (!a) return;
-  if (a.busy && !$('input').value.trim() && !ATTACH.length) { try { await api('/api/stop/' + a.id, { method: 'POST' }); } catch (e) { toast(e.message); } return; }
   const raw = $('input').value.trim();
-  const text = composeText(); if (!text) return;
-  $('input').value = ''; autoGrow(); clearAttach();
+  const text = composeText(); if (text === null || !text) return;
+  const mode = sendMode || 'send';
+  const t = TASKS && TASKS.active;
+  const done = () => { $('input').value = ''; autoGrow(); clearAttach(); };
   try {
-    const r = await api('/api/chat/' + a.id, { method: 'POST', body: JSON.stringify({ text }) });
-    if (r.cc && r.cc.length) toast('📢 也同時交給 ' + r.cc.join('、'));
-    else if (r.queued) toast('📢 已排隊：同一個工作資料夾有成員正在工作，輪到時會自動開始');
-  }
-  catch (e) { toast(e.message); $('input').value = raw; }
+    if (mode === 'task') {
+      done(); await api('/api/tasks', { method: 'POST', body: JSON.stringify({ goal: text }) }); toast('✅ 任務開始');
+    } else if (mode === 'reply') {
+      done(); await api('/api/tasks/' + t.id + '/reply', { method: 'POST', body: JSON.stringify({ text }) });
+    } else if (mode === 'note') {
+      done(); await api('/api/tasks/' + t.id + '/note', { method: 'POST', body: JSON.stringify({ text }) }); toast('📌 已加入任務指示，之後每一輪都會看到');
+    } else if (mode === 'now') {
+      const w = current === ALL ? workingAgent() : agentOf(current);
+      if (!w) { toast('目前沒有成員在工作'); return; }
+      done();
+      const r = await api('/api/interject/' + w.id, { method: 'POST', body: JSON.stringify({ text }) });
+      toast(r.result === 'interrupted' ? '⚡ 已插話：' + w.name + ' 會帶著你的指示接著做' : '✅ 已送出');
+    } else {
+      const a = agentOf(current); if (!a) return;
+      done();
+      const r = await api('/api/chat/' + a.id, { method: 'POST', body: JSON.stringify({ text }) });
+      if (r.cc && r.cc.length) toast('📢 也同時交給 ' + r.cc.join('、'));
+      else if (r.queued) toast('📢 已排隊，輪到時會自動開始');
+    }
+  } catch (e) { toast(e.message); if (raw && !$('input').value) $('input').value = raw; }
 }
+$('stopBtn').onclick = async () => {
+  try {
+    if (current === ALL) { if (confirm('停止所有成員（包含進行中的任務）？')) await api('/api/stopall', { method: 'POST' }); }
+    else await api('/api/stop/' + current, { method: 'POST' });
+  } catch (e) { toast(e.message); }
+};
 $('sendBtn').onclick = send;
 
 // ---- 附件：拖曳、📎、貼上 ----
 let ATTACH = []; // { name, path, agent }
 function uploadTarget() {
   if (current !== ALL) return current;
-  const t = TASKS && TASKS.active;
-  if (t && (t.status === 'running' || t.status === 'awaiting_approval')) return null;
+  const t = TASKS && TASKS.active, w = workingAgent();
+  if (w) return w.id;
   if (t && t.waitingFor) return t.waitingFor;
   const first = WF && WF.stages[0];
   return (first && first.owner) || (agents[0] && agents[0].id);
@@ -1060,6 +1114,31 @@ function staleWarning(serverVer) {
   el.classList.add('show');
 }
 
+// 排隊中的訊息先顯示在對話窗（虛線、半透明），輪到時才真正送出
+function renderQueued(q) {
+  const msgs = $('msgs');
+  msgs.querySelectorAll('.row.queued').forEach((el) => el.remove());
+  if (!q || !q.items.length) return;
+  clearEmpty();
+  const wait = q.waitingOn && agentOf(q.waitingOn);
+  for (const it of q.items) {
+    const from = it.from && agentOf(it.from);
+    const row = document.createElement('div'); row.className = 'row user queued' + (from ? ' relay' : '');
+    const col = document.createElement('div'); col.className = 'col';
+    const w = document.createElement('div'); w.className = 'who';
+    w.textContent = '🕒 排隊中' + (wait ? '：等 ' + label(wait) + ' 做完就開始' : '') + (from ? '（來自 ' + label(from) + '）' : '');
+    const b = document.createElement('div'); b.className = 'bubble';
+    if (from) b.appendChild(renderMarkdown(it.text, current)); else b.textContent = it.text;
+    col.appendChild(w); col.appendChild(b); row.appendChild(col); msgs.appendChild(row);
+  }
+}
+async function refreshQueue() {
+  await refreshAgents();
+  if (current && current !== ALL) {
+    try { const d = await api('/api/history/' + encodeURIComponent(current)); renderQueued(d.queue); } catch {}
+  }
+}
+
 async function refreshAgents() {
   try { agents = await api('/api/agents'); } catch { return; }
   if (current !== ALL && !agentOf(current)) { selectAgent(ALL); return; }
@@ -1184,6 +1263,7 @@ function connectEvents() {
     if (ev.kind === 'usage') { loadUsage(); return; }
     if (ev.kind === 'telegram') { loadTelegram(); return; }
     if (ev.kind === 'task') { loadTasks(); return; }
+    if (ev.kind === 'queue') { refreshQueue(); return; }
     const a = agentOf(ev.agentId); if (!a) return;
     if (ev.kind === 'busy') { a.busy = ev.busy; renderAgents(); updateTop(); return; }
     if (ev.kind === 'reset') { if (shown(ev.agentId)) selectAgent(current); return; }

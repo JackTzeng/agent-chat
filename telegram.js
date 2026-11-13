@@ -13,7 +13,11 @@ const HELP =
   '/approve [補充]　核准交接\n' +
   '/reject 意見　退回修改\n' +
   '/cancel　停止目前任務\n' +
+  '/note 指示　加入任務指示（不中斷，之後每一輪都會看到）\n' +
   '任務在等你回覆時，直接打字就會回給那位成員\n\n' +
+  '⚡ 插話\n' +
+  '成員正在工作時直接打字，會中斷它這一輪，帶著你的指示接著做\n' +
+  '/later 訊息　不中斷，等它這輪做完再給\n\n' +
   '💬 自由聊天\n' +
   '直接打字：交給目前的對象\n' +
   '@名字 訊息：交給指定成員（不切換對象）\n\n' +
@@ -243,6 +247,19 @@ exports.start = function start(ctx) {
           try { ctx.tasks.reject(t.id, arg.trim()); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
           return;
         }
+        case 'note': {
+          const t = ctx.tasks.active();
+          if (!t) return say(chatId, '目前沒有進行中的任務。');
+          if (!arg.trim()) return say(chatId, '用法：/note 指示內容');
+          try { ctx.tasks.addNote(t.id, arg.trim(), 'telegram'); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+          return say(chatId, '📌 已加入任務指示，之後每一輪都會看到');
+        }
+        case 'later': {
+          if (!arg.trim()) return say(chatId, '用法：/later 訊息');
+          const a = targetOf(c);
+          ctx.dispatch(a, arg.trim(), { via: 'telegram' });
+          return say(chatId, '🕒 已排隊，' + label(a) + ' 做完這輪就會收到');
+        }
         case 'cancel': {
           const t = ctx.tasks.active();
           if (!t) return say(chatId, '目前沒有進行中的任務。');
@@ -266,6 +283,17 @@ exports.start = function start(ctx) {
     let agent = targetOf(c);
     const at = text.match(/^@(\S+)\s*/);
     if (at) { const a = findAgent(at[1]); if (a) agent = a; }
+    // 任務進行中、沒有指定對象：插話給正在工作的成員
+    if (t && t.status === 'running' && !at) {
+      const st = ctx.config.workflow.stages.find((x) => x.id === t.stageId);
+      const w = (st && ctx.runs.has(st.owner) && ctx.agentById(st.owner)) || ctx.agents.find((a) => ctx.runs.has(a.id));
+      if (w) agent = w;
+    }
+    // 對象正在工作 → 插話（中斷這一輪，帶著指示繼續）
+    if (ctx.runs.has(agent.id)) {
+      ctx.interject(agent, text, 'telegram');
+      return say(chatId, '⚡ 已插話給 ' + label(agent) + '，它會帶著你的指示接著做（不想中斷請用 /later）');
+    }
     const busy = ctx.runs.has(agent.id);
     const cc = ctx.userSend(agent, text, 'telegram');
     await say(chatId, (busy ? '⏳ ' + label(agent) + ' 正在忙，已排隊' : '✅ 已交給 ' + label(agent)) +
