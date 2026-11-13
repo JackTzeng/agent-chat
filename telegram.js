@@ -30,7 +30,7 @@ exports.start = function start(ctx) {
   const defaultTarget = () => (ctx.agentById(cfg.defaultAgent) || ctx.agents[0]).id;
   // 成員可能在網頁上被刪除，找不到時退回第一位
   const targetOf = (c) => ctx.agentById(c.target) || ctx.agents[0];
-  const label = (a) => (a.avatar || '🤖') + ' ' + a.name;
+  const label = (a) => (a.avatar && !a.avatar.startsWith('img:') ? a.avatar : '👤') + ' ' + a.name;
 
   async function call(method, body, isForm) {
     const r = await fetch(API + '/' + method, isForm

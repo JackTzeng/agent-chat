@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '1.3.2';
+const VERSION = '1.4.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -68,7 +68,9 @@ if (!LOCAL_HOSTS.includes(HOST) && !TOKEN) {
 const DATA_DIR = path.join(ROOT, 'data');
 const HIST_DIR = path.join(DATA_DIR, 'history');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const AVATAR_DIR = path.join(DATA_DIR, 'avatars'); // 自訂頭像圖片
 fs.mkdirSync(HIST_DIR, { recursive: true });
+fs.mkdirSync(AVATAR_DIR, { recursive: true });
 
 // agents.json 是你自己的設定（不進 git）；第一次啟動時從範本複製一份
 const AGENTS_FILE = path.join(ROOT, 'agents.json');
@@ -392,7 +394,7 @@ function cleanAgent(input, existingId) {
   const a = {
     id: existingId,
     name: str(input.name, 30),
-    avatar: str(input.avatar, 8) || '🤖',
+    avatar: str(input.avatar, 40) || '🤖',
     role: str(input.role, 60),
     engine: str(input.engine),
     model: str(input.model, 80),
@@ -401,6 +403,9 @@ function cleanAgent(input, existingId) {
     persona: str(input.persona, 8000),
   };
   if (!a.name) throw new Error('請填名稱');
+  if (a.avatar.startsWith('img:')) {
+    if (!/^img:[\w-]+\.png$/.test(a.avatar) || !fs.existsSync(path.join(AVATAR_DIR, a.avatar.slice(4)))) throw new Error('頭像圖片不存在，請重新上傳');
+  } else if ([...a.avatar].length > 8) throw new Error('頭像請用一個 emoji，或上傳圖片');
   if (/\s|@/.test(a.name)) throw new Error('名稱不能有空白或 @（同事要用 @名稱 呼叫）');
   const dup = AGENTS.find((x) => x.id !== existingId && x.name.toLowerCase() === a.name.toLowerCase());
   if (dup) throw new Error('已經有叫「' + a.name + '」的成員了');
@@ -511,6 +516,22 @@ const server = http.createServer(async (req, res) => {
       saveConfig(); reloadAgents(); agentsChanged();
       return send(res, 200, { ok: true });
     }
+    // 自訂頭像：網頁先裁成 128×128 PNG 再上傳
+    if (p === '/api/avatar' && req.method === 'POST') {
+      const { dataUrl } = await readBody(req);
+      const mm = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''));
+      if (!mm) return send(res, 400, { error: '圖片格式不正確' });
+      const buf = Buffer.from(mm[1], 'base64');
+      if (buf.length > 512 * 1024) return send(res, 400, { error: '圖片太大' });
+      if (buf.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') return send(res, 400, { error: '不是 PNG 圖片' });
+      const name = 'av-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6) + '.png';
+      fs.writeFileSync(path.join(AVATAR_DIR, name), buf);
+      return send(res, 200, { avatar: 'img:' + name });
+    }
+    if ((m0 = p.match(/^\/api\/avatar\/([\w-]+\.png)$/)) && req.method === 'GET') {
+      res.setHeader('Cache-Control', 'max-age=31536000, immutable');
+      return sendFile(res, path.join(AVATAR_DIR, m0[1]));
+    }
     if (p === '/api/team' && req.method === 'PUT') {
       const body = await readBody(req);
       CONFIG.workflow = String(body.workflow ?? '').slice(0, 8000);
@@ -584,7 +605,7 @@ server.on('error', (e) => {
 });
 server.listen(PORT, HOST, () => {
   console.log('✅ Agent Chat v' + VERSION + ' 已啟動： http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT + (TOKEN ? '/?token=' + TOKEN : ''));
-  for (const a of AGENTS) console.log('   ' + (a.avatar || '•') + ' ' + a.name + '（' + [a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ') + '） → ' + a.cwd);
+  for (const a of AGENTS) console.log('   ' + (a.avatar && !a.avatar.startsWith('img:') ? a.avatar : '•') + ' ' + a.name + '（' + [a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ') + '） → ' + a.cwd);
   for (const [k, v] of Object.entries(BIN)) console.log('   ' + (v ? '✔ ' + k + '：' + v : '✘ 找不到 ' + k + '（這個引擎的 agent 會無法回覆）'));
 });
 

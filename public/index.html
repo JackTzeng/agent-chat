@@ -91,6 +91,25 @@
   .sysline { text-align: center; font-size: 12px; color: var(--muted); }
   .sysline span { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 3px 12px; }
   .agent.all .avatar { background: var(--accent-soft); }
+  .av-img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
+  .av-inline { display: inline-block; width: 22px; height: 22px; vertical-align: -5px; margin-right: 4px; }
+  .empty .big .av-img { width: 64px; height: 64px; margin: 0 auto; }
+  /* 頭像選擇器 */
+  .av-pick { width: 64px; height: 42px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); font-size: 22px;
+    cursor: pointer; display: grid; place-items: center; padding: 3px; }
+  .av-pick .av-img { width: 34px; height: 34px; }
+  .av-pick:hover { border-color: var(--accent); }
+  .av-panel { grid-column: 1 / -1; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--bg); display: none; }
+  .av-panel.open { display: block; }
+  .av-panel h4 { margin: 6px 0 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
+  .av-grid { display: flex; flex-wrap: wrap; gap: 2px; }
+  .av-grid button { border: 0; background: none; font-size: 22px; width: 38px; height: 38px; padding: 0; border-radius: 8px; }
+  .av-grid button:hover { background: var(--panel); }
+  .av-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  .av-tools input[type=text] { width: 90px; text-align: center; font-size: 18px; padding: 4px; }
+  .av-drop { flex: 1; min-width: 180px; border: 1px dashed var(--line); border-radius: 9px; padding: 8px; font-size: 12px;
+    color: var(--muted); text-align: center; }
+  .av-drop.over { border-color: var(--accent); color: var(--accent); }
   .ver { font-size: 11px; font-weight: 400; color: var(--muted); margin-left: 4px; }
   .side .sep { height: 1px; background: var(--line); margin: 4px 6px; }
   textarea:disabled { opacity: .6; }
@@ -181,7 +200,7 @@ const withToken = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + 
 
 const $ = (id) => document.getElementById(id);
 const ALL = '__all';
-const UI_VERSION = '1.3.2'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '1.4.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -200,7 +219,14 @@ async function api(path, opts = {}) {
 }
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const agentOf = (id) => agents.find((a) => a.id === id);
-const label = (a) => a ? (a.avatar || '🤖') + ' ' + a.name : '?';
+const isImgAv = (v) => typeof v === 'string' && v.startsWith('img:');
+const avText = (a) => (a && a.avatar && !isImgAv(a.avatar) ? a.avatar : '');
+const label = (a) => a ? (avText(a) ? avText(a) + ' ' : '') + a.name : '?';
+// 頭像 HTML：emoji 或自訂圖片
+function avatarHTML(v, cls = 'av-img') {
+  if (isImgAv(v)) return `<img class="${cls}" src="${esc(withToken('/api/avatar/' + v.slice(4)))}" alt="">`;
+  return esc(v || '🤖');
+}
 function fmtTime(ts) {
   if (!ts) return '';
   const d = new Date(ts), now = new Date(), p = (n) => String(n).padStart(2, '0');
@@ -248,7 +274,7 @@ function renderSegment(seg, agentId) {
 function agentCard(a, extraClass = '') {
   return `
     <div class="agent ${extraClass} ${a.id === current ? 'active' : ''} ${a.busy ? 'busy' : ''} ${unread.has(a.id) ? 'has-unread' : ''}" data-id="${esc(a.id)}">
-      <div class="avatar">${esc(a.avatar || '🤖')}<span class="dot"></span></div>
+      <div class="avatar">${avatarHTML(a.avatar)}<span class="dot"></span></div>
       <div style="min-width:0">
         <div class="name">${esc(a.name)}${a.engine ? `<span class="badge ${esc(a.engine)}">${esc(a.engine)}</span>` : ''}</div>
         <div class="role">${esc(a.role || '')}</div>
@@ -279,7 +305,7 @@ function updateTop() {
     return;
   }
   const a = agentOf(current); if (!a) return;
-  $('title').innerHTML = esc(label(a)) + '<span class="sub">' + esc([a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ')) + '</span>';
+  $('title').innerHTML = (isImgAv(a.avatar) ? `<span class="av-inline">${avatarHTML(a.avatar)}</span>` + esc(a.name) : esc(label(a))) + '<span class="sub">' + esc([a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ')) + '</span>';
   $('resetBtn').style.display = '';
   $('settingsBtn').textContent = '⚙️ 設定';
   inp.disabled = false; inp.placeholder = '輸入訊息…（寫 @名字 可以請它找同事協助）';
@@ -319,7 +345,7 @@ function addBotRow(segments, meta, live, agentId, ts) {
   clearEmpty();
   const a = agentOf(agentId);
   const row = document.createElement('div'); row.className = 'row bot';
-  row.innerHTML = `<div class="avatar">${esc(a.avatar || '🤖')}</div>`;
+  row.innerHTML = `<div class="avatar">${avatarHTML(a.avatar)}</div>`;
   const col = document.createElement('div'); col.className = 'col';
   if (current === ALL) { const w = document.createElement('div'); w.className = 'who'; w.textContent = a.name; col.appendChild(w); }
   const b = document.createElement('div'); b.className = 'bubble';
@@ -366,7 +392,7 @@ async function selectAgent(id) {
     const a = agentOf(id);
     msgs.innerHTML = id === ALL
       ? '<div class="empty"><div class="big">👥</div>還沒有任何對話</div>'
-      : `<div class="empty"><div class="big">${esc(a.avatar || '🤖')}</div>跟 ${esc(a.name)} 打聲招呼吧</div>`;
+      : `<div class="empty"><div class="big">${avatarHTML(a.avatar)}</div>跟 ${esc(a.name)} 打聲招呼吧</div>`;
   }
   for (const m of items) m.role === 'user' ? addUserRow(m, m.agentId) : addBotRow(m.segments, m.meta, false, m.agentId, m.ts);
   ids.forEach((aid, k) => { if (data[k].live) addBotRow(data[k].live, '', true, aid); });
@@ -432,6 +458,26 @@ const ROLE_TEMPLATES = {
   '研究': { role: '研究 · 查資料與比較方案', persona: '你叫{name}，負責研究與查資料，用繁體中文回覆。\n你的工作：針對交辦的問題查資料、比較可行方案，整理成重點與建議，附上來源，回報給交辦的人。\n你不修改程式碼。' },
 };
 let CFG = null;
+const AVATAR_SETS = [
+  ['人物與職業', '🧑‍💼 👩‍💼 👨‍💼 🧑‍💻 👩‍💻 👨‍💻 🧑‍🔬 👩‍🔬 🧑‍🏫 👩‍🏫 🧑‍⚕️ 👩‍⚕️ 🧑‍⚖️ 🕵️ 👷 🤵 💂 🧙 🦸 🥷 🧑‍🎨 🧑‍🚀 👩‍🍳 🧑‍🔧'],
+  ['臉與角色', '🤖 👾 👽 😎 🤓 🧐 🤠 😺 👻 🎃 🦖 🐉'],
+  ['動物', '🐱 🐶 🦊 🐼 🐨 🐯 🦁 🐻 🐰 🦉 🐧 🐢 🐙 🦄 🐝 🦋 🐬 🦜'],
+  ['物品與符號', '🎩 📜 🔍 🛠️ ⚙️ 🧪 🧬 🔬 💊 📊 📈 📝 📚 💡 🚀 🛡️ 🎯 🧭 ⚖️ 📦 🧹 🗂️ 🔔 ⭐ 🌟 🔥 💎 🌈'],
+];
+// 圖片裁成正方形、縮成 128×128 PNG
+function squareAvatar(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => {
+      const size = 128, side = Math.min(img.naturalWidth, img.naturalHeight);
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      c.getContext('2d').drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, size, size);
+      URL.revokeObjectURL(url); resolve(c.toDataURL('image/png'));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('讀不到這張圖')); };
+    img.src = url;
+  });
+}
 
 function openModal(html) { $('modal').innerHTML = html; $('modalBg').classList.add('open'); }
 function closeModal() { $('modalBg').classList.remove('open'); }
@@ -462,8 +508,18 @@ async function openAgentForm(id) {
       </div>
       <div class="field">
         <label>頭像與名稱</label>
-        <div class="namerow"><input id="f_avatar" value="${esc(a.avatar || '🤖')}" maxlength="8"><input id="f_name" value="${esc(a.name)}" placeholder="例如：小安" maxlength="30"></div>
-        <span class="help">同事會用「@名稱」呼叫，不能有空白</span>
+        <div class="namerow"><button type="button" class="av-pick" id="f_avbtn" title="選擇頭像"></button><input id="f_name" value="${esc(a.name)}" placeholder="例如：小安" maxlength="30"></div>
+        <input type="hidden" id="f_avatar" value="${esc(a.avatar || '🤖')}">
+        <span class="help">點頭像可以更換；同事會用「@名稱」呼叫，不能有空白</span>
+      </div>
+      <div class="av-panel" id="f_avpanel">
+        ${AVATAR_SETS.map(([title, list]) => `<h4>${title}</h4><div class="av-grid">${[...list.matchAll(/\S+/g)].map((m) => `<button type="button" data-av="${m[0]}">${m[0]}</button>`).join('')}</div>`).join('')}
+        <div class="av-tools">
+          <button type="button" id="f_avupload">📁 上傳圖片</button>
+          <input type="file" id="f_avfile" accept="image/*" style="display:none">
+          <div class="av-drop" id="f_avdrop">在這裡按 Ctrl+V 貼上圖片，或把圖片拖進來</div>
+          <input type="text" id="f_avtext" placeholder="輸入 emoji" maxlength="16" title="也可以自己輸入或貼上 emoji，按 Enter">
+        </div>
       </div>
       <div class="field">
         <label>職責（簡短）</label>
@@ -498,7 +554,7 @@ async function openAgentForm(id) {
         <label>可以把工作交給誰</label>
         <label class="opt"><input type="checkbox" id="f_unres" ${unrestricted ? 'checked' : ''}> 不限制（可以交給所有同事）</label>
         <div class="checks ${unrestricted ? 'disabled' : ''}" id="f_handoff">
-          ${others.length ? others.map((o) => `<label><input type="checkbox" value="${esc(o.id)}" ${!unrestricted && a.canHandoffTo.includes(o.id) ? 'checked' : ''}> ${esc((o.avatar || '🤖') + ' ' + o.name)}</label>`).join('') : '<span class="help">目前沒有其他成員</span>'}
+          ${others.length ? others.map((o) => `<label><input type="checkbox" value="${esc(o.id)}" ${!unrestricted && a.canHandoffTo.includes(o.id) ? 'checked' : ''}> ${esc(label(o))}</label>`).join('') : '<span class="help">目前沒有其他成員</span>'}
         </div>
       </div>
       <div class="field full">
@@ -513,6 +569,35 @@ async function openAgentForm(id) {
       <button id="f_cancel">取消</button>
       <button class="primary" id="f_save">${editing ? '儲存' : '新增'}</button>
     </div>`);
+
+  // ---- 頭像選擇 ----
+  const avBtn = $('f_avbtn'), avPanel = $('f_avpanel');
+  function setAvatar(v) { $('f_avatar').value = v; avBtn.innerHTML = avatarHTML(v); }
+  setAvatar(a.avatar || '🤖');
+  avBtn.onclick = () => avPanel.classList.toggle('open');
+  avPanel.querySelectorAll('[data-av]').forEach((b) => (b.onclick = () => { setAvatar(b.dataset.av); avPanel.classList.remove('open'); }));
+  $('f_avtext').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing && e.target.value.trim()) { e.preventDefault(); setAvatar(e.target.value.trim()); avPanel.classList.remove('open'); }
+  });
+  async function useImage(file) {
+    if (!file || !/^image\//.test(file.type)) { toast('請選擇圖片檔'); return; }
+    try {
+      const dataUrl = await squareAvatar(file);
+      const r = await api('/api/avatar', { method: 'POST', body: JSON.stringify({ dataUrl }) });
+      setAvatar(r.avatar); avPanel.classList.remove('open'); toast('✅ 頭像已更新，記得按儲存');
+    } catch (e) { toast('圖片處理失敗：' + e.message); }
+  }
+  $('f_avupload').onclick = () => $('f_avfile').click();
+  $('f_avfile').onchange = (e) => useImage(e.target.files[0]);
+  const drop = $('f_avdrop');
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); useImage(e.dataTransfer.files[0]); });
+  // 表單開著時，任何地方按 Ctrl+V 貼上圖片都會當成頭像
+  $('modal').onpaste = (e) => {
+    const item = [...(e.clipboardData || {}).items || []].find((i) => i.type.startsWith('image/'));
+    if (item) { e.preventDefault(); useImage(item.getAsFile()); }
+  };
 
   const engineSel = $('f_engine');
   const modelSel = $('f_model_sel'), modelInput = $('f_model');
@@ -606,7 +691,7 @@ async function openTeamForm() {
       </div>
       <div class="field">
         <label>成員目前的分工</label>
-        <span class="help">${CFG.agents.map((x) => esc((x.avatar || '🤖') + ' ' + x.name + '：' + (x.role || x.engine))).join('<br>')}</span>
+        <span class="help">${CFG.agents.map((x) => esc(label(x) + '：' + (x.role || x.engine))).join('<br>')}</span>
       </div>
     </div>
     <div class="modal-actions">
