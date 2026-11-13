@@ -6,6 +6,14 @@ const path = require('path');
 
 const HELP =
   '🤖 Agent Chat 遙控\n\n' +
+  '📋 任務（依照工作流程交接）\n' +
+  '/task 目標　開始新任務\n' +
+  '/status　目前任務的進度\n' +
+  '/approve [補充]　核准交接\n' +
+  '/reject 意見　退回修改\n' +
+  '/cancel　停止目前任務\n' +
+  '任務在等你回覆時，直接打字就會回給那位成員\n\n' +
+  '💬 自由聊天\n' +
   '直接打字：交給目前的對象\n' +
   '@名字 訊息：交給指定成員（不切換對象）\n\n' +
   '/list　成員與狀態\n' +
@@ -94,6 +102,32 @@ exports.start = function start(ctx) {
     return '📊 用量額度\n\n' + block('Claude', u.claude) + '\n\n' + block('Codex', u.codex);
   }
 
+  function taskStatusText() {
+    const t = ctx.tasks.active();
+    if (!t) {
+      const last = ctx.tasks.list()[0];
+      return '目前沒有進行中的任務。' + (last ? '\n最近一件：#' + last.id + ' ' + last.title + '（' + last.statusText + '）' : '') + '\n用 /task 目標 開始新任務';
+    }
+    const stages = ctx.config.workflow.stages;
+    const line = stages.map((s) => (s.id === t.stageId ? '▶' : t.done.includes(s.id) ? '✅' : '○') + s.name).join(' → ');
+    let msg = '📋 任務 #' + t.id + '：' + t.title + '\n狀態：' + t.statusText + '｜交接 ' + t.turns + ' 次\n' + line;
+    if (t.status === 'awaiting_approval') msg += '\n\n等你核准：/approve 或 /reject 意見';
+    if (t.status === 'waiting_user') msg += '\n\n等你回覆：直接打字即可';
+    return msg;
+  }
+
+  // 任務事件推送（開始、等核准、等回覆、完成、停止、出錯）
+  ctx.hooks.on('task', async ({ task, event, message }) => {
+    if (!event || event === 'handoff') return;
+    const chats = Object.keys(tg.chats).filter((id) => !tg.chats[id].muted);
+    const head = { started: '📋', awaiting_approval: '🔔 需要你核准', waiting_user: '⏳ 等你回覆', done: '🎉 任務完成',
+      stopped: '⏹', error: '⚠️ 任務暫停', rejected: '↩️' }[event] || '📋';
+    let body = head + '（任務 #' + task.id + '）\n' + (message || '');
+    if (event === 'awaiting_approval') body += '\n\n👉 /approve 核准，或 /reject 意見 退回';
+    if (event === 'waiting_user' || event === 'error') body += '\n\n👉 直接打字回覆，或 /cancel 停止任務';
+    for (const id of chats) await say(id, body);
+  });
+
   function chat(chatId) {
     if (!tg.chats[chatId]) { tg.chats[chatId] = { target: defaultTarget(), muted: false }; ctx.saveState(); }
     return tg.chats[chatId];
@@ -130,7 +164,7 @@ exports.start = function start(ctx) {
       const [, name, arg] = cmd;
       switch (name.toLowerCase()) {
         case 'start': case 'help': return say(chatId, HELP + '\n\n' + listText(c));
-        case 'list': case 'status': return say(chatId, listText(c));
+        case 'list': return say(chatId, listText(c));
         case 'to': {
           const a = findAgent(arg);
           if (!a) return say(chatId, '找不到「' + arg + '」。\n' + listText(c));
@@ -145,10 +179,42 @@ exports.start = function start(ctx) {
           return say(chatId, ctx.resetAgent(a.id) ? '🆕 ' + label(a) + ' 已開新對話' : a.name + ' 工作中，請先 /stop');
         }
         case 'usage': return say(chatId, usageText());
+        case 'task': {
+          if (!arg.trim()) return say(chatId, '用法：/task 任務目標\n例如：/task 做一個讀 CSV 算平均值的 Python 小工具');
+          try { ctx.tasks.start(arg, 'telegram'); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+          return;
+        }
+        case 'status': case 'tasks': return say(chatId, taskStatusText());
+        case 'approve': {
+          const t = ctx.tasks.active();
+          if (!t || t.status !== 'awaiting_approval') return say(chatId, '目前沒有等待核准的交接。');
+          try { ctx.tasks.approve(t.id, arg.trim()); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+          return say(chatId, '✅ 已核准');
+        }
+        case 'reject': {
+          const t = ctx.tasks.active();
+          if (!t || t.status !== 'awaiting_approval') return say(chatId, '目前沒有等待核准的交接。');
+          if (!arg.trim()) return say(chatId, '請附上意見，例如：/reject 驗收標準要寫清楚輸出格式');
+          try { ctx.tasks.reject(t.id, arg.trim()); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+          return;
+        }
+        case 'cancel': {
+          const t = ctx.tasks.active();
+          if (!t) return say(chatId, '目前沒有進行中的任務。');
+          try { ctx.tasks.stop(t.id); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+          return;
+        }
         case 'mute': c.muted = true; ctx.saveState(); return say(chatId, '🔕 已暫停推送，/unmute 恢復');
         case 'unmute': c.muted = false; ctx.saveState(); return say(chatId, '🔔 已恢復推送');
         default: return say(chatId, '不認得這個指令。\n\n' + HELP);
       }
+    }
+
+    // 任務正在等使用者回覆 → 這則訊息就是回覆
+    const t = ctx.tasks.active();
+    if (t && (t.status === 'waiting_user' || t.status === 'error') && !/^@/.test(text)) {
+      try { ctx.tasks.reply(t.id, text, 'telegram'); return say(chatId, '✅ 已回覆，任務繼續'); }
+      catch (e) { return say(chatId, '⚠️ ' + e.message); }
     }
 
     // 開頭寫 @名字 → 直接交給那位，不切換對象

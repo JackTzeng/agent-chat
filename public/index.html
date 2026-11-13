@@ -163,6 +163,42 @@
   @media (max-width: 760px) { .fgrid { grid-template-columns: 1fr; } .agent .gear { opacity: .7; } }
   .stale { background: #e2a72e; color: #2b2924; font-size: 13px; padding: 8px 16px; text-align: center; display: none; }
   .stale.show { display: block; }
+  /* 任務面板 */
+  .taskbar { border-bottom: 1px solid var(--line); background: var(--panel); padding: 10px 16px; display: none; max-height: 45vh; overflow-y: auto; }
+  .taskbar.show { display: block; }
+  .tb-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .tb-title { font-weight: 600; }
+  .tb-hint { color: var(--muted); font-size: 13px; }
+  .tb-badge { font-size: 12px; padding: 1px 8px; border-radius: 20px; background: var(--bg); border: 1px solid var(--line); }
+  .tb-badge.running { color: #2f7d4f; border-color: #2f7d4f; } .tb-badge.awaiting_approval, .tb-badge.waiting_user { color: #b07a10; border-color: #e2a72e; background: #fff6e0; }
+  .tb-badge.error { color: var(--err); border-color: var(--err); } .tb-badge.done { color: var(--user); }
+  .spacer { flex: 1; }
+  .pipe { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 8px; font-size: 13px; }
+  .pipe .chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px 3px 4px; border-radius: 20px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); }
+  .pipe .chip .av-mini { width: 20px; height: 20px; display: grid; place-items: center; font-size: 13px; }
+  .pipe .chip.done { color: var(--text); } .pipe .chip.cur { color: var(--text); border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+  .pipe .arr { color: var(--muted); }
+  .tb-card { margin-top: 10px; border: 1px solid #e2a72e; background: #fffaf0; border-radius: 12px; padding: 10px 12px; }
+  @media (prefers-color-scheme: dark) { .tb-card { background: #2c2618; } .tb-badge.awaiting_approval, .tb-badge.waiting_user { background: #2c2618; } }
+  .tb-card .md { max-height: 220px; overflow-y: auto; font-size: 14px; margin: 6px 0; }
+  .tb-card textarea { width: 100%; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; resize: vertical; }
+  .tb-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .changes { font: 12.5px/1.5 ui-monospace, Consolas, monospace; color: var(--tool); white-space: pre-wrap; }
+  .tagline { font-size: 11px; color: var(--accent); margin-right: 4px; }
+  /* 流程編輯器 */
+  .stage { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; background: var(--bg); }
+  .stage-head { display: grid; grid-template-columns: 28px 1fr 1fr auto; gap: 8px; align-items: center; }
+  .stage-head .num { font-weight: 700; color: var(--accent); text-align: center; }
+  .stage .field { margin-top: 8px; }
+  .stage .field input, .stage .field select, .stage .field textarea, .stage-head input, .stage-head select { background: var(--panel); }
+  .stage-head input, .stage-head select { font: inherit; color: var(--text); border: 1px solid var(--line); border-radius: 9px; padding: 6px 9px; min-width: 0; }
+  .stage .field textarea { min-height: 54px; }
+  .stage .mini { display: flex; gap: 4px; } .stage .mini button { padding: 3px 8px; font-size: 13px; }
+  .flow-preview { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; font-size: 13px; padding: 8px 10px; background: var(--bg); border-radius: 10px; border: 1px solid var(--line); }
+  .flow-preview .back { color: var(--muted); font-size: 12px; width: 100%; }
+  .modal.wide { width: min(820px, 100%); }
+  .tlist { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; }
+  .tlist button { text-align: left; display: flex; gap: 8px; align-items: center; }
   .toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: var(--err); color: #fff;
     padding: 8px 14px; border-radius: 10px; font-size: 13px; display: none; z-index: 9; }
 
@@ -192,6 +228,7 @@
       <button id="settingsBtn">⚙️ 設定</button>
       <button id="resetBtn" title="清空這個成員的對話，下一句會重新開始">新對話</button>
     </div>
+    <div class="taskbar" id="taskbar"></div>
     <div class="msgs" id="msgs"></div>
     <div class="composer">
       <div class="box">
@@ -214,7 +251,7 @@ const withToken = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + 
 
 const $ = (id) => document.getElementById(id);
 const ALL = '__all';
-const UI_VERSION = '1.5.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '2.0.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -299,7 +336,9 @@ function agentCard(a, extraClass = '') {
     </div>`;
 }
 function renderAgents() {
-  const allCard = { id: ALL, name: '全員', avatar: '👥', role: '看大家的對話與協作', busy: agents.some((a) => a.busy) };
+  const at = TASKS && TASKS.active;
+  const allCard = { id: ALL, name: '全員', avatar: '👥', busy: agents.some((a) => a.busy),
+    role: at ? (STATUS_ICON[at.status] || '') + ' 任務 #' + at.id + '：' + at.statusText : '任務、交接與大家的對話' };
   $('agents').innerHTML = agentCard(allCard, 'all') + '<div class="sep"></div>' + agents.map((a) => agentCard(a)).join('') +
     '<div class="agent add-card" id="addAgent">＋ 新增成員</div>';
   document.querySelectorAll('.agent[data-id]').forEach((el) => (el.onclick = () => selectAgent(el.dataset.id)));
@@ -313,15 +352,27 @@ function updateTop() {
     $('title').innerHTML = '👥 全員<span class="sub">所有成員的對話，依時間排列</span>';
     $('resetBtn').style.display = 'none';
     $('settingsBtn').textContent = '⚙️ 團隊設定';
-    inp.disabled = true; inp.placeholder = '這裡只能觀看。要下指令請點選左邊的成員。';
-    const busy = agents.some((a) => a.busy);
-    btn.textContent = '全部停止'; btn.className = busy ? 'danger' : ''; btn.disabled = !busy;
+    const t = TASKS && TASKS.active, busy = agents.some((a) => a.busy);
+    if (!t) {
+      const first = WF && WF.stages[0], owner = first && agentOf(first.owner);
+      inp.disabled = false; btn.disabled = false; btn.textContent = '開始任務'; btn.className = 'primary';
+      inp.placeholder = first && owner ? '輸入新任務的目標，按 Enter 開始（從「' + first.name + '」開始，交給 ' + label(owner) + '）' : '請先到「⚙️ 團隊設定」定義工作流程';
+    } else if (t.status === 'waiting_user' || t.status === 'error') {
+      const who = agentOf(t.waitingFor);
+      inp.disabled = false; btn.disabled = false; btn.textContent = '回覆'; btn.className = 'primary';
+      inp.placeholder = '回覆 ' + (who ? label(who) : '成員') + '…';
+    } else {
+      inp.disabled = true; btn.textContent = '全部停止'; btn.className = busy ? 'danger' : ''; btn.disabled = !busy;
+      inp.placeholder = t.status === 'awaiting_approval' ? '請在上方核准或退回' : '任務進行中…（可以在上方停止任務）';
+    }
+    renderTaskbar();
     return;
   }
   const a = agentOf(current); if (!a) return;
   $('title').innerHTML = (isImgAv(a.avatar) ? `<span class="av-inline">${avatarHTML(a.avatar)}</span>` + esc(a.name) : esc(label(a))) + '<span class="sub">' + esc([a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ')) + '</span>';
   $('resetBtn').style.display = '';
   $('settingsBtn').textContent = '⚙️ 設定';
+  $('taskbar').classList.remove('show');
   inp.disabled = false; inp.placeholder = '輸入訊息…（寫 @名字 可以請它找同事協助）';
   btn.disabled = false;
   if (a.busy) { btn.textContent = '停止'; btn.className = 'danger'; }
@@ -334,25 +385,23 @@ function clearEmpty() { const e = $('msgs').querySelector('.empty'); if (e) e.re
 function addUserRow(entry, agentId) {
   clearEmpty();
   const target = agentOf(agentId), from = entry.from ? agentOf(entry.from) : null, ccOf = entry.cc ? agentOf(entry.cc) : null;
-  if (ccOf && current === ALL) { // 全員頁：同一則訊息已經顯示過，這裡只標註
-    const d = document.createElement('div'); d.className = 'sysline';
-    d.innerHTML = '<span>📢 訊息中 @ 了 ' + esc(label(target)) + '，同時交給它</span>';
-    $('msgs').appendChild(d); return;
+  const tag = entry.taskId ? '📋#' + entry.taskId + ' ' : '';
+  const sysline = (html) => { const d = document.createElement('div'); d.className = 'sysline'; d.innerHTML = '<span>' + html + '</span>'; $('msgs').appendChild(d); };
+  if (current === ALL) { // 全員頁：同樣的內容上方已經顯示過，這裡只標註一行
+    if (ccOf) return sysline('📢 訊息中 @ 了 ' + esc(label(target)) + '，同時交給它');
+    if (from) return sysline('📨 ' + esc(tag + label(from)) + ' → ' + esc(label(target)) + (entry.taskId ? '（交接）' : '（自動轉交）'));
+    if (entry.system) return sysline('⚙️ ' + esc(tag) + '系統 → ' + esc(label(target)) + '：' + esc(entry.text.slice(0, 80)));
   }
-  if (from && current === ALL) { // 全員頁：轉交訊息只顯示一行（內容就是上方發話者的回覆）
-    const d = document.createElement('div'); d.className = 'sysline';
-    d.innerHTML = '<span>📨 ' + esc(label(from)) + ' → ' + esc(label(target)) + '（自動轉交）</span>';
-    $('msgs').appendChild(d); return;
-  }
-  const row = document.createElement('div'); row.className = 'row user' + (from ? ' relay' : '');
+  const row = document.createElement('div'); row.className = 'row user' + (from || entry.system ? ' relay' : '');
   const col = document.createElement('div'); col.className = 'col';
   const via = entry.via === 'telegram' ? '📱 ' : '';
-  const who = from ? '📨 來自 ' + label(from) + '（自動轉交）'
+  const who = entry.system ? '⚙️ 系統訊息'
+    : from ? '📨 ' + (entry.taskId ? '交接自 ' : '來自 ') + label(from) + (entry.taskId ? '' : '（自動轉交）')
     : ccOf ? via + '📢 你在給 ' + label(ccOf) + ' 的訊息中 @ 了這位'
     : (current === ALL ? via + '你 → ' + label(target) : (via ? '📱 來自 Telegram' : ''));
-  if (who) { const w = document.createElement('div'); w.className = 'who'; w.textContent = who; col.appendChild(w); }
+  if (who || tag) { const w = document.createElement('div'); w.className = 'who'; w.innerHTML = (tag ? '<span class="tagline">' + esc(tag) + '</span>' : '') + esc(who); col.appendChild(w); }
   const b = document.createElement('div'); b.className = 'bubble';
-  if (from) b.appendChild(renderMarkdown(entry.text, agentId)); else b.textContent = entry.text;
+  if (from || entry.system) b.appendChild(renderMarkdown(entry.text, agentId)); else b.textContent = entry.text;
   col.appendChild(b); row.appendChild(col); $('msgs').appendChild(row);
 }
 function addBotRow(segments, meta, live, agentId, ts) {
@@ -416,14 +465,30 @@ async function selectAgent(id) {
 
 // ---- 送出 / 停止 / 重置 ----
 async function send() {
-  if (current === ALL) { try { await api('/api/stopall', { method: 'POST' }); } catch (e) { toast(e.message); } return; }
+  if (current === ALL) {
+    const t = TASKS && TASKS.active, text = $('input').value.trim();
+    try {
+      if (!t) {
+        if (!text) return;
+        $('input').value = ''; autoGrow();
+        await api('/api/tasks', { method: 'POST', body: JSON.stringify({ goal: text }) });
+        toast('✅ 任務開始');
+      } else if (t.status === 'waiting_user' || t.status === 'error') {
+        if (!text) return;
+        $('input').value = ''; autoGrow();
+        await api('/api/tasks/' + t.id + '/reply', { method: 'POST', body: JSON.stringify({ text }) });
+      } else await api('/api/stopall', { method: 'POST' });
+    } catch (e) { toast(e.message); if (text && !$('input').value) $('input').value = text; }
+    return;
+  }
   const a = agentOf(current); if (!a) return;
-  if (a.busy) { try { await api('/api/stop/' + a.id, { method: 'POST' }); } catch (e) { toast(e.message); } return; }
+  if (a.busy && !$('input').value.trim()) { try { await api('/api/stop/' + a.id, { method: 'POST' }); } catch (e) { toast(e.message); } return; }
   const text = $('input').value.trim(); if (!text) return;
   $('input').value = ''; autoGrow();
   try {
     const r = await api('/api/chat/' + a.id, { method: 'POST', body: JSON.stringify({ text }) });
     if (r.cc && r.cc.length) toast('📢 也同時交給 ' + r.cc.join('、'));
+    else if (r.queued) toast('📢 已排隊：同一個工作資料夾有成員正在工作，輪到時會自動開始');
   }
   catch (e) { toast(e.message); $('input').value = text; }
 }
@@ -493,7 +558,7 @@ function squareAvatar(file) {
   });
 }
 
-function openModal(html) { $('modal').innerHTML = html; $('modalBg').classList.add('open'); }
+function openModal(html) { $('modal').innerHTML = html; $('modal').classList.remove('wide'); $('modalBg').classList.add('open'); }
 function closeModal() { $('modalBg').classList.remove('open'); }
 $('modalBg').addEventListener('mousedown', (e) => { if (e.target === $('modalBg')) closeModal(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
@@ -688,43 +753,205 @@ async function openAgentForm(id) {
   setTimeout(() => $(editing ? 'f_persona' : 'f_name').focus(), 50);
 }
 
+// ---- 團隊設定：工作流程編輯器 ----
+const FLOW_TEMPLATE = () => ({
+  name: 'PM → Coder → QA 標準流程', notes: '',
+  stages: [
+    { id: 'plan', name: '規劃', owner: '', approval: true, next: ['build'], goal: '釐清使用者的目標（不清楚就先問使用者）、訂出可驗證的驗收標準，把計畫寫進 PLAN.md。你不寫程式碼。', deliverable: 'PLAN.md：目標、任務清單、驗收標準' },
+    { id: 'build', name: '實作', owner: '', approval: false, next: ['test'], goal: '依照 PLAN.md 實作。完成後說明做了什麼、怎麼執行、要測什麼。', deliverable: '可以執行的成果與執行方式' },
+    { id: 'test', name: '測試', owner: '', approval: false, next: ['accept', 'build'], goal: '依照 PLAN.md 的驗收標準實際執行與測試，不要只讀程式碼。不通過就退回「實作」並列出重現步驟、預期與實際結果；通過就交給「驗收」。你不修改程式碼。', deliverable: '測試報告：測了哪些項目、結果、證據' },
+    { id: 'accept', name: '驗收', owner: '', approval: false, next: [], goal: '對照 PLAN.md 的驗收標準確認成果，向使用者總結：完成了什麼、怎麼使用、還有什麼限制。', deliverable: '給使用者的總結' },
+  ],
+});
 async function openTeamForm() {
   try { CFG = await api('/api/config'); } catch (e) { toast(e.message); return; }
+  const wf = JSON.parse(JSON.stringify(CFG.workflow || { name: '', notes: '', stages: [] }));
+  const members = CFG.agents;
+  const sName = (id) => (wf.stages.find((x) => x.id === id) || {}).name || '?';
   openModal(`
-    <h2>⚙️ 團隊設定</h2>
-    <p class="lead">工作流程會告訴每位成員整個團隊怎麼分工。修改後要讓成員開新對話才會生效。</p>
+    <h2>⚙️ 團隊設定：工作流程</h2>
+    <p class="lead">定義團隊怎麼合作：每個階段由誰負責、要做什麼、做完交給誰、哪裡需要你核准。開始任務時，系統會依照這份流程推動交接，每一輪都會告訴成員目前的階段與規則。儲存後也會寫成工作資料夾裡的 WORKFLOW.md。</p>
     <div class="fgrid">
-      <div class="field full">
-        <label>工作流程</label>
-        <textarea id="t_workflow" rows="9" placeholder="例如：\n1. PM 定目標、寫 PLAN.md，派工給 Coder\n2. Coder 實作後交給 QA\n3. QA 不通過退回 Coder，通過回報 PM\n4. PM 驗收後向使用者總結">${esc(CFG.workflow)}</textarea>
+      <div class="field"><label>流程名稱</label><input id="w_name" value="${esc(wf.name)}" maxlength="40"></div>
+      <div class="field"><label>每件任務最多交接幾次</label><input id="t_hops" type="number" min="1" max="50" value="${CFG.maxRelayHops}"><span class="help">超過會暫停，請你決定下一步</span></div>
+      <div class="field full"><label>流程預覽</label><div class="flow-preview" id="w_preview"></div></div>
+      <div class="field full"><label>階段</label><div id="w_stages"></div>
+        <div class="tb-row"><button type="button" id="w_add">＋ 新增階段</button><button type="button" id="w_tpl">套用範本：PM → Coder → QA</button></div>
       </div>
-      <div class="field">
-        <label>自動轉交上限</label>
-        <input id="t_hops" type="number" min="1" max="50" value="${CFG.maxRelayHops}">
-        <span class="help">成員之間最多自動來回幾次，避免無限循環</span>
-      </div>
-      <div class="field">
-        <label>成員目前的分工</label>
-        <span class="help">${CFG.agents.map((x) => esc(label(x) + '：' + (x.role || x.engine))).join('<br>')}</span>
-      </div>
+      <div class="field full"><label>其他規則（所有成員都會看到）</label>
+        <textarea id="w_notes" rows="4" placeholder="例如：所有文件用繁體中文；程式要附使用說明；不要刪除 data 資料夾">${esc(wf.notes || '')}</textarea></div>
     </div>
     <div class="modal-actions">
-      <label class="opt"><input type="checkbox" id="t_reset" checked> 儲存後全部成員開新對話</label>
+      <span class="help">修改流程不影響進行中的任務已完成的部分；下一輪交接就會套用新流程。</span>
       <span class="spacer"></span>
       <button id="t_cancel">取消</button>
       <button class="primary" id="t_save">儲存</button>
     </div>`);
+  $('modal').classList.add('wide');
+
+  function preview() {
+    if (!wf.stages.length) { $('w_preview').innerHTML = '<span class="help">還沒有階段</span>'; return; }
+    const main = [], back = [];
+    wf.stages.forEach((st, i) => {
+      const o = members.find((m) => m.id === st.owner);
+      main.push(`<span class="chip">${esc((o ? (isImgAv(o.avatar) ? '👤' : o.avatar || '🤖') + ' ' : '❓ ') + st.name)}${st.approval ? ' 🔒' : ''}</span>`);
+      for (const n of st.next) {
+        const j = wf.stages.findIndex((x) => x.id === n);
+        if (j !== i + 1) back.push(st.name + ' → ' + sName(n));
+      }
+    });
+    $('w_preview').innerHTML = main.join('<span class="arr">→</span>') +
+      (back.length ? `<div class="back">其他路線：${esc(back.join('、'))}</div>` : '') +
+      '<div class="back">🔒 = 交出前需要你核准；最後一個階段做完就是任務完成</div>';
+  }
+  function renderStages() {
+    $('w_stages').innerHTML = wf.stages.map((st, i) => `
+      <div class="stage" data-i="${i}">
+        <div class="stage-head">
+          <span class="num">${i + 1}</span>
+          <input data-k="name" value="${esc(st.name)}" placeholder="階段名稱，例如：實作" maxlength="20">
+          <select data-k="owner"><option value="">（選擇負責成員）</option>${members.map((m) => `<option value="${esc(m.id)}" ${m.id === st.owner ? 'selected' : ''}>${esc(label(m))}</option>`).join('')}</select>
+          <span class="mini"><button type="button" data-act="up" title="上移">↑</button><button type="button" data-act="down" title="下移">↓</button><button type="button" data-act="del" title="刪除">🗑</button></span>
+        </div>
+        <div class="field"><label>要做什麼</label><textarea data-k="goal" rows="2" placeholder="這個階段的工作內容與規則">${esc(st.goal)}</textarea></div>
+        <div class="field"><label>交付物</label><input data-k="deliverable" value="${esc(st.deliverable)}" placeholder="例如：PLAN.md、測試報告"></div>
+        <div class="field"><label>完成後可以交給（都不勾 = 最後階段）</label>
+          <div class="checks">${wf.stages.filter((x) => x.id !== st.id).map((x) => `<label><input type="checkbox" data-next="${esc(x.id)}" ${st.next.includes(x.id) ? 'checked' : ''}> ${esc(x.name)}</label>`).join('') || '<span class="help">新增其他階段後才能選</span>'}</div>
+        </div>
+        <label class="opt"><input type="checkbox" data-k="approval" ${st.approval ? 'checked' : ''}> 🔒 交出前需要你核准</label>
+      </div>`).join('') || '<p class="help">還沒有階段，按「＋ 新增階段」或套用範本。</p>';
+    $('w_stages').querySelectorAll('.stage').forEach((el) => {
+      const st = wf.stages[+el.dataset.i];
+      el.querySelectorAll('[data-k]').forEach((inp) => {
+        const k = inp.dataset.k;
+        inp.addEventListener(inp.type === 'checkbox' || inp.tagName === 'SELECT' ? 'change' : 'input', () => {
+          st[k] = inp.type === 'checkbox' ? inp.checked : inp.value;
+          if (k === 'name') { renderNextLabels(); }
+          preview();
+        });
+      });
+      el.querySelectorAll('[data-next]').forEach((cb) => cb.addEventListener('change', () => {
+        st.next = cb.checked ? [...st.next, cb.dataset.next] : st.next.filter((n) => n !== cb.dataset.next); preview();
+      }));
+      el.querySelectorAll('[data-act]').forEach((btn) => (btn.onclick = () => {
+        const i = +el.dataset.i, act = btn.dataset.act;
+        if (act === 'del') {
+          if (!confirm('刪除「' + (st.name || '這個階段') + '」？')) return;
+          wf.stages.splice(i, 1); wf.stages.forEach((x) => (x.next = x.next.filter((n) => n !== st.id)));
+        } else {
+          const j = act === 'up' ? i - 1 : i + 1; if (j < 0 || j >= wf.stages.length) return;
+          [wf.stages[i], wf.stages[j]] = [wf.stages[j], wf.stages[i]];
+        }
+        renderStages(); preview();
+      }));
+    });
+  }
+  function renderNextLabels() { // 階段改名時，其他卡片上的勾選文字跟著更新
+    $('w_stages').querySelectorAll('[data-next]').forEach((cb) => { cb.parentElement.lastChild.textContent = ' ' + sName(cb.dataset.next); });
+  }
+  renderStages(); preview();
+  $('w_add').onclick = () => {
+    const id = 's' + Date.now().toString(36);
+    const last = wf.stages[wf.stages.length - 1];
+    if (last && !last.next.length && confirm('要讓「' + last.name + '」做完後交給新階段嗎？')) last.next.push(id);
+    wf.stages.push({ id, name: '新階段', owner: '', goal: '', deliverable: '', approval: false, next: [] });
+    renderStages(); preview();
+    const cards = $('w_stages').querySelectorAll('.stage'); cards[cards.length - 1].scrollIntoView({ block: 'nearest' });
+  };
+  $('w_tpl').onclick = () => {
+    if (wf.stages.length && !confirm('用範本取代目前所有階段？')) return;
+    const t = FLOW_TEMPLATE();
+    // 依職責自動配對成員：PM / Coder / QA
+    const find = (re) => (members.find((m) => re.test(m.role || '')) || {}).id || '';
+    const pm = find(/PM|經理|規劃/i), coder = find(/Coder|工程|實作/i), qa = find(/QA|測試|品質/i);
+    t.stages[0].owner = pm; t.stages[1].owner = coder; t.stages[2].owner = qa; t.stages[3].owner = pm;
+    wf.name = t.name; wf.stages = t.stages; $('w_name').value = t.name;
+    renderStages(); preview();
+  };
   $('t_cancel').onclick = closeModal;
   $('t_save').onclick = async () => {
+    wf.name = $('w_name').value; wf.notes = $('w_notes').value;
+    const missing = wf.stages.filter((x) => !x.owner).map((x) => x.name);
+    if (missing.length && !confirm('這些階段還沒指定負責成員：' + missing.join('、') + '\n還是要儲存嗎？')) return;
     try {
-      await api('/api/team', { method: 'PUT', body: JSON.stringify({ workflow: $('t_workflow').value, maxRelayHops: $('t_hops').value }) });
-      if ($('t_reset').checked) {
-        try { await api('/api/resetall', { method: 'POST' }); }
-        catch (e) { toast('已儲存，但沒辦法開新對話：' + e.message); closeModal(); return; }
-      }
-      closeModal(); toast('✅ 團隊設定已儲存');
+      await api('/api/team', { method: 'PUT', body: JSON.stringify({ workflow: wf, maxRelayHops: $('t_hops').value }) });
+      closeModal(); toast('✅ 工作流程已儲存');
     } catch (e) { toast(e.message); }
   };
+}
+
+// ---- 任務 ----
+let TASKS = null, WF = null;
+async function loadTasks() {
+  try { TASKS = await api('/api/tasks'); } catch { return; }
+  renderAgents();
+  if (current === ALL) updateTop();
+}
+async function loadWorkflow() { try { WF = (await api('/api/config')).workflow; } catch {} }
+const STATUS_ICON = { running: '▶', awaiting_approval: '🔔', waiting_user: '⏳', done: '🎉', stopped: '⏹', error: '⚠️' };
+
+function renderTaskbar() {
+  const el = $('taskbar');
+  if (current !== ALL) { el.classList.remove('show'); return; }
+  el.classList.add('show');
+  const t = TASKS && TASKS.active, stages = (WF && WF.stages) || [];
+  const tools = `<button id="tbHistory">📜 任務紀錄</button><button id="tbFlow">⚙️ 工作流程</button>`;
+  if (!t) {
+    const last = TASKS && TASKS.tasks && TASKS.tasks[0];
+    el.innerHTML = `<div class="tb-row"><span class="tb-title">📋 目前沒有進行中的任務</span>
+      <span class="tb-hint">${stages.length ? '在下方輸入目標就會開始' : '請先按「⚙️ 工作流程」定義流程'}${last ? '｜最近：#' + last.id + ' ' + esc(last.title) + '（' + esc(last.statusText) + '）' : ''}</span>
+      <span class="spacer"></span>${tools}</div>`;
+  } else {
+    const pipe = stages.map((st) => {
+      const o = agentOf(st.owner), cls = st.id === t.stageId ? 'cur' : t.done.includes(st.id) ? 'done' : '';
+      return `<span class="chip ${cls}"><span class="av-mini">${o ? avatarHTML(o.avatar) : '❓'}</span>${t.done.includes(st.id) && st.id !== t.stageId ? '✅ ' : ''}${esc(st.name)}</span>`;
+    }).join('<span class="arr">→</span>');
+    let card = '';
+    if (t.status === 'awaiting_approval' && t.pending) {
+      const p = t.pending, from = agentOf(p.from), toSt = stages.find((x) => x.id === p.toStage), to = toSt && agentOf(toSt.owner);
+      const ch = (p.changes || []).map((c) => (c.kind === 'add' ? '新增 ' : c.kind === 'del' ? '刪除 ' : '修改 ') + c.path).join('\n');
+      card = `<div class="tb-card"><b>🔔 ${esc(label(from))} 要把工作交給 ${esc(to ? label(to) : '?')}（${esc(toSt ? toSt.name : '')}），需要你核准</b>
+        <div id="tbPending"></div>
+        ${ch ? `<div class="changes">變更的檔案：\n${esc(ch)}</div>` : ''}
+        <textarea id="tbNote" rows="2" placeholder="核准時的補充，或退回的修改意見（退回時必填）"></textarea>
+        <div class="tb-actions"><button class="primary" id="tbApprove">✅ 核准，交給 ${esc(to ? to.name : '')}</button><button id="tbReject">↩️ 退回給 ${esc(from ? from.name : '')}</button></div></div>`;
+    } else if (t.status === 'waiting_user' || t.status === 'error') {
+      const who = agentOf(t.waitingFor);
+      card = `<div class="tb-card"><b>${t.status === 'error' ? '⚠️ 執行出錯，任務暫停' : '⏳ ' + esc(who ? label(who) : '成員') + ' 在等你回覆'}</b>
+        <div class="tb-hint">${esc(t.note || '在下方輸入框回覆，任務就會繼續；或停止任務。')}</div></div>`;
+    }
+    el.innerHTML = `<div class="tb-row"><span class="tb-title">📋 任務 #${t.id}：${esc(t.title)}</span>
+      <span class="tb-badge ${t.status}">${STATUS_ICON[t.status] || ''} ${esc(t.statusText)}</span><span class="tb-hint">交接 ${t.turns} 次</span>
+      <span class="spacer"></span><button class="danger" id="tbStop">⏹ 停止任務</button>${tools}</div>
+      <div class="pipe">${pipe}</div>${card}`;
+    if ($('tbPending')) $('tbPending').appendChild(renderMarkdown(t.pending.content || '', t.pending.from));
+    if ($('tbApprove')) $('tbApprove').onclick = () => taskAction(t.id, 'approve', { note: $('tbNote').value });
+    if ($('tbReject')) $('tbReject').onclick = () => {
+      const fb = $('tbNote').value.trim(); if (!fb) { toast('請填寫退回的修改意見'); $('tbNote').focus(); return; }
+      taskAction(t.id, 'reject', { feedback: fb });
+    };
+    $('tbStop').onclick = () => { if (confirm('停止任務 #' + t.id + '？')) taskAction(t.id, 'stop', {}); };
+  }
+  $('tbHistory').onclick = openTaskHistory;
+  $('tbFlow').onclick = openTeamForm;
+}
+async function taskAction(id, act, body) {
+  try { await api('/api/tasks/' + id + '/' + act, { method: 'POST', body: JSON.stringify(body) }); }
+  catch (e) { toast(e.message); }
+}
+async function openTaskHistory() {
+  try { TASKS = await api('/api/tasks'); } catch (e) { toast(e.message); return; }
+  const list = TASKS.tasks || [];
+  openModal(`<h2>📜 任務紀錄</h2><p class="lead">最近的任務。每件任務的完整紀錄也存在 data/tasks 資料夾，進行中的任務在工作資料夾的 TASK.md。</p>
+    <div class="tlist">${list.length ? list.map((t) => `<button data-t="${t.id}"><b>#${t.id}</b> ${esc(t.title)}<span class="spacer"></span><span class="tb-badge ${t.status}">${STATUS_ICON[t.status] || ''} ${esc(t.statusText)}</span><small>${fmtTime(t.createdAt)}</small></button>`).join('') : '<p class="help">還沒有任務</p>'}</div>
+    <div id="tdetail"></div>
+    <div class="modal-actions"><span class="spacer"></span><button id="th_close">關閉</button></div>`);
+  $('modal').classList.add('wide');
+  $('th_close').onclick = closeModal;
+  document.querySelectorAll('[data-t]').forEach((b) => (b.onclick = async () => {
+    try { const d = await api('/api/tasks/' + b.dataset.t); $('tdetail').innerHTML = ''; $('tdetail').appendChild(renderMarkdown(d.markdown, agents[0] && agents[0].id)); }
+    catch (e) { toast(e.message); }
+  }));
 }
 
 $('settingsBtn').onclick = () => (current === ALL ? openTeamForm() : openAgentForm(current));
@@ -784,15 +1011,16 @@ function connectEvents() {
   const es = new EventSource(withToken('/api/events'));
   es.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
-    if (ev.kind === 'agents-changed') { refreshAgents(); return; }
+    if (ev.kind === 'agents-changed') { refreshAgents(); loadWorkflow().then(() => current === ALL && updateTop()); return; }
     if (ev.kind === 'usage') { loadUsage(); return; }
+    if (ev.kind === 'task') { loadTasks(); return; }
     const a = agentOf(ev.agentId); if (!a) return;
     if (ev.kind === 'busy') { a.busy = ev.busy; renderAgents(); updateTop(); return; }
     if (ev.kind === 'reset') { if (shown(ev.agentId)) selectAgent(current); return; }
     if (ev.kind === 'queued') { if (shown(ev.agentId)) toast(a.name + ' 忙碌中，同事的訊息已排隊'); return; }
     if (!shown(ev.agentId)) { if (['user', 'segment', 'done'].includes(ev.kind)) { unread.add(ev.agentId); renderAgents(); } return; }
     const stick = nearBottom();
-    if (ev.kind === 'user') { addUserRow({ text: ev.text, from: ev.from, via: ev.via, cc: ev.cc }, ev.agentId); addBotRow([], '', true, ev.agentId); scrollDown(true); return; }
+    if (ev.kind === 'user') { addUserRow({ text: ev.text, from: ev.from, via: ev.via, cc: ev.cc, taskId: ev.taskId, system: ev.system }, ev.agentId); addBotRow([], '', true, ev.agentId); scrollDown(true); return; }
     if (ev.kind === 'segment') liveAppend(ev.agentId, ev.segment);
     if (ev.kind === 'done') liveFinish(ev.agentId, ev.meta);
     if (stick) scrollDown(true);
@@ -811,6 +1039,7 @@ function connectEvents() {
   }).catch(() => staleWarning('舊版'));
   connectEvents();
   loadUsage();
+  await Promise.all([loadWorkflow(), loadTasks()]);
   selectAgent(saved === ALL || agents.some((a) => a.id === saved) ? saved : agents[0].id);
 })();
 </script>

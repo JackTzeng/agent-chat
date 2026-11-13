@@ -1,14 +1,15 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '1.5.0';
+const VERSION = '2.0.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn, execFileSync } = require('child_process');
 const EventEmitter = require('events');
-const hooks = new EventEmitter(); // 給 Telegram 等外掛監聽：user / done
+const hooks = new EventEmitter(); // 給 Telegram 等外掛監聽：user / done / task
+const taskLib = require('./tasks');
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT) || 3939;
@@ -96,6 +97,13 @@ function saveConfig() {
 }
 const agentById = (id) => AGENTS.find((a) => a.id === id);
 
+// 工作流程：舊版是一段文字，自動轉成有階段的結構
+{
+  const wasText = !CONFIG.workflow || typeof CONFIG.workflow === 'string';
+  CONFIG.workflow = taskLib.normalizeWorkflow(CONFIG.workflow, CONFIG.agents);
+  if (wasText) saveConfig();
+}
+
 let state = { sessions: {} };
 try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
 const saveState = () => fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -118,35 +126,39 @@ function broadcast(ev) {
 }
 
 // ---------- 執行 CLI ----------
-const runs = new Map(); // agentId -> { proc, segments }
+const runs = new Map(); // agentId -> { proc, segments, cwd, opts }
+const pending = [];     // 排隊中的訊息：{ agentId, text, opts }
 
-const queues = new Map(); // agentId -> 等待中的轉交訊息
-
-// 這位成員可以 @ 誰：有設定 canHandoffTo 就照設定，沒設定就是全部同事
+// 這位成員可以 @ 誰（自由聊天模式）：有設定 canHandoffTo 就照設定，沒設定就是全部同事
 function allowedTargets(agent) {
   const others = AGENTS.filter((a) => a.id !== agent.id);
   return Array.isArray(agent.canHandoffTo) ? others.filter((a) => agent.canHandoffTo.includes(a.id)) : others;
 }
 
-function teamHint(agent) {
-  let s = '（介面說明：使用者透過聊天介面或 Telegram 跟你對話，回覆會以 Markdown 顯示。' +
-    '若你產生了圖片或影片檔，請在回覆中用 ![說明](相對路徑) 顯示它。）';
+// 自由聊天模式每一輪附上的說明（身分、團隊、@ 規則）
+function freeHeader(agent) {
+  const L = ['【你的身分】你是「' + agent.name + '」' + (agent.role ? '，職責：' + agent.role : '')];
+  if (agent.persona) L.push(agent.persona);
+  L.push('（介面說明：使用者透過聊天介面或 Telegram 跟你對話，回覆會以 Markdown 顯示。若你產生了圖片或影片檔，請在回覆中用 ![說明](相對路徑) 顯示它。）');
   const others = AGENTS.filter((a) => a.id !== agent.id);
-  if (!others.length) return s;
-  s += '\n\n【團隊成員】\n' + AGENTS.map((m) => '- ' + m.name + '：' + (m.role || m.engine) + (m.id === agent.id ? '（就是你）' : '')).join('\n');
-  if (CONFIG.workflow) s += '\n\n【工作流程】\n' + CONFIG.workflow;
-  const can = allowedTargets(agent);
-  if (can.length) {
-    s += '\n\n【交接規則】你可以交接給：' + can.map((m) => m.name).join('、') + '。' +
-      '\n交接方式：在回覆中寫「@名字」加上要交代的事，系統會自動把你這則回覆轉給對方，對方的回覆也會自動轉給被 @ 的人。' +
-      '\n你們在同一台電腦上工作，交接時寫清楚檔案路徑與要做的事。只有真的要交接時才 @；你的部分完成且不需要再交接時，直接向使用者總結，不要 @ 任何人。';
-  } else s += '\n\n【交接規則】你不能把工作交給其他成員，完成後直接向使用者回報。';
-  return s;
+  if (others.length) {
+    L.push('', '【團隊成員】');
+    for (const m of AGENTS) L.push('- ' + m.name + '：' + (m.role || m.engine) + (m.id === agent.id ? '（就是你）' : ''));
+    const can = allowedTargets(agent);
+    L.push('', can.length
+      ? '【交接規則】你可以找：' + can.map((m) => m.name).join('、') + '。需要時在回覆中寫「@名字」加上要交代的事，系統會把你的回覆轉給對方；不需要時不要 @ 任何人。'
+      : '【交接規則】你不能把工作交給其他成員，完成後直接向使用者回報。');
+  }
+  return L.join('\n');
 }
 
-function buildPrompt(agent, text, isNew, fromAgent, opts = {}) {
+function buildPrompt(agent, text, opts = {}) {
+  const header = opts.taskId ? tasks.promptHeader(agent, opts) : freeHeader(agent);
   let body;
-  if (fromAgent) {
+  const fromAgent = opts.from && agentById(opts.from);
+  if (opts.taskId) {
+    body = opts.from ? text : opts.system ? '【系統訊息】\n' + text : '【使用者訊息】\n' + text;
+  } else if (fromAgent) {
     body = '【來自同事 ' + fromAgent.name + ' 的訊息】\n' + text +
       '\n\n（要回覆對方請在回覆中寫 @' + fromAgent.name + '；事情處理完就直接向使用者總結，不要再 @ 對方。）';
   } else {
@@ -155,11 +167,9 @@ function buildPrompt(agent, text, isNew, fromAgent, opts = {}) {
     const ccTo = (opts.ccTo || []).map(agentById).filter(Boolean);
     if (ccOf) note = '（這則訊息使用者是交給 ' + ccOf.name + ' 的，並在訊息中 @ 了你，請依你的職責協助，需要時用 @' + ccOf.name + ' 跟對方協調。）\n';
     else if (ccTo.length) note = '（使用者同時把這則訊息交給了 ' + ccTo.map((a) => a.name).join('、') + '，需要時用 @名字 協調分工。）\n';
-    body = (isNew ? '【使用者訊息】\n' : '') + note + text;
+    body = '【使用者訊息】\n' + note + text;
   }
-  if (!isNew) return body;
-  const persona = agent.persona ? '【你的角色設定】\n' + agent.persona + '\n\n' : '';
-  return persona + teamHint(agent) + '\n\n' + body;
+  return header + '\n\n' + body;
 }
 
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -180,14 +190,32 @@ function userSend(agent, text, via) {
   return cc;
 }
 
-// 有空就馬上執行，忙碌中就排隊
-function dispatch(agent, text, opts) {
-  if (runs.has(agent.id)) {
-    if (!queues.has(agent.id)) queues.set(agent.id, []);
-    queues.get(agent.id).push({ text, opts });
-    broadcast({ agentId: agent.id, kind: 'queued', count: queues.get(agent.id).length });
-  } else startRun(agent, text, opts);
+// 同一個工作資料夾一次只讓一位成員動手，其他的排隊
+const cwdBusy = (cwd) => [...runs.values()].some((r) => r.cwd === cwd);
+function dispatch(agent, text, opts = {}) {
+  if (runs.has(agent.id) || cwdBusy(agent.cwd)) {
+    pending.push({ agentId: agent.id, text, opts });
+    broadcast({ agentId: agent.id, kind: 'queued', count: pending.filter((p) => p.agentId === agent.id).length });
+    return 'queued';
+  }
+  startRun(agent, text, opts);
+  return 'started';
 }
+function pump() {
+  for (let i = 0; i < pending.length; i++) {
+    const item = pending[i], agent = agentById(item.agentId);
+    if (!agent) { pending.splice(i--, 1); continue; }
+    if (runs.has(agent.id) || cwdBusy(agent.cwd)) continue;
+    pending.splice(i--, 1);
+    startRun(agent, item.text, item.opts);
+  }
+}
+function cancelTask(taskId) {
+  for (let i = pending.length - 1; i >= 0; i--) if (pending[i].opts.taskId === taskId) pending.splice(i, 1);
+  for (const [id, r] of runs) if (r.opts && r.opts.taskId === taskId) stopRun(id, true);
+}
+
+const sessionKey = (agent, opts) => (opts.taskId ? 't' + opts.taskId + ':' + agent.id : agent.id);
 
 function buildCommand(agent, sid) {
   if (agent.engine === 'claude') {
@@ -271,36 +299,44 @@ function parseCodex(ev, emit) {
 }
 
 function startRun(agent, userText, opts = {}) {
-  const sid = state.sessions[agent.id];
+  const key = sessionKey(agent, opts);
+  const sid = state.sessions[key];
   const { cmd, args } = buildCommand(agent, sid);
-  const fromAgent = opts.from ? agentById(opts.from) : null;
   const hops = opts.hops || 0;
-  const prompt = buildPrompt(agent, userText, !sid, fromAgent, opts);
+  const prompt = buildPrompt(agent, userText, opts);
+  const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system };
 
-  appendHistory(agent.id, { role: 'user', text: userText, from: opts.from, via: opts.via, cc: opts.cc, ts: Date.now() });
-  broadcast({ agentId: agent.id, kind: 'user', text: userText, from: opts.from, via: opts.via, cc: opts.cc });
+  appendHistory(agent.id, { role: 'user', text: userText, ...meta, ts: Date.now() });
+  broadcast({ agentId: agent.id, kind: 'user', text: userText, ...meta });
   hooks.emit('user', { agent, text: userText, from: opts.from, via: opts.via });
 
-  const run = { segments: [], meta: '', finished: false, stderr: Buffer.alloc(0) };
+  const run = { segments: [], meta: '', finished: false, stderr: Buffer.alloc(0), cwd: agent.cwd, opts };
   runs.set(agent.id, run);
   broadcast({ agentId: agent.id, kind: 'busy', busy: true });
 
+  const finish = () => {
+    appendHistory(agent.id, { role: 'assistant', segments: run.segments, meta: run.meta, taskId: opts.taskId, ts: Date.now() });
+    runs.delete(agent.id);
+    broadcast({ agentId: agent.id, kind: 'done', meta: run.meta });
+    broadcast({ agentId: agent.id, kind: 'busy', busy: false });
+  };
+
   if (!cmd) {
-    const how = agent.engine === 'claude'
-      ? 'npm.cmd i -g @anthropic-ai/claude-code'
-      : 'npm.cmd i -g @openai/codex';
+    const how = agent.engine === 'claude' ? 'npm.cmd i -g @anthropic-ai/claude-code' : 'npm.cmd i -g @openai/codex';
     run.segments.push({ type: 'error', text: '找不到 ' + agent.engine + ' 指令。\n' +
       '還沒安裝的話，在 PowerShell 輸入：' + how + '\n' +
       '已經安裝了，請在 PowerShell 輸入「where.exe ' + agent.engine + '」，把顯示的路徑填進 start.bat 的 ' +
       agent.engine.toUpperCase() + '_BIN。' });
     broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
-    appendHistory(agent.id, { role: 'assistant', segments: run.segments, meta: '', ts: Date.now() });
-    runs.delete(agent.id);
-    broadcast({ agentId: agent.id, kind: 'done', meta: '' });
+    finish();
     hooks.emit('done', { agent, segments: run.segments, meta: '', relayTo: [] });
-    broadcast({ agentId: agent.id, kind: 'busy', busy: false });
+    if (opts.taskId) tasks.onTurnDone(agent, run, opts, null);
+    setImmediate(pump);
     return;
   }
+
+  // 任務模式：記下工作資料夾目前的樣子，結束後比對出實際變更的檔案
+  const before = opts.taskId ? tasks.snapshotFor(agent) : null;
 
   // .exe 直接執行；.cmd（npm 安裝的）要透過 cmd.exe，路徑有空白時要加引號
   const needShell = IS_WIN && !/\.exe$/i.test(cmd);
@@ -310,7 +346,7 @@ function startRun(agent, userText, opts = {}) {
 
   const emit = (e) => {
     if (e.kind === 'session') {
-      if (state.sessions[agent.id] !== e.id) { state.sessions[agent.id] = e.id; saveState(); }
+      if (state.sessions[key] !== e.id) { state.sessions[key] = e.id; saveState(); }
       return;
     }
     if (e.kind === 'done') { run.meta = e.meta || ''; run.finished = true; return; }
@@ -343,36 +379,33 @@ function startRun(agent, userText, opts = {}) {
       emit({ kind: 'error', text: 'CLI 結束碼 ' + code + (tail ? '\n' + tail : '') });
     }
     if (agent.engine === 'codex') setTimeout(readCodexUsage, 500);
-    // 回覆裡 @ 了同事 → 自動轉交
+
+    // 自由聊天模式：回覆裡 @ 了同事 → 自動轉交（任務模式改由流程決定）
     const replyText = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n');
-    const targets = run.stopped || !replyText ? [] : findMentions(agent, replyText);
+    const targets = opts.taskId || run.stopped || !replyText ? [] : findMentions(agent, replyText);
     if (targets.length && hops >= maxHops()) {
       emit({ kind: 'tool', text: '⛔ 已達自動轉交上限（' + maxHops() + ' 次），沒有再轉給 ' +
         targets.map((t) => t.name).join('、') + '。需要的話請你手動接手。' });
     }
+    finish();
+    hooks.emit('done', { agent, segments: run.segments, meta: run.meta, relayTo: hops < maxHops() ? targets : [], taskId: opts.taskId });
 
-    appendHistory(agent.id, { role: 'assistant', segments: run.segments, meta: run.meta, ts: Date.now() });
-    runs.delete(agent.id);
-    broadcast({ agentId: agent.id, kind: 'done', meta: run.meta });
-    broadcast({ agentId: agent.id, kind: 'busy', busy: false });
-    hooks.emit('done', { agent, segments: run.segments, meta: run.meta, relayTo: hops < maxHops() ? targets : [] });
-
+    if (opts.taskId && !run.silentStop) tasks.onTurnDone(agent, run, opts, before);
     if (hops < maxHops()) for (const t of targets) dispatch(t, replyText, { from: agent.id, hops: hops + 1 });
-
-    // 處理排隊中的轉交訊息
-    const q = queues.get(agent.id);
-    if (q && q.length) { const next = q.shift(); startRun(agent, next.text, next.opts); }
+    pump();
   });
 
   proc.stdin.on('error', () => {});
   proc.stdin.end(prompt);
 }
 
-function stopRun(id) {
-  queues.delete(id); // 停止時也取消排隊中的轉交
+// silent：任務被整個停止時，不再觸發任務的後續判斷
+function stopRun(id, silent) {
+  for (let i = pending.length - 1; i >= 0; i--) if (pending[i].agentId === id) pending.splice(i, 1);
   const run = runs.get(id);
   if (!run || !run.proc) return false;
   run.stopped = true;
+  if (silent) run.silentStop = true;
   if (IS_WIN) spawn('taskkill', ['/pid', String(run.proc.pid), '/T', '/F'], { windowsHide: true });
   else run.proc.kill('SIGTERM');
   return true;
@@ -386,6 +419,11 @@ function resetAgent(id) {
   return true;
 }
 
+// ---------- 任務與工作流程（tasks.js）----------
+const tasks = taskLib.create({
+  CONFIG, AGENTS, agentById, DATA_DIR, hooks, broadcast, dispatch, cancelTask,
+});
+tasks.writeWorkflowDocs();
 
 // ---------- 訂閱用量額度（5 小時 / 每週）----------
 // Claude Code：執行時輸出的 rate_limit_event（utilization 是 0~1 的比例）
@@ -606,11 +644,31 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/info') return send(res, 200, { version: VERSION });
     if (p === '/api/agents' && req.method === 'GET') return send(res, 200, AGENTS.map(publicAgent));
 
+    // ---- 任務 ----
+    if (p === '/api/tasks' && req.method === 'GET') return send(res, 200, { active: tasks.active() || null, tasks: tasks.list() });
+    if (p === '/api/tasks' && req.method === 'POST') {
+      const { goal } = await readBody(req);
+      try { const t = tasks.start(goal, 'web'); return send(res, 200, { ok: true, id: t.id }); }
+      catch (e) { return send(res, 400, { error: e.message }); }
+    }
+    if ((m0 = p.match(/^\/api\/tasks\/(\d+)$/)) && req.method === 'GET') {
+      const d = tasks.detail(m0[1]); return d ? send(res, 200, d) : send(res, 404, { error: '找不到任務' });
+    }
+    if ((m0 = p.match(/^\/api\/tasks\/(\d+)\/(approve|reject|reply|stop)$/)) && req.method === 'POST') {
+      const body = await readBody(req);
+      try {
+        if (m0[2] === 'approve') tasks.approve(m0[1], body.note);
+        else if (m0[2] === 'reject') tasks.reject(m0[1], body.feedback);
+        else if (m0[2] === 'reply') { if (!String(body.text || '').trim()) throw new Error('訊息是空的'); tasks.reply(m0[1], body.text, 'web'); }
+        else tasks.stop(m0[1]);
+        return send(res, 200, { ok: true });
+      } catch (e) { return send(res, 400, { error: e.message }); }
+    }
     if (p === '/api/usage' && req.method === 'GET') return send(res, 200, usageSnapshot());
     if (p === '/api/usage/refresh' && req.method === 'POST') { probeUsage(); return send(res, 200, { ok: true }); }
     if (p === '/api/config' && req.method === 'GET') {
       return send(res, 200, {
-        agents: CONFIG.agents, workflow: CONFIG.workflow || '', maxRelayHops: maxHops(),
+        agents: CONFIG.agents, workflow: CONFIG.workflow, maxRelayHops: maxHops(),
         options: { engines: ENGINES, efforts: EFFORTS, permissionModes: PERMISSION_MODES, sandboxes: SANDBOXES },
       });
     }
@@ -631,14 +689,15 @@ const server = http.createServer(async (req, res) => {
         CONFIG.agents.splice(idx, 1);
         for (const x of CONFIG.agents) if (Array.isArray(x.canHandoffTo)) x.canHandoffTo = x.canHandoffTo.filter((id) => id !== m0[1]);
         if (CONFIG.telegram && CONFIG.telegram.defaultAgent === m0[1]) CONFIG.telegram.defaultAgent = CONFIG.agents[0].id;
-        queues.delete(m0[1]);
+        for (let i = pending.length - 1; i >= 0; i--) if (pending[i].agentId === m0[1]) pending.splice(i, 1);
+        CONFIG.workflow = taskLib.cleanWorkflow(CONFIG.workflow, CONFIG.agents);
       } else {
         const body = await readBody(req);
         let a;
         try { a = cleanAgent(body, m0[1]); } catch (e) { return send(res, 400, { error: e.message }); }
         CONFIG.agents[idx] = a;
       }
-      saveConfig(); reloadAgents(); agentsChanged();
+      saveConfig(); reloadAgents(); tasks.writeWorkflowDocs(); agentsChanged();
       return send(res, 200, { ok: true });
     }
     // 自訂頭像：網頁先裁成 128×128 PNG 再上傳
@@ -659,10 +718,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/team' && req.method === 'PUT') {
       const body = await readBody(req);
-      CONFIG.workflow = String(body.workflow ?? '').slice(0, 8000);
+      if (body.workflow && typeof body.workflow === 'object') CONFIG.workflow = taskLib.cleanWorkflow(body.workflow, CONFIG.agents);
       const h = Math.round(Number(body.maxRelayHops));
       if (h >= 1 && h <= 50) CONFIG.maxRelayHops = h;
-      saveConfig(); agentsChanged();
+      saveConfig(); tasks.workflowSaved(); agentsChanged();
       return send(res, 200, { ok: true });
     }
     if (p === '/api/resetall' && req.method === 'POST') {
@@ -689,13 +748,15 @@ const server = http.createServer(async (req, res) => {
     if ((m = p.match(/^\/api\/chat\/([\w-]+)$/)) && req.method === 'POST') {
       const agent = agentById(m[1]);
       if (!agent) return send(res, 404, { error: '找不到這個 agent' });
-      if (runs.has(agent.id)) return send(res, 409, { error: agent.name + ' 還在忙，等它做完或按停止' });
       const { text } = await readBody(req);
       if (!text || !String(text).trim()) return send(res, 400, { error: '訊息是空的' });
+      const queued = runs.has(agent.id) || cwdBusy(agent.cwd);
       const cc = userSend(agent, String(text));
-      return send(res, 200, { ok: true, cc: cc.map((a) => a.name) });
+      return send(res, 200, { ok: true, queued, cc: cc.map((a) => a.name) });
     }
     if (p === '/api/stopall' && req.method === 'POST') {
+      const t = tasks.active(); if (t) tasks.stop(t.id);
+      pending.length = 0;
       for (const a of AGENTS) stopRun(a.id);
       return send(res, 200, { ok: true });
     }
@@ -737,7 +798,7 @@ server.listen(PORT, HOST, () => {
 // Telegram 遙控（agents.json 有設定 telegram.botToken 才會啟動）
 require('./telegram').start({
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState,
-  dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot,
+  dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks,
 });
 
 const shutdown = () => { for (const id of runs.keys()) stopRun(id); process.exit(0); };
