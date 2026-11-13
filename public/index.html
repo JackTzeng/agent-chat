@@ -292,7 +292,7 @@ const withToken = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + 
 
 const $ = (id) => document.getElementById(id);
 const ALL = '__all';
-const UI_VERSION = '2.4.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '2.5.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -370,9 +370,9 @@ function agentCard(a, extraClass = '') {
       <div style="min-width:0">
         <div class="name">${esc(a.name)}${a.engine ? `<span class="badge ${esc(a.engine)}">${esc(a.engine)}</span>` : ''}</div>
         <div class="role">${esc(a.role || '')}</div>
-        ${a.engine ? `<div class="role">${esc([a.model || '預設模型', a.effort].filter(Boolean).join(' · '))}</div>` : ''}
+        ${a.engine ? `<div class="role">${esc([a.model || '預設模型', a.effort].filter(Boolean).join(' · '))}${a.takeTurns ? ' · <span title="和團隊輪流工作：同一時間只有一位輪流成員在動手">🔁 輪流</span>' : ''}</div>` : ''}
         ${a.extraDirs && a.extraDirs.length ? `<div class="role" title="${esc(a.extraDirs.map((d) => d.path + (d.mode === 'ro' ? '（唯讀）' : '（可讀寫）')).join('\n'))}">📁 +${a.extraDirs.length} 個資料夾</div>` : ''}
-        ${a.queued ? `<div class="qline">🕒 排隊中${a.waitingOn && agentOf(a.waitingOn) ? '（等 ' + esc(agentOf(a.waitingOn).name) + ' 做完）' : ''}</div>` : ''}
+        ${a.queued ? `<div class="qline">🕒 排隊中${a.waitingOn === a.id ? '（等它這輪做完）' : a.waitingOn && agentOf(a.waitingOn) ? '（等 ' + esc(agentOf(a.waitingOn).name) + ' 做完）' : ''}</div>` : ''}
       </div>
       <span class="unread"></span>
       ${a.id !== ALL ? `<button class="gear" data-edit="${esc(a.id)}" title="編輯成員">⚙️</button>` : ''}
@@ -780,6 +780,10 @@ async function openAgentForm(id) {
         <select id="f_perm"></select>
       </div>
       <div class="field full">
+        <label class="opt"><input type="checkbox" id="f_turns" ${a.takeTurns ? 'checked' : ''}> 🔁 和團隊輪流工作</label>
+        <span class="help">勾選的成員之間，同一時間只有一位在動手，其他的排隊（適合 PM / Coder / QA 這種會改同一批檔案的團隊）。不勾就不受限制，隨時都能和任何人同時工作。</span>
+      </div>
+      <div class="field full">
         <label>工作資料夾</label>
         <input id="f_cwd" value="${esc(a.cwd || './workspace')}" placeholder="./workspace 或 C:/Users/你/專案">
         <span class="help">要和同事交接檔案的話，建議用同一個資料夾</span>
@@ -902,6 +906,7 @@ async function openAgentForm(id) {
       model: $('f_model').value, effort: $('f_effort').value, cwd: $('f_cwd').value, persona: $('f_persona').value,
       canHandoffTo: $('f_unres').checked ? null : [...document.querySelectorAll('#f_handoff input:checked')].map((x) => x.value),
       extraDirs: dirs.filter((d) => d.path),
+      takeTurns: $('f_turns').checked,
     };
     if (engineSel.value === 'claude') body.permissionMode = $('f_perm').value; else body.sandbox = $('f_perm').value;
     // 名稱若改了，人設裡的舊名字也一起換
@@ -951,6 +956,9 @@ async function openTeamForm() {
     <div class="fgrid">
       <div class="field"><label>流程名稱</label><input id="w_name" value="${esc(wf.name)}" maxlength="40"></div>
       <div class="field"><label>每件任務最多交接幾次</label><input id="t_hops" type="number" min="1" max="50" value="${CFG.maxRelayHops}"><span class="help">超過會暫停，請你決定下一步</span></div>
+      <div class="field full"><label>🔁 輪流工作的成員</label>
+        <div class="checks" id="w_turns">${members.map((m) => `<label><input type="checkbox" value="${esc(m.id)}" ${m.takeTurns ? 'checked' : ''}> ${esc(label(m))}</label>`).join('')}</div>
+        <span class="help">勾選的成員同一時間只有一位在動手，其他的排隊。沒勾的成員不受限制，例如負責環境更新的成員可以隨時工作。</span></div>
       <div class="field full"><label>流程預覽</label><div class="flow-preview" id="w_preview"></div></div>
       <div class="field full"><label>階段</label><div id="w_stages"></div>
         <div class="tb-row"><button type="button" id="w_add">＋ 新增階段</button><button type="button" id="w_tpl">套用範本：PM → Coder → QA</button></div>
@@ -1051,7 +1059,8 @@ async function openTeamForm() {
     const missing = wf.stages.filter((x) => !x.owner).map((x) => x.name);
     if (missing.length && !confirm('這些階段還沒指定負責成員：' + missing.join('、') + '\n還是要儲存嗎？')) return;
     try {
-      await api('/api/team', { method: 'PUT', body: JSON.stringify({ workflow: wf, maxRelayHops: $('t_hops').value }) });
+      const takeTurns = [...document.querySelectorAll('#w_turns input:checked')].map((x) => x.value);
+      await api('/api/team', { method: 'PUT', body: JSON.stringify({ workflow: wf, maxRelayHops: $('t_hops').value, takeTurns }) });
       closeModal(); toast('✅ 工作流程已儲存');
     } catch (e) { toast(e.message); }
   };
@@ -1146,13 +1155,13 @@ function renderQueued(q) {
   msgs.querySelectorAll('.row.queued').forEach((el) => el.remove());
   if (!q || !q.items.length) return;
   clearEmpty();
-  const wait = q.waitingOn && agentOf(q.waitingOn);
+  const wait = q.waitingOn && q.waitingOn !== current && agentOf(q.waitingOn);
   for (const it of q.items) {
     const from = it.from && agentOf(it.from);
     const row = document.createElement('div'); row.className = 'row user queued' + (from ? ' relay' : '');
     const col = document.createElement('div'); col.className = 'col';
     const w = document.createElement('div'); w.className = 'who';
-    w.textContent = '🕒 排隊中' + (wait ? '：等 ' + label(wait) + ' 做完就開始' : '') + (from ? '（來自 ' + label(from) + '）' : '');
+    w.textContent = '🕒 排隊中' + (wait ? '：等 ' + label(wait) + ' 做完就開始' : q.waitingOn === current ? '：等它這輪做完' : '') + (from ? '（來自 ' + label(from) + '）' : '');
     const b = document.createElement('div'); b.className = 'bubble';
     if (from) b.appendChild(renderMarkdown(it.text, current)); else b.textContent = it.text;
     col.appendChild(w); col.appendChild(b); row.appendChild(col); msgs.appendChild(row);

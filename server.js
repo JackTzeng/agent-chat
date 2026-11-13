@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '2.4.0';
+const VERSION = '2.5.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -202,10 +202,12 @@ function userSend(agent, text, via) {
   return cc;
 }
 
-// 同一個工作資料夾一次只讓一位成員動手，其他的排隊
-const cwdBusy = (cwd) => [...runs.values()].some((r) => r.cwd === cwd);
+// 排程規則：同一位成員一次只跑一輪；勾了「輪流工作」的成員之間，同一時間只有一位在動手。
+// 沒勾的成員不受限制，隨時都能和任何人同時工作。
+const turnBlocker = (agent) => (agent.takeTurns ? [...runs.entries()].find(([id, r]) => id !== agent.id && r.takeTurns) : null);
+const mustWait = (agent) => runs.has(agent.id) || !!turnBlocker(agent);
 function dispatch(agent, text, opts = {}) {
-  if (runs.has(agent.id) || cwdBusy(agent.cwd)) {
+  if (mustWait(agent)) {
     pending.push({ agentId: agent.id, text, opts });
     broadcast({ agentId: '*', kind: 'queue' });
     return 'queued';
@@ -218,7 +220,7 @@ function queueInfo(agentId) {
   const items = pending.filter((p) => p.agentId === agentId);
   if (!items.length) return null;
   const a = agentById(agentId);
-  const blocker = a && [...runs.entries()].find(([id, r]) => id !== agentId && r.cwd === a.cwd);
+  const blocker = a && (runs.has(agentId) ? [agentId] : turnBlocker(a));
   return { count: items.length, waitingOn: blocker ? blocker[0] : null,
     items: items.map((p) => ({ text: p.text, from: p.opts.from || null, via: p.opts.via || null, taskId: p.opts.taskId || null })) };
 }
@@ -226,7 +228,7 @@ function pump() {
   for (let i = 0; i < pending.length; i++) {
     const item = pending[i], agent = agentById(item.agentId);
     if (!agent) { pending.splice(i--, 1); continue; }
-    if (runs.has(agent.id) || cwdBusy(agent.cwd)) continue;
+    if (mustWait(agent)) continue;
     pending.splice(i--, 1);
     startRun(agent, item.text, item.opts);
   }
@@ -336,7 +338,7 @@ function startRun(agent, userText, opts = {}) {
   broadcast({ agentId: agent.id, kind: 'user', text: userText, ...meta });
   hooks.emit('user', { agent, text: userText, from: opts.from, via: opts.via });
 
-  const run = { segments: [], meta: '', finished: false, stderr: Buffer.alloc(0), cwd: agent.cwd, opts };
+  const run = { segments: [], meta: '', finished: false, stderr: Buffer.alloc(0), cwd: agent.cwd, opts, takeTurns: !!agent.takeTurns };
   runs.set(agent.id, run);
   broadcast({ agentId: agent.id, kind: 'busy', busy: true });
 
@@ -636,6 +638,7 @@ function cleanAgent(input, existingId) {
   } else {
     a.sandbox = SANDBOXES.includes(input.sandbox) ? input.sandbox : 'workspace-write';
   }
+  if (input.takeTurns) a.takeTurns = true;
   if (Array.isArray(input.extraDirs)) {
     const seen = new Set();
     a.extraDirs = [];
@@ -701,7 +704,7 @@ function readBody(req) {
 
 const publicAgent = (a) => ({
   id: a.id, name: a.name, avatar: a.avatar, engine: a.engine, model: a.model || '', effort: a.effort || '', role: a.role || '',
-  extraDirs: a.extraDirs || [],
+  extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns,
   canHandoffTo: allowedTargets(a).map((t) => t.id),
   busy: runs.has(a.id), hasSession: !!state.sessions[a.id],
   queued: (queueInfo(a.id) || {}).count || 0, waitingOn: (queueInfo(a.id) || {}).waitingOn || null,
@@ -808,7 +811,7 @@ const server = http.createServer(async (req, res) => {
         try { a = cleanAgent(body, m0[1]); } catch (e) { return send(res, 400, { error: e.message }); }
         CONFIG.agents[idx] = a;
       }
-      saveConfig(); reloadAgents(); tasks.writeWorkflowDocs(); agentsChanged();
+      saveConfig(); reloadAgents(); tasks.writeWorkflowDocs(); agentsChanged(); pump();
       return send(res, 200, { ok: true });
     }
     // 附件：拖曳到對話框的檔案，存到該成員工作資料夾的 attachments/
@@ -852,7 +855,11 @@ const server = http.createServer(async (req, res) => {
       if (body.workflow && typeof body.workflow === 'object') CONFIG.workflow = taskLib.cleanWorkflow(body.workflow, CONFIG.agents);
       const h = Math.round(Number(body.maxRelayHops));
       if (h >= 1 && h <= 50) CONFIG.maxRelayHops = h;
-      saveConfig(); tasks.workflowSaved(); agentsChanged();
+      if (Array.isArray(body.takeTurns)) {
+        for (const x of CONFIG.agents) { if (body.takeTurns.includes(x.id)) x.takeTurns = true; else delete x.takeTurns; }
+        reloadAgents();
+      }
+      saveConfig(); tasks.workflowSaved(); agentsChanged(); pump();
       return send(res, 200, { ok: true });
     }
     if (p === '/api/resetall' && req.method === 'POST') {
@@ -881,7 +888,7 @@ const server = http.createServer(async (req, res) => {
       if (!agent) return send(res, 404, { error: '找不到這個 agent' });
       const { text } = await readBody(req);
       if (!text || !String(text).trim()) return send(res, 400, { error: '訊息是空的' });
-      const queued = runs.has(agent.id) || cwdBusy(agent.cwd);
+      const queued = mustWait(agent);
       const cc = userSend(agent, String(text));
       return send(res, 200, { ok: true, queued, cc: cc.map((a) => a.name) });
     }
