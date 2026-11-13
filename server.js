@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -699,6 +699,26 @@ const server = http.createServer(async (req, res) => {
       }
       saveConfig(); reloadAgents(); tasks.writeWorkflowDocs(); agentsChanged();
       return send(res, 200, { ok: true });
+    }
+    // 附件：拖曳到對話框的檔案，存到該成員工作資料夾的 attachments/
+    if (p === '/api/upload' && req.method === 'POST') {
+      const agent = agentById(url.searchParams.get('agent'));
+      if (!agent) return send(res, 404, { error: '找不到成員' });
+      let name = path.basename(String(url.searchParams.get('name') || 'file')).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim().slice(-120) || 'file';
+      if (/^\.+$/.test(name)) name = 'file';
+      const chunks = []; let size = 0, tooBig = false;
+      await new Promise((resolve) => {
+        req.on('data', (c) => { size += c.length; if (size > 25 * 1024 * 1024) { tooBig = true; req.destroy(); resolve(); } else chunks.push(c); });
+        req.on('end', resolve); req.on('error', resolve);
+      });
+      if (tooBig) return send(res, 413, { error: '檔案太大（上限 25MB）' });
+      const dir = path.join(agent.cwd, 'attachments');
+      fs.mkdirSync(dir, { recursive: true });
+      const ext = path.extname(name), base = name.slice(0, name.length - ext.length);
+      let final = name;
+      for (let i = 2; fs.existsSync(path.join(dir, final)); i++) final = base + '-' + i + ext;
+      fs.writeFileSync(path.join(dir, final), Buffer.concat(chunks));
+      return send(res, 200, { ok: true, path: 'attachments/' + final, size, agent: agent.id });
     }
     // 自訂頭像：網頁先裁成 128×128 PNG 再上傳
     if (p === '/api/avatar' && req.method === 'POST') {
