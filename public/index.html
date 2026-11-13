@@ -212,6 +212,16 @@
   .dropzone { position: absolute; inset: 0; background: rgba(200,100,59,.10); border: 3px dashed var(--accent); border-radius: 12px; z-index: 10;
     display: none; align-items: center; justify-content: center; font-size: 18px; font-weight: 600; color: var(--accent); pointer-events: none; }
   .dropzone.show { display: flex; }
+  /* Telegram */
+  .tg-line { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); cursor: pointer; display: flex; gap: 6px; align-items: center; }
+  .tg-line:hover { color: var(--accent); }
+  .tg-dot { width: 8px; height: 8px; border-radius: 50%; background: #9aa39a; flex: none; }
+  .tg-dot.connected { background: #4f9a6b; } .tg-dot.error { background: var(--err); } .tg-dot.connecting { background: #e2a72e; }
+  .tg-step { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
+  .tg-step h3 { margin: 0 0 8px; font-size: 15px; }
+  .tg-code { font: 700 34px/1.2 ui-monospace, Consolas, monospace; letter-spacing: 8px; color: var(--accent); margin: 6px 0; }
+  .tg-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .tg-row input[type=password], .tg-row input[type=text] { flex: 1; min-width: 220px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; }
   .toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: var(--err); color: #fff;
     padding: 8px 14px; border-radius: 10px; font-size: 13px; display: none; z-index: 9; }
 
@@ -268,7 +278,7 @@ const withToken = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + 
 
 const $ = (id) => document.getElementById(id);
 const ALL = '__all';
-const UI_VERSION = '2.1.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '2.2.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -982,7 +992,7 @@ function renderTaskbar() {
   if (current !== ALL) { el.classList.remove('show'); return; }
   el.classList.add('show');
   const t = TASKS && TASKS.active, stages = (WF && WF.stages) || [];
-  const tools = `<button id="tbHistory">📜 任務紀錄</button><button id="tbFlow">⚙️ 工作流程</button>`;
+  const tools = `<button id="tbHistory">📜 任務紀錄</button><button id="tbFlow">⚙️ 工作流程</button><button id="tbTg">📱 Telegram</button>`;
   if (!t) {
     const last = TASKS && TASKS.tasks && TASKS.tasks[0];
     el.innerHTML = `<div class="tb-row"><span class="tb-title">📋 目前沒有進行中的任務</span>
@@ -1021,6 +1031,7 @@ function renderTaskbar() {
   }
   $('tbHistory').onclick = openTaskHistory;
   $('tbFlow').onclick = openTeamForm;
+  $('tbTg').onclick = openTelegramForm;
 }
 async function taskAction(id, act, body) {
   try { await api('/api/tasks/' + id + '/' + act, { method: 'POST', body: JSON.stringify(body) }); }
@@ -1084,7 +1095,8 @@ function renderUsage() {
     return h;
   };
   el.innerHTML = `<div class="uh">用量額度<button id="usageBtn" title="送出一個極小的請求，取得最新額度">${USAGE && USAGE.probing ? '查詢中…' : '🔄 查詢'}</button></div>` +
-    block('Claude', USAGE && USAGE.claude) + block('Codex', USAGE && USAGE.codex);
+    block('Claude', USAGE && USAGE.claude) + block('Codex', USAGE && USAGE.codex) + tgLineHTML();
+  $('tgLine').onclick = openTelegramForm;
   $('usageBtn').onclick = async () => {
     $('usageBtn').textContent = '查詢中…';
     try { await api('/api/usage/refresh', { method: 'POST' }); } catch (e) { toast(e.message); }
@@ -1093,6 +1105,76 @@ function renderUsage() {
 async function loadUsage() { try { USAGE = await api('/api/usage'); } catch { return; } renderUsage(); }
 setInterval(renderUsage, 60000); // 倒數時間每分鐘更新
 
+
+// ---- Telegram 設定 ----
+let TG = null;
+const TG_STATE = { off: '未啟用', connecting: '連線中…', connected: '已連線', error: '連線失敗' };
+function tgLineHTML() {
+  const st = TG ? TG.state : 'off';
+  const text = !TG || !TG.hasToken ? '📱 Telegram：按這裡設定' : st === 'connected'
+    ? '📱 Telegram：@' + TG.username + (TG.allowedCount ? '' : '（還沒配對手機）') : '📱 Telegram：' + TG_STATE[st];
+  return `<div class="tg-line" id="tgLine" title="Telegram 遙控設定"><span class="tg-dot ${st}"></span>${esc(text)}</div>`;
+}
+async function loadTelegram() {
+  try { TG = await api('/api/telegram'); } catch { return; }
+  renderUsage();
+  if ($('tgModal')) renderTelegramForm();
+}
+function openTelegramForm() {
+  openModal('<div id="tgModal"></div>');
+  loadTelegram().then(renderTelegramForm);
+}
+function renderTelegramForm() {
+  const t = TG; if (!t || !$('tgModal')) return;
+  const keepToken = $('tg_token') ? $('tg_token').value : '';
+  const st = t.hasToken ? t.state : 'off';
+  const bot = t.username ? '@' + t.username : '你的 bot';
+  const pair = t.pairing;
+  $('tgModal').innerHTML = `
+    <h2>📱 Telegram 遙控</h2>
+    <p class="lead">設定好之後，可以用手機的 Telegram 派工、核准交接、查看進度與用量。token 只存在這台電腦的 agents.json，不會上傳到 GitHub。</p>
+    <div class="tg-step">
+      <h3>1. 連線 bot</h3>
+      <div class="tg-row" style="margin-bottom:8px"><span class="tg-dot ${st}"></span><b>${esc(TG_STATE[st])}${t.username ? '：@' + esc(t.username) : ''}</b>
+        ${t.error ? '<span class="seg-error">' + esc(t.error) + '</span>' : ''}</div>
+      ${t.fromEnv ? '<p class="help">目前使用環境變數 TELEGRAM_BOT_TOKEN 的 token。</p>' : `
+      <div class="tg-row">
+        <input type="password" id="tg_token" placeholder="${t.hasToken ? '已設定（' + esc(t.tokenHint) + '），要換新的才需要貼' : '貼上 BotFather 給的 token，例如 123456789:ABC…'}" autocomplete="off">
+        <button class="primary" id="tg_save">${t.hasToken ? '更新並重新連線' : '儲存並連線'}</button>
+      </div>
+      <p class="help">在 Telegram 的 @BotFather 選你的 bot，按「Copy」複製 token，再貼到這裡。</p>`}
+    </div>
+    <div class="tg-step" style="${st === 'connected' ? '' : 'opacity:.5;pointer-events:none'}">
+      <h3>2. 配對你的手機</h3>
+      ${t.allowedCount ? `<p>✅ 已配對 <b>${t.allowedCount}</b> 個 Telegram 帳號。到 Telegram 傳 <code>/help</code> 給 ${esc(bot)} 試試看。</p>` : '<p class="help">配對後，只有你的帳號能下指令，其他人傳訊息只會被拒絕。</p>'}
+      ${pair ? `<p>在手機打開 <a href="https://t.me/${esc(t.username)}" target="_blank" rel="noopener">${esc(bot)}</a>，把這 6 個數字傳給它：</p>
+        <div class="tg-code">${esc(pair.code)}</div><p class="help">10 分鐘內有效。配對成功後這裡會自動更新。</p>`
+        : `<div class="tg-row"><button class="primary" id="tg_pair">${t.allowedCount ? '再配對一個帳號' : '產生配對碼'}</button>
+           ${t.allowedCount ? '<button id="tg_clear">移除所有已配對的帳號</button>' : ''}</div>`}
+    </div>
+    <div class="tg-step">
+      <h3>3. 其他設定</h3>
+      <div class="tg-row">從 Telegram 直接打字時，預設交給
+        <select id="tg_default">${agents.map((a) => `<option value="${esc(a.id)}" ${a.id === t.defaultAgent ? 'selected' : ''}>${esc(label(a))}</option>`).join('')}</select></div>
+      <label class="opt" style="margin-top:8px"><input type="checkbox" id="tg_enabled" ${t.enabled ? 'checked' : ''}> 啟用 Telegram 遙控</label>
+    </div>
+    <div class="modal-actions"><span class="spacer"></span><button id="tg_close">關閉</button></div>`;
+  if ($('tg_token')) $('tg_token').value = keepToken;
+  const put = async (body) => { try { TG = await api('/api/telegram', { method: 'PUT', body: JSON.stringify(body) }); renderTelegramForm(); renderUsage(); } catch (e) { toast(e.message); } };
+  if ($('tg_save')) $('tg_save').onclick = () => {
+    const v = $('tg_token').value.trim(); if (!v) { toast('請先貼上 token'); return; }
+    $('tg_token').value = ''; put({ botToken: v, enabled: true });
+  };
+  if ($('tg_pair')) $('tg_pair').onclick = async () => { try { await api('/api/telegram/pair', { method: 'POST' }); loadTelegram(); } catch (e) { toast(e.message); } };
+  if ($('tg_clear')) $('tg_clear').onclick = async () => {
+    if (!confirm('移除所有已配對的帳號？之後要重新配對才能用 Telegram 遙控。')) return;
+    try { TG = await api('/api/telegram/clear', { method: 'POST' }); renderTelegramForm(); renderUsage(); } catch (e) { toast(e.message); }
+  };
+  $('tg_default').onchange = (e) => put({ defaultAgent: e.target.value });
+  $('tg_enabled').onchange = (e) => put({ enabled: e.target.checked });
+  $('tg_close').onclick = closeModal;
+}
+
 // ---- 即時事件 ----
 function connectEvents() {
   const es = new EventSource(withToken('/api/events'));
@@ -1100,6 +1182,7 @@ function connectEvents() {
     const ev = JSON.parse(msg.data);
     if (ev.kind === 'agents-changed') { refreshAgents(); loadWorkflow().then(() => current === ALL && updateTop()); return; }
     if (ev.kind === 'usage') { loadUsage(); return; }
+    if (ev.kind === 'telegram') { loadTelegram(); return; }
     if (ev.kind === 'task') { loadTasks(); return; }
     const a = agentOf(ev.agentId); if (!a) return;
     if (ev.kind === 'busy') { a.busy = ev.busy; renderAgents(); updateTop(); return; }
@@ -1126,6 +1209,7 @@ function connectEvents() {
   }).catch(() => staleWarning('舊版'));
   connectEvents();
   loadUsage();
+  loadTelegram();
   await Promise.all([loadWorkflow(), loadTasks()]);
   selectAgent(saved === ALL || agents.some((a) => a.id === saved) ? saved : agents[0].id);
 })();

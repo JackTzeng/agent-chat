@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -644,6 +644,30 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/info') return send(res, 200, { version: VERSION });
     if (p === '/api/agents' && req.method === 'GET') return send(res, 200, AGENTS.map(publicAgent));
 
+    // ---- Telegram 設定（網頁上貼 token、產生配對碼）----
+    if (p === '/api/telegram' && req.method === 'GET') return send(res, 200, telegram.status());
+    if (p === '/api/telegram' && req.method === 'PUT') {
+      const body = await readBody(req);
+      const t = (CONFIG.telegram = CONFIG.telegram || { allowedUserIds: [] });
+      if (typeof body.botToken === 'string' && body.botToken.trim()) {
+        const tok = body.botToken.trim();
+        if (!/^\d+:[\w-]{20,}$/.test(tok)) return send(res, 400, { error: 'bot token 格式不對，應該像 123456789:ABC… 這樣' });
+        if (tok !== t.botToken) t.allowedUserIds = []; // 換了 bot，原本的配對作廢
+        t.botToken = tok;
+      }
+      if (typeof body.enabled === 'boolean') t.enabled = body.enabled;
+      if (body.defaultAgent && agentById(body.defaultAgent)) t.defaultAgent = body.defaultAgent;
+      if (!Array.isArray(t.allowedUserIds)) t.allowedUserIds = [];
+      saveConfig();
+      telegram.start(tgCtx);
+      return send(res, 200, telegram.status());
+    }
+    if (p === '/api/telegram/pair' && req.method === 'POST') return send(res, 200, { pairing: telegram.newPairCode() });
+    if (p === '/api/telegram/clear' && req.method === 'POST') {
+      if (CONFIG.telegram) CONFIG.telegram.allowedUserIds = [];
+      saveConfig(); broadcast({ agentId: '*', kind: 'telegram' });
+      return send(res, 200, telegram.status());
+    }
     // ---- 任務 ----
     if (p === '/api/tasks' && req.method === 'GET') return send(res, 200, { active: tasks.active() || null, tasks: tasks.list() });
     if (p === '/api/tasks' && req.method === 'POST') {
@@ -816,10 +840,12 @@ server.listen(PORT, HOST, () => {
 });
 
 // Telegram 遙控（agents.json 有設定 telegram.botToken 才會啟動）
-require('./telegram').start({
-  config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState,
+const telegram = require('./telegram');
+const tgCtx = {
+  config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks,
-});
+};
+telegram.start(tgCtx);
 
 const shutdown = () => { for (const id of runs.keys()) stopRun(id); process.exit(0); };
 process.on('SIGINT', shutdown);

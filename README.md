@@ -126,21 +126,13 @@
 
 設定好之後，在手機的 Telegram 傳訊息就能派工，每位成員做完一輪也會把結果（含圖片）推送到 Telegram。不需要 Tailscale，也不用開任何 port。
 
-**設定步驟：**
+**設定步驟（全部在網頁上完成，不用改檔案、不用重開）：**
 
-1. 在 Telegram 搜尋 **@BotFather**，傳 `/newbot`，照指示取名字，最後會拿到一串 **bot token**（像 `123456:ABC-xxxx`）
-2. 打開 `agents.json`，填進 `telegram.botToken`
-3. 重開 `start.bat`，黑色視窗出現「📱 Telegram 已連線」就成功了
-4. 在 Telegram 找到你的 bot，傳任意訊息，它會回覆「你的 user id 是：xxxxx」
-5. 把這個數字填進 `allowedUserIds`，再重開 `start.bat`
-
-```
-"telegram": {
-  "botToken": "123456:ABC-xxxx",
-  "allowedUserIds": [987654321],
-  "defaultAgent": "hikari"     ← 預設交給誰（填 id）
-}
-```
+1. 在 Telegram 搜尋 **@BotFather**，傳 `/newbot` 建立 bot；已經建好的話，選你的 bot 按「Copy」複製 token
+2. 在網頁左下角按「📱 Telegram：按這裡設定」（或全員頁上方的「📱 Telegram」）
+3. 貼上 token，按「儲存並連線」，顯示「已連線：@你的bot」就成功了
+4. 按「產生配對碼」，在手機打開你的 bot，把 6 位數配對碼傳給它
+5. 收到「✅ 配對成功」就完成了，傳 `/help` 看所有指令
 
 **Telegram 裡的用法：**
 
@@ -159,7 +151,7 @@
 | `/usage` | Claude / Codex 的 5 小時與每週用量額度 |
 | `/mute`、`/unmute` | 暫停 / 恢復推送 |
 
-⚠️ **bot token 等於鑰匙**：拿到的人可以冒用你的 bot，不要貼到任何地方。只有 `allowedUserIds` 裡的人能下指令，其他人傳訊息只會被拒絕。`agents.json` 不會上傳到 GitHub。
+⚠️ **bot token 等於鑰匙**：拿到的人可以冒用你的 bot，不要貼到任何地方（外流了就到 @BotFather 按 Revoke 換一組）。只有配對過的帳號能下指令，其他人傳訊息只會被拒絕。token 存在 `agents.json`，不會上傳到 GitHub。
 
 公司網路如果擋了 `api.telegram.org`，黑色視窗會顯示「Telegram 連線失敗」。這種情況只能在可以連外的網路下使用。
 

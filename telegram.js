@@ -1,5 +1,6 @@
 // Telegram 遙控：用手機傳訊息給 agent，agent 的回覆也會推送到 Telegram
-// 設定在 agents.json 的 "telegram" 區塊，或用環境變數 TELEGRAM_BOT_TOKEN
+// 設定可以在網頁上的「📱 Telegram」完成（貼 token、用配對碼綁定手機），
+// 也可以寫在 agents.json 的 "telegram" 區塊，或用環境變數 TELEGRAM_BOT_TOKEN
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -28,13 +29,47 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const IMG_EXT = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
 const VIDEO_EXT = ['.mp4', '.mov', '.webm'];
 
+// 連線狀態（給網頁顯示）與配對碼
+const STATUS = { state: 'off', username: '', error: '' };
+let session = null;   // 目前的連線，可以停止後重新開始（改 token 不用重開伺服器）
+let pairing = null;   // { code, expires }
+let lastCtx = null;
+
+function setStatus(patch) {
+  Object.assign(STATUS, patch);
+  if (lastCtx && lastCtx.broadcast) lastCtx.broadcast({ agentId: '*', kind: 'telegram' });
+}
+exports.status = () => {
+  const cfg = (lastCtx && lastCtx.config.telegram) || {};
+  const token = process.env.TELEGRAM_BOT_TOKEN || cfg.botToken || '';
+  return {
+    ...STATUS, enabled: cfg.enabled !== false, hasToken: !!token, fromEnv: !!process.env.TELEGRAM_BOT_TOKEN,
+    tokenHint: token ? '…' + token.slice(-4) : '', allowedCount: (cfg.allowedUserIds || []).length,
+    defaultAgent: cfg.defaultAgent || '', pairing: pairing && pairing.expires > Date.now() ? { code: pairing.code, expires: pairing.expires } : null,
+  };
+};
+exports.newPairCode = () => {
+  pairing = { code: String(Math.floor(100000 + Math.random() * 900000)), expires: Date.now() + 10 * 60 * 1000 };
+  return exports.status().pairing;
+};
+exports.stop = () => { if (session) { session.stop(); session = null; } setStatus({ state: 'off', username: '', error: '' }); };
+
 exports.start = function start(ctx) {
-  const cfg = ctx.config.telegram || {};
+  lastCtx = ctx;
+  if (session) { session.stop(); session = null; }
+  const cfg = (ctx.config.telegram = ctx.config.telegram || {});
   const token = process.env.TELEGRAM_BOT_TOKEN || cfg.botToken;
-  if (!token || cfg.enabled === false) return;
+  if (!token || cfg.enabled === false) { setStatus({ state: 'off', username: '', error: '' }); return; }
+
+  let alive = true;
+  const ac = new AbortController();
+  const listeners = [];
+  const listen = (evt, fn) => { ctx.hooks.on(evt, fn); listeners.push([evt, fn]); };
+  session = { stop() { alive = false; ac.abort(); for (const [e, f] of listeners) ctx.hooks.off(e, f); } };
+  setStatus({ state: 'connecting', error: '' });
 
   const API = (process.env.TELEGRAM_API || 'https://api.telegram.org') + '/bot' + token;
-  const allowed = (cfg.allowedUserIds || []).map(String);
+  const allowedIds = () => (cfg.allowedUserIds || []).map(String);
   const tg = (ctx.state.telegram = ctx.state.telegram || { offset: 0, chats: {} });
   const defaultTarget = () => (ctx.agentById(cfg.defaultAgent) || ctx.agents[0]).id;
   // 成員可能在網頁上被刪除，找不到時退回第一位
@@ -43,8 +78,8 @@ exports.start = function start(ctx) {
 
   async function call(method, body, isForm) {
     const r = await fetch(API + '/' + method, isForm
-      ? { method: 'POST', body }
-      : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      ? { method: 'POST', body, signal: ac.signal }
+      : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ac.signal });
     const j = await r.json().catch(() => ({}));
     if (!j.ok) throw Object.assign(new Error(j.description || 'HTTP ' + r.status), { code: j.error_code });
     return j.result;
@@ -117,7 +152,7 @@ exports.start = function start(ctx) {
   }
 
   // 任務事件推送（開始、等核准、等回覆、完成、停止、出錯）
-  ctx.hooks.on('task', async ({ task, event, message }) => {
+  listen('task', async ({ task, event, message }) => {
     if (!event || event === 'handoff') return;
     const chats = Object.keys(tg.chats).filter((id) => !tg.chats[id].muted);
     const head = { started: '📋', awaiting_approval: '🔔 需要你核准', waiting_user: '⏳ 等你回覆', done: '🎉 任務完成',
@@ -150,10 +185,20 @@ exports.start = function start(ctx) {
   async function handle(msg) {
     if (!msg || !msg.from) return;
     const chatId = msg.chat.id, userId = String(msg.from.id);
-    if (!allowed.includes(userId)) {
+    if (!allowedIds().includes(userId)) {
+      // 配對：使用者在網頁上產生 6 位數配對碼，傳給 bot 就會加入白名單
+      const digits = String(msg.text || '').replace(/\D/g, '');
+      if (pairing && pairing.expires > Date.now() && digits === pairing.code) {
+        cfg.allowedUserIds = [...new Set([...(cfg.allowedUserIds || []), Number(userId)])];
+        pairing = null;
+        ctx.saveConfig();
+        setStatus({});
+        console.log('📱 Telegram：已配對使用者 ' + userId + (msg.from.username ? '（@' + msg.from.username + '）' : ''));
+        chat(chatId);
+        return say(chatId, '✅ 配對成功！之後可以用這個帳號遙控 Agent Chat。\n\n' + HELP);
+      }
       console.log('⚠️  Telegram：拒絕未授權的使用者 ' + userId + (msg.from.username ? '（@' + msg.from.username + '）' : ''));
-      return say(chatId, '⛔ 你沒有使用權限。\n你的 Telegram user id 是：' + userId +
-        '\n如果這是你本人，請把它加進 agents.json 的 telegram.allowedUserIds，再重開 start.bat。');
+      return say(chatId, '⛔ 你還沒有使用權限。\n請在 Agent Chat 網頁按「📱 Telegram」→「產生配對碼」，再把 6 位數配對碼傳給我。');
     }
     if (!msg.text) return say(chatId, '目前只支援文字訊息。');
     const c = chat(chatId);
@@ -228,7 +273,7 @@ exports.start = function start(ctx) {
   }
 
   // agent 每做完一輪就推送結果
-  ctx.hooks.on('done', async ({ agent, segments, relayTo }) => {
+  listen('done', async ({ agent, segments, relayTo }) => {
     const chats = Object.keys(tg.chats).filter((id) => !tg.chats[id].muted);
     if (!chats.length || !segments.length) return;
     const texts = segments.filter((s) => s.type === 'text').map((s) => s.text);
@@ -248,23 +293,33 @@ exports.start = function start(ctx) {
   (async function poll() {
     try {
       const me = await call('getMe', {});
-      console.log('📱 Telegram 已連線：@' + me.username + (allowed.length ? '（允許 ' + allowed.length + ' 位使用者）' : '（尚未設定 allowedUserIds，先傳訊息給 bot 取得你的 id）'));
+      setStatus({ state: 'connected', username: me.username, error: '' });
+      const n = allowedIds().length;
+      console.log('📱 Telegram 已連線：@' + me.username + (n ? '（允許 ' + n + ' 位使用者）' : '（還沒配對手機：請在網頁按「📱 Telegram」產生配對碼）'));
     } catch (e) {
-      console.error('⚠️  Telegram 連線失敗：' + e.message + (e.code === 401 ? '（botToken 不正確）' : '（網路可能擋了 api.telegram.org）'));
+      if (!alive) return;
+      const why = e.code === 401 ? 'bot token 不正確' : '連不上 Telegram（網路可能擋了 api.telegram.org）：' + e.message;
+      setStatus({ state: 'error', username: '', error: why });
+      console.error('⚠️  Telegram 連線失敗：' + why);
       if (e.code === 401) return;
     }
-    for (;;) {
+    while (alive) {
       try {
         const updates = await call('getUpdates', { offset, timeout: 50, allowed_updates: ['message'] });
         lastErr = '';
+        if (STATUS.state !== 'connected') {
+          try { const me = await call('getMe', {}); setStatus({ state: 'connected', username: me.username, error: '' }); } catch {}
+        }
         for (const u of updates) {
           offset = u.update_id + 1;
           tg.offset = offset; ctx.saveState();
           handle(u.message).catch((e) => console.error('Telegram 處理訊息失敗：' + e.message));
         }
       } catch (e) {
+        if (!alive) return;
         if (e.message !== lastErr) { console.error('⚠️  Telegram：' + e.message + '，5 秒後重試'); lastErr = e.message; }
-        if (e.code === 401) return;
+        if (e.code === 401) { setStatus({ state: 'error', error: 'bot token 不正確' }); return; }
+        if (e.code === 409) setStatus({ state: 'error', error: '同一個 bot 在別的地方也在執行（可能另一個 start.bat 還開著）' });
         await sleep(5000);
       }
     }
