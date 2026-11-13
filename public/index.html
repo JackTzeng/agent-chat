@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agent Chat</title>
+<script src="/vendor/marked.js"></script>
+<script src="/vendor/purify.js"></script>
+<style>
+  :root {
+    --bg: #f6f4ef; --panel: #fffdf9; --line: #e6e1d6; --text: #2b2924; --muted: #8a857a;
+    --accent: #c8643b; --accent-soft: #f6e4da; --user: #2f5d50; --tool: #6f6a60; --err: #b3261e;
+    --claude: #c8643b; --codex: #3d6fb4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1a18; --panel: #24221f; --line: #36332e; --text: #ece7dd; --muted: #9c968a;
+      --accent-soft: #3a2a22; --user: #3f7a69; --tool: #a59e91; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.6 -apple-system, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
+  .app { display: grid; grid-template-columns: 260px 1fr; height: 100dvh; }
+
+  /* 側邊欄 */
+  .side { border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  .side h1 { font-size: 15px; margin: 0; padding: 16px 16px 10px; letter-spacing: .5px; }
+  .agents { overflow-y: auto; padding: 0 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+  .agent { display: flex; gap: 10px; align-items: center; padding: 10px; border-radius: 12px; cursor: pointer;
+    border: 1px solid transparent; position: relative; user-select: none; }
+  .agent:hover { background: var(--bg); }
+  .agent.active { background: var(--accent-soft); border-color: var(--line); }
+  .avatar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font-size: 22px;
+    background: var(--bg); border: 1px solid var(--line); flex: none; position: relative; }
+  .agent .name { font-weight: 600; }
+  .agent .role { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: 6px; color: #fff; margin-left: 6px; vertical-align: 1px; }
+  .badge.claude { background: var(--claude); } .badge.codex { background: var(--codex); }
+  .dot { position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid var(--panel); background: #9aa39a; }
+  .agent.busy .dot { background: #e2a72e; animation: pulse 1s infinite; }
+  .unread { position: absolute; right: 10px; top: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: none; }
+  .agent.has-unread .unread { display: block; }
+  @keyframes pulse { 50% { opacity: .35; } }
+
+  /* 聊天區 */
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .top { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .top .title { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .top .sub { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 6px; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    border-radius: 9px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: var(--err); border-color: var(--err); color: #fff; }
+  .msgs { flex: 1; overflow-y: auto; padding: 20px 16px 8px; display: flex; flex-direction: column; gap: 14px; }
+  .empty { margin: auto; text-align: center; color: var(--muted); }
+  .empty .big { font-size: 48px; }
+  .row { display: flex; gap: 10px; max-width: 900px; width: 100%; margin: 0 auto; }
+  .row.user { justify-content: flex-end; }
+  .row .avatar { width: 32px; height: 32px; font-size: 17px; }
+  .bubble { padding: 10px 14px; border-radius: 14px; max-width: min(720px, 85%); overflow-wrap: anywhere; min-width: 0; }
+  .row.user .bubble { background: var(--user); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
+  .row.bot .bubble { background: var(--panel); border: 1px solid var(--line); border-top-left-radius: 4px; }
+  .seg-tool { font: 12.5px/1.5 ui-monospace, Consolas, monospace; color: var(--tool); padding: 2px 0; }
+  .seg-error { color: var(--err); white-space: pre-wrap; font-size: 13.5px; }
+  .seg-text + .seg-tool, .seg-tool + .seg-text { margin-top: 6px; }
+  .meta { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .thinking { color: var(--muted); font-size: 13px; animation: pulse 1.2s infinite; }
+  .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+  .md pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto; font-size: 13px; }
+  .md code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
+  .md :not(pre) > code { background: var(--bg); padding: 1px 5px; border-radius: 5px; }
+  .md img, .md video { max-width: 100%; border-radius: 10px; border: 1px solid var(--line); display: block; margin: 6px 0; }
+  .md table { border-collapse: collapse; display: block; overflow-x: auto; }
+  .md th, .md td { border: 1px solid var(--line); padding: 4px 8px; }
+  .md a { color: var(--accent); }
+
+  .composer { padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--panel); }
+  .composer .box { max-width: 900px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; }
+  textarea { flex: 1; resize: none; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 12px; padding: 9px 12px; max-height: 40vh; min-height: 42px; outline: none; }
+  textarea:focus { border-color: var(--accent); }
+  .hint { max-width: 900px; margin: 4px auto 0; font-size: 11px; color: var(--muted); }
+  .row.relay .bubble { background: var(--accent-soft); color: var(--text); border: 1px dashed var(--accent); white-space: normal; }
+  .who { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+  .row.user .who { text-align: right; }
+  .col { display: flex; flex-direction: column; min-width: 0; max-width: min(720px, 85%); }
+  .col .bubble { max-width: 100%; }
+  .row.user .col { align-items: flex-end; }
+  .sysline { text-align: center; font-size: 12px; color: var(--muted); }
+  .sysline span { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 3px 12px; }
+  .agent.all .avatar { background: var(--accent-soft); }
+  .side .sep { height: 1px; background: var(--line); margin: 4px 6px; }
+  textarea:disabled { opacity: .6; }
+  .toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: var(--err); color: #fff;
+    padding: 8px 14px; border-radius: 10px; font-size: 13px; display: none; z-index: 9; }
+
+  /* 手機：側邊欄變成上方橫向列 */
+  @media (max-width: 760px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .side { border-right: 0; border-bottom: 1px solid var(--line); }
+    .side h1 { display: none; }
+    .agents { flex-direction: row; overflow-x: auto; padding: 8px; }
+    .agent { flex: none; padding: 6px 10px; }
+    .agent .role { display: none; }
+    .bubble { max-width: 90%; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <h1>💬 Agent Chat</h1>
+    <div class="agents" id="agents"></div>
+  </aside>
+  <main class="main">
+    <div class="top">
+      <div class="title" id="title">—</div>
+      <button id="resetBtn" title="清空這個 agent 的對話，下一句會重新開始">新對話</button>
+    </div>
+    <div class="msgs" id="msgs"></div>
+    <div class="composer">
+      <div class="box">
+        <textarea id="input" rows="1" placeholder="輸入訊息…"></textarea>
+        <button class="primary" id="sendBtn">送出</button>
+      </div>
+      <div class="hint">Enter 送出 · Shift+Enter 換行 · 成員之間用 @名字 互相呼叫</div>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+// ---- token（對外開放時用；網址帶 ?token=xxx 一次即可，會記在這台裝置）----
+const qs = new URLSearchParams(location.search);
+let TOKEN = qs.get('token') || '';
+try { if (TOKEN) localStorage.setItem('agentchat_token', TOKEN); else TOKEN = localStorage.getItem('agentchat_token') || ''; } catch {}
+const withToken = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN) : u;
+
+const $ = (id) => document.getElementById(id);
+const ALL = '__all';
+let agents = [];
+let current = null;
+const unread = new Set();
+const liveBubbles = new Map(); // agentId -> 正在執行中的回覆泡泡（目前畫面上的）
+
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toast._t); toast._t = setTimeout(() => (t.style.display = 'none'), 3500);
+}
+async function api(path, opts = {}) {
+  const r = await fetch(withToken(path), { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const agentOf = (id) => agents.find((a) => a.id === id);
+const label = (a) => a ? (a.avatar || '🤖') + ' ' + a.name : '?';
+const shown = (agentId) => current === ALL || current === agentId;
+
+// ---- Markdown 與本機圖片/影片 ----
+function renderMarkdown(text, agentId) {
+  let html;
+  try { html = DOMPurify.sanitize(marked.parse(text, { breaks: true })); }
+  catch { html = '<p>' + esc(text).replace(/\n/g, '<br>') + '</p>'; }
+  const div = document.createElement('div');
+  div.className = 'md';
+  div.innerHTML = html;
+  const isRemote = (s) => /^(https?:|data:|blob:)/i.test(s);
+  const local = (s) => withToken('/api/file?agent=' + encodeURIComponent(agentId) + '&p=' + encodeURIComponent(decodeURI(s)));
+  div.querySelectorAll('img').forEach((img) => {
+    const src = img.getAttribute('src') || '';
+    if (/\.(mp4|webm|mov)$/i.test(src)) { img.replaceWith(makeMedia('video', isRemote(src) ? src : local(src))); return; }
+    if (!isRemote(src)) img.src = local(src);
+    img.loading = 'lazy';
+  });
+  div.querySelectorAll('a').forEach((a) => {
+    const href = a.getAttribute('href') || '';
+    a.target = '_blank'; a.rel = 'noopener';
+    const kind = /\.(mp4|webm|mov)$/i.test(href) ? 'video' : /\.(mp3|wav|ogg|m4a)$/i.test(href) ? 'audio' : null;
+    if (kind) a.after(makeMedia(kind, isRemote(href) ? href : local(href)));
+    else if (href && !isRemote(href) && !href.startsWith('#') && !href.startsWith('mailto:')) a.href = local(href);
+  });
+  return div;
+}
+function makeMedia(tag, src) { const m = document.createElement(tag); m.controls = true; m.src = src; m.preload = 'metadata'; return m; }
+
+function renderSegment(seg, agentId) {
+  if (seg.type === 'text') { const d = renderMarkdown(seg.text, agentId); d.classList.add('seg-text'); return d; }
+  const d = document.createElement('div');
+  d.className = seg.type === 'error' ? 'seg-error' : 'seg-tool';
+  d.textContent = seg.text;
+  return d;
+}
+
+// ---- 側邊欄 ----
+function agentCard(a, extraClass = '') {
+  return `
+    <div class="agent ${extraClass} ${a.id === current ? 'active' : ''} ${a.busy ? 'busy' : ''} ${unread.has(a.id) ? 'has-unread' : ''}" data-id="${esc(a.id)}">
+      <div class="avatar">${esc(a.avatar || '🤖')}<span class="dot"></span></div>
+      <div style="min-width:0">
+        <div class="name">${esc(a.name)}${a.engine ? `<span class="badge ${esc(a.engine)}">${esc(a.engine)}</span>` : ''}</div>
+        <div class="role">${esc(a.role || a.model || '')}</div>
+      </div>
+      <span class="unread"></span>
+    </div>`;
+}
+function renderAgents() {
+  const allCard = { id: ALL, name: '全員', avatar: '👥', role: '看大家的對話與協作', busy: agents.some((a) => a.busy) };
+  $('agents').innerHTML = agentCard(allCard, 'all') + '<div class="sep"></div>' + agents.map((a) => agentCard(a)).join('');
+  document.querySelectorAll('.agent').forEach((el) => (el.onclick = () => selectAgent(el.dataset.id)));
+}
+
+function updateTop() {
+  const btn = $('sendBtn'), inp = $('input');
+  if (current === ALL) {
+    $('title').innerHTML = '👥 全員<span class="sub">所有成員的對話，依時間排列</span>';
+    $('resetBtn').style.display = 'none';
+    inp.disabled = true; inp.placeholder = '這裡只能觀看。要下指令請點選左邊的成員。';
+    const busy = agents.some((a) => a.busy);
+    btn.textContent = '全部停止'; btn.className = busy ? 'danger' : ''; btn.disabled = !busy;
+    return;
+  }
+  const a = agentOf(current); if (!a) return;
+  $('title').innerHTML = esc(label(a)) + '<span class="sub">' + esc(a.engine + (a.model ? ' · ' + a.model : '')) + '</span>';
+  $('resetBtn').style.display = '';
+  inp.disabled = false; inp.placeholder = '輸入訊息…（寫 @名字 可以請它找同事協助）';
+  btn.disabled = false;
+  if (a.busy) { btn.textContent = '停止'; btn.className = 'danger'; }
+  else { btn.textContent = '送出'; btn.className = 'primary'; }
+}
+
+// ---- 訊息列 ----
+function clearEmpty() { const e = $('msgs').querySelector('.empty'); if (e) e.remove(); }
+
+function addUserRow(entry, agentId) {
+  clearEmpty();
+  const target = agentOf(agentId), from = entry.from ? agentOf(entry.from) : null;
+  if (from && current === ALL) { // 全員頁：轉交訊息只顯示一行（內容就是上方發話者的回覆）
+    const d = document.createElement('div'); d.className = 'sysline';
+    d.innerHTML = '<span>📨 ' + esc(label(from)) + ' → ' + esc(label(target)) + '（自動轉交）</span>';
+    $('msgs').appendChild(d); return;
+  }
+  const row = document.createElement('div'); row.className = 'row user' + (from ? ' relay' : '');
+  const col = document.createElement('div'); col.className = 'col';
+  const who = from ? '📨 來自 ' + label(from) + '（自動轉交）' : (current === ALL ? '你 → ' + label(target) : '');
+  if (who) { const w = document.createElement('div'); w.className = 'who'; w.textContent = who; col.appendChild(w); }
+  const b = document.createElement('div'); b.className = 'bubble';
+  if (from) b.appendChild(renderMarkdown(entry.text, agentId)); else b.textContent = entry.text;
+  col.appendChild(b); row.appendChild(col); $('msgs').appendChild(row);
+}
+function addBotRow(segments, meta, live, agentId) {
+  clearEmpty();
+  const a = agentOf(agentId);
+  const row = document.createElement('div'); row.className = 'row bot';
+  row.innerHTML = `<div class="avatar">${esc(a.avatar || '🤖')}</div>`;
+  const col = document.createElement('div'); col.className = 'col';
+  if (current === ALL) { const w = document.createElement('div'); w.className = 'who'; w.textContent = a.name; col.appendChild(w); }
+  const b = document.createElement('div'); b.className = 'bubble';
+  for (const s of segments || []) b.appendChild(renderSegment(s, agentId));
+  if (live) { const t = document.createElement('div'); t.className = 'thinking'; t.textContent = a.name + ' 工作中…'; b.appendChild(t); }
+  if (meta) { const m = document.createElement('div'); m.className = 'meta'; m.textContent = meta; b.appendChild(m); }
+  col.appendChild(b); row.appendChild(col); $('msgs').appendChild(row);
+  if (live) liveBubbles.set(agentId, b);
+  return b;
+}
+function liveAppend(agentId, seg) {
+  let b = liveBubbles.get(agentId);
+  if (!b) b = addBotRow([], '', true, agentId);
+  b.insertBefore(renderSegment(seg, agentId), b.querySelector('.thinking'));
+}
+function liveFinish(agentId, meta) {
+  const b = liveBubbles.get(agentId); if (!b) return;
+  const t = b.querySelector('.thinking'); if (t) t.remove();
+  if (!b.querySelector('.seg-text, .seg-error, .seg-tool')) {
+    const d = document.createElement('div'); d.className = 'seg-tool'; d.textContent = '（沒有回覆內容）'; b.appendChild(d);
+  }
+  if (meta) { const m = document.createElement('div'); m.className = 'meta'; m.textContent = meta; b.appendChild(m); }
+  liveBubbles.delete(agentId);
+}
+const nearBottom = () => { const m = $('msgs'); return m.scrollHeight - m.scrollTop - m.clientHeight < 120; };
+const scrollDown = (force) => { const m = $('msgs'); if (force || nearBottom()) m.scrollTop = m.scrollHeight; };
+
+async function selectAgent(id) {
+  current = id; unread.delete(id); liveBubbles.clear();
+  try { localStorage.setItem('agentchat_current', id); } catch {}
+  renderAgents(); updateTop();
+  const msgs = $('msgs'); msgs.innerHTML = '';
+  const ids = id === ALL ? agents.map((a) => a.id) : [id];
+  let data;
+  try { data = await Promise.all(ids.map((x) => api('/api/history/' + encodeURIComponent(x)))); }
+  catch (e) { toast(e.message); return; }
+  if (current !== id) return;
+
+  const items = [];
+  ids.forEach((aid, k) => data[k].history.forEach((m, n) => items.push({ ...m, agentId: aid, n })));
+  items.sort((x, y) => (x.ts - y.ts) || (x.n - y.n));
+  if (!items.length && !data.some((d) => d.live)) {
+    const a = agentOf(id);
+    msgs.innerHTML = id === ALL
+      ? '<div class="empty"><div class="big">👥</div>還沒有任何對話</div>'
+      : `<div class="empty"><div class="big">${esc(a.avatar || '🤖')}</div>跟 ${esc(a.name)} 打聲招呼吧</div>`;
+  }
+  for (const m of items) m.role === 'user' ? addUserRow(m, m.agentId) : addBotRow(m.segments, m.meta, false, m.agentId);
+  ids.forEach((aid, k) => { if (data[k].live) addBotRow(data[k].live, '', true, aid); });
+  scrollDown(true);
+  if (id !== ALL) $('input').focus();
+}
+
+// ---- 送出 / 停止 / 重置 ----
+async function send() {
+  if (current === ALL) { try { await api('/api/stopall', { method: 'POST' }); } catch (e) { toast(e.message); } return; }
+  const a = agentOf(current); if (!a) return;
+  if (a.busy) { try { await api('/api/stop/' + a.id, { method: 'POST' }); } catch (e) { toast(e.message); } return; }
+  const text = $('input').value.trim(); if (!text) return;
+  $('input').value = ''; autoGrow();
+  try { await api('/api/chat/' + a.id, { method: 'POST', body: JSON.stringify({ text }) }); }
+  catch (e) { toast(e.message); $('input').value = text; }
+}
+$('sendBtn').onclick = send;
+$('resetBtn').onclick = async () => {
+  const a = agentOf(current); if (!a || !confirm('清空與「' + a.name + '」的對話，重新開始？')) return;
+  try { await api('/api/reset/' + a.id, { method: 'POST' }); } catch (e) { toast(e.message); }
+};
+const input = $('input');
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
+});
+function autoGrow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, window.innerHeight * 0.4) + 'px'; }
+input.addEventListener('input', autoGrow);
+
+// ---- 即時事件 ----
+function connectEvents() {
+  const es = new EventSource(withToken('/api/events'));
+  es.onmessage = (msg) => {
+    const ev = JSON.parse(msg.data);
+    const a = agentOf(ev.agentId); if (!a) return;
+    if (ev.kind === 'busy') { a.busy = ev.busy; renderAgents(); updateTop(); return; }
+    if (ev.kind === 'reset') { if (shown(ev.agentId)) selectAgent(current); return; }
+    if (ev.kind === 'queued') { if (shown(ev.agentId)) toast(a.name + ' 忙碌中，同事的訊息已排隊'); return; }
+    if (!shown(ev.agentId)) { if (['user', 'segment', 'done'].includes(ev.kind)) { unread.add(ev.agentId); renderAgents(); } return; }
+    const stick = nearBottom();
+    if (ev.kind === 'user') { addUserRow({ text: ev.text, from: ev.from }, ev.agentId); addBotRow([], '', true, ev.agentId); scrollDown(true); return; }
+    if (ev.kind === 'segment') liveAppend(ev.agentId, ev.segment);
+    if (ev.kind === 'done') liveFinish(ev.agentId, ev.meta);
+    if (stick) scrollDown(true);
+  };
+  es.onerror = () => { es.close(); setTimeout(() => { connectEvents(); if (current) selectAgent(current); }, 2000); };
+}
+
+(async function init() {
+  try { agents = await api('/api/agents'); }
+  catch (e) { $('msgs').innerHTML = '<div class="empty">連不上伺服器：' + esc(e.message) + '<br>如果有設定 token，網址要加上 ?token=你的密碼</div>'; return; }
+  let saved = null; try { saved = localStorage.getItem('agentchat_current'); } catch {}
+  connectEvents();
+  selectAgent(saved === ALL || agents.some((a) => a.id === saved) ? saved : agents[0].id);
+})();
+</script>
+</body>
+</html>
