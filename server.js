@@ -1,6 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
+const VERSION = '1.1.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -372,6 +373,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (p === '/api/info') return send(res, 200, { version: VERSION });
     if (p === '/api/agents') return send(res, 200, AGENTS.map(publicAgent));
 
     if (p === '/api/events') {
@@ -434,7 +436,7 @@ server.on('error', (e) => {
   process.exit(1);
 });
 server.listen(PORT, HOST, () => {
-  console.log('✅ Agent Chat 已啟動： http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT + (TOKEN ? '/?token=' + TOKEN : ''));
+  console.log('✅ Agent Chat v' + VERSION + ' 已啟動： http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT + (TOKEN ? '/?token=' + TOKEN : ''));
   for (const a of AGENTS) console.log('   ' + (a.avatar || '•') + ' ' + a.name + '（' + a.engine + '） → ' + a.cwd);
   for (const [k, v] of Object.entries(BIN)) console.log('   ' + (v ? '✔ ' + k + '：' + v : '✘ 找不到 ' + k + '（這個引擎的 agent 會無法回覆）'));
 });

@@ -90,6 +90,7 @@
   .sysline { text-align: center; font-size: 12px; color: var(--muted); }
   .sysline span { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 3px 12px; }
   .agent.all .avatar { background: var(--accent-soft); }
+  .ver { font-size: 11px; font-weight: 400; color: var(--muted); margin-left: 4px; }
   .side .sep { height: 1px; background: var(--line); margin: 4px 6px; }
   textarea:disabled { opacity: .6; }
   .toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: var(--err); color: #fff;
@@ -110,7 +111,7 @@
 <body>
 <div class="app">
   <aside class="side">
-    <h1>💬 Agent Chat</h1>
+    <h1>💬 Agent Chat <span id="ver" class="ver"></span></h1>
     <div class="agents" id="agents"></div>
   </aside>
   <main class="main">
@@ -157,6 +158,12 @@ async function api(path, opts = {}) {
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const agentOf = (id) => agents.find((a) => a.id === id);
 const label = (a) => a ? (a.avatar || '🤖') + ' ' + a.name : '?';
+function fmtTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts), now = new Date(), p = (n) => String(n).padStart(2, '0');
+  const t = p(d.getHours()) + ':' + p(d.getMinutes());
+  return d.toDateString() === now.toDateString() ? t : (d.getMonth() + 1) + '/' + d.getDate() + ' ' + t;
+}
 const shown = (agentId) => current === ALL || current === agentId;
 
 // ---- Markdown 與本機圖片/影片 ----
@@ -250,7 +257,7 @@ function addUserRow(entry, agentId) {
   if (from) b.appendChild(renderMarkdown(entry.text, agentId)); else b.textContent = entry.text;
   col.appendChild(b); row.appendChild(col); $('msgs').appendChild(row);
 }
-function addBotRow(segments, meta, live, agentId) {
+function addBotRow(segments, meta, live, agentId, ts) {
   clearEmpty();
   const a = agentOf(agentId);
   const row = document.createElement('div'); row.className = 'row bot';
@@ -260,7 +267,8 @@ function addBotRow(segments, meta, live, agentId) {
   const b = document.createElement('div'); b.className = 'bubble';
   for (const s of segments || []) b.appendChild(renderSegment(s, agentId));
   if (live) { const t = document.createElement('div'); t.className = 'thinking'; t.textContent = a.name + ' 工作中…'; b.appendChild(t); }
-  if (meta) { const m = document.createElement('div'); m.className = 'meta'; m.textContent = meta; b.appendChild(m); }
+  const metaText = [fmtTime(ts), meta].filter(Boolean).join(' · ');
+  if (metaText) { const m = document.createElement('div'); m.className = 'meta'; m.textContent = metaText; b.appendChild(m); }
   col.appendChild(b); row.appendChild(col); $('msgs').appendChild(row);
   if (live) liveBubbles.set(agentId, b);
   return b;
@@ -276,7 +284,7 @@ function liveFinish(agentId, meta) {
   if (!b.querySelector('.seg-text, .seg-error, .seg-tool')) {
     const d = document.createElement('div'); d.className = 'seg-tool'; d.textContent = '（沒有回覆內容）'; b.appendChild(d);
   }
-  if (meta) { const m = document.createElement('div'); m.className = 'meta'; m.textContent = meta; b.appendChild(m); }
+  const m = document.createElement('div'); m.className = 'meta'; m.textContent = [fmtTime(Date.now()), meta].filter(Boolean).join(' · '); b.appendChild(m);
   liveBubbles.delete(agentId);
 }
 const nearBottom = () => { const m = $('msgs'); return m.scrollHeight - m.scrollTop - m.clientHeight < 120; };
@@ -302,7 +310,7 @@ async function selectAgent(id) {
       ? '<div class="empty"><div class="big">👥</div>還沒有任何對話</div>'
       : `<div class="empty"><div class="big">${esc(a.avatar || '🤖')}</div>跟 ${esc(a.name)} 打聲招呼吧</div>`;
   }
-  for (const m of items) m.role === 'user' ? addUserRow(m, m.agentId) : addBotRow(m.segments, m.meta, false, m.agentId);
+  for (const m of items) m.role === 'user' ? addUserRow(m, m.agentId) : addBotRow(m.segments, m.meta, false, m.agentId, m.ts);
   ids.forEach((aid, k) => { if (data[k].live) addBotRow(data[k].live, '', true, aid); });
   scrollDown(true);
   if (id !== ALL) $('input').focus();
@@ -353,6 +361,7 @@ function connectEvents() {
   try { agents = await api('/api/agents'); }
   catch (e) { $('msgs').innerHTML = '<div class="empty">連不上伺服器：' + esc(e.message) + '<br>如果有設定 token，網址要加上 ?token=你的密碼</div>'; return; }
   let saved = null; try { saved = localStorage.getItem('agentchat_current'); } catch {}
+  api('/api/info').then((i) => ($('ver').textContent = 'v' + i.version)).catch(() => {});
   connectEvents();
   selectAgent(saved === ALL || agents.some((a) => a.id === saved) ? saved : agents[0].id);
 })();
