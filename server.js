@@ -1,11 +1,13 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { spawn, execFileSync } = require('child_process');
+const EventEmitter = require('events');
+const hooks = new EventEmitter(); // 給 Telegram 等外掛監聽：user / done
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT) || 3939;
@@ -72,7 +74,7 @@ fs.mkdirSync(HIST_DIR, { recursive: true });
 const AGENTS_FILE = path.join(ROOT, 'agents.json');
 if (!fs.existsSync(AGENTS_FILE)) fs.copyFileSync(path.join(ROOT, 'agents.example.json'), AGENTS_FILE);
 const CONFIG = JSON.parse(fs.readFileSync(AGENTS_FILE, 'utf8'));
-const MAX_HOPS = Number(CONFIG.maxRelayHops) || 6; // agent 之間自動轉交的上限
+const MAX_HOPS = Number(CONFIG.maxRelayHops) || 12; // agent 之間自動轉交的上限
 function loadAgents() {
   return CONFIG.agents.map((a) => {
     const cwd = path.resolve(ROOT, a.cwd || './workspace');
@@ -109,15 +111,25 @@ const runs = new Map(); // agentId -> { proc, segments }
 
 const queues = new Map(); // agentId -> 等待中的轉交訊息
 
+// 這位成員可以 @ 誰：有設定 canHandoffTo 就照設定，沒設定就是全部同事
+function allowedTargets(agent) {
+  const others = AGENTS.filter((a) => a.id !== agent.id);
+  return Array.isArray(agent.canHandoffTo) ? others.filter((a) => agent.canHandoffTo.includes(a.id)) : others;
+}
+
 function teamHint(agent) {
-  const mates = AGENTS.filter((a) => a.id !== agent.id);
-  let s = '（介面說明：使用者透過聊天介面跟你對話，回覆會以 Markdown 顯示。' +
+  let s = '（介面說明：使用者透過聊天介面或 Telegram 跟你對話，回覆會以 Markdown 顯示。' +
     '若你產生了圖片或影片檔，請在回覆中用 ![說明](相對路徑) 顯示它。）';
-  if (mates.length) {
-    s += '\n\n【團隊】你有這些同事：' + mates.map((m) => m.name + '（' + (m.role || m.engine) + '）').join('、') + '。' +
-      '\n需要同事幫忙時，在回覆中寫「@名字」加上要交代的事，系統會自動把你的回覆轉給對方，對方的回覆也會自動轉回給你。' +
-      '\n你們在同一台電腦上工作，交接時寫清楚檔案路徑。只有真的需要對方時才 @，事情做完就直接向使用者總結，不要再 @ 任何人。';
-  }
+  const others = AGENTS.filter((a) => a.id !== agent.id);
+  if (!others.length) return s;
+  s += '\n\n【團隊成員】\n' + AGENTS.map((m) => '- ' + m.name + '：' + (m.role || m.engine) + (m.id === agent.id ? '（就是你）' : '')).join('\n');
+  if (CONFIG.workflow) s += '\n\n【工作流程】\n' + CONFIG.workflow;
+  const can = allowedTargets(agent);
+  if (can.length) {
+    s += '\n\n【交接規則】你可以交接給：' + can.map((m) => m.name).join('、') + '。' +
+      '\n交接方式：在回覆中寫「@名字」加上要交代的事，系統會自動把你這則回覆轉給對方，對方的回覆也會自動轉給被 @ 的人。' +
+      '\n你們在同一台電腦上工作，交接時寫清楚檔案路徑與要做的事。只有真的要交接時才 @；你的部分完成且不需要再交接時，直接向使用者總結，不要 @ 任何人。';
+  } else s += '\n\n【交接規則】你不能把工作交給其他成員，完成後直接向使用者回報。';
   return s;
 }
 
@@ -134,7 +146,7 @@ function buildPrompt(agent, text, isNew, fromAgent) {
 
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function findMentions(agent, text) {
-  return AGENTS.filter((a) => a.id !== agent.id &&
+  return allowedTargets(agent).filter((a) =>
     new RegExp('@\\s?(' + escRe(a.name) + '|' + escRe(a.id) + ')', 'i').test(text));
 }
 
@@ -152,12 +164,14 @@ function buildCommand(agent, sid) {
     const args = ['-p', '--output-format', 'stream-json', '--verbose'];
     if (agent.permissionMode) args.push('--permission-mode', agent.permissionMode);
     if (agent.model) args.push('--model', agent.model);
+    if (agent.effort) args.push('--effort', agent.effort);
     if (sid) args.push('--resume', sid);
     return { cmd: getBin('claude'), args };
   }
   if (agent.engine === 'codex') {
     const opts = ['--json', '--skip-git-repo-check', '-c', 'sandbox_mode="' + (agent.sandbox || 'workspace-write') + '"'];
     if (agent.model) opts.push('-m', agent.model);
+    if (agent.effort) opts.push('-c', 'model_reasoning_effort="' + agent.effort + '"');
     // 提示詞一律用 stdin 傳（"-"），避免 Windows 命令列的引號/換行問題
     const args = sid ? ['exec', 'resume', ...opts, sid, '-'] : ['exec', ...opts, '-'];
     return { cmd: getBin('codex'), args };
@@ -231,8 +245,9 @@ function startRun(agent, userText, opts = {}) {
   const hops = opts.hops || 0;
   const prompt = buildPrompt(agent, userText, !sid, fromAgent);
 
-  appendHistory(agent.id, { role: 'user', text: userText, from: opts.from, ts: Date.now() });
-  broadcast({ agentId: agent.id, kind: 'user', text: userText, from: opts.from });
+  appendHistory(agent.id, { role: 'user', text: userText, from: opts.from, via: opts.via, ts: Date.now() });
+  broadcast({ agentId: agent.id, kind: 'user', text: userText, from: opts.from, via: opts.via });
+  hooks.emit('user', { agent, text: userText, from: opts.from, via: opts.via });
 
   const run = { segments: [], meta: '', finished: false, stderr: Buffer.alloc(0) };
   runs.set(agent.id, run);
@@ -250,6 +265,7 @@ function startRun(agent, userText, opts = {}) {
     appendHistory(agent.id, { role: 'assistant', segments: run.segments, meta: '', ts: Date.now() });
     runs.delete(agent.id);
     broadcast({ agentId: agent.id, kind: 'done', meta: '' });
+    hooks.emit('done', { agent, segments: run.segments, meta: '', relayTo: [] });
     broadcast({ agentId: agent.id, kind: 'busy', busy: false });
     return;
   }
@@ -306,6 +322,7 @@ function startRun(agent, userText, opts = {}) {
     runs.delete(agent.id);
     broadcast({ agentId: agent.id, kind: 'done', meta: run.meta });
     broadcast({ agentId: agent.id, kind: 'busy', busy: false });
+    hooks.emit('done', { agent, segments: run.segments, meta: run.meta, relayTo: hops < MAX_HOPS ? targets : [] });
 
     if (hops < MAX_HOPS) for (const t of targets) dispatch(t, replyText, { from: agent.id, hops: hops + 1 });
 
@@ -325,6 +342,14 @@ function stopRun(id) {
   run.stopped = true;
   if (IS_WIN) spawn('taskkill', ['/pid', String(run.proc.pid), '/T', '/F'], { windowsHide: true });
   else run.proc.kill('SIGTERM');
+  return true;
+}
+
+function resetAgent(id) {
+  if (runs.has(id)) return false;
+  delete state.sessions[id]; saveState();
+  try { fs.unlinkSync(histFile(id)); } catch {}
+  broadcast({ agentId: id, kind: 'reset' });
   return true;
 }
 
@@ -358,7 +383,8 @@ function readBody(req) {
 }
 
 const publicAgent = (a) => ({
-  id: a.id, name: a.name, avatar: a.avatar, engine: a.engine, model: a.model || '', role: a.role || '',
+  id: a.id, name: a.name, avatar: a.avatar, engine: a.engine, model: a.model || '', effort: a.effort || '', role: a.role || '',
+  canHandoffTo: allowedTargets(a).map((t) => t.id),
   busy: runs.has(a.id), hasSession: !!state.sessions[a.id],
 });
 
@@ -405,10 +431,7 @@ const server = http.createServer(async (req, res) => {
     }
     if ((m = p.match(/^\/api\/stop\/([\w-]+)$/)) && req.method === 'POST') return send(res, 200, { ok: stopRun(m[1]) });
     if ((m = p.match(/^\/api\/reset\/([\w-]+)$/)) && req.method === 'POST') {
-      if (runs.has(m[1])) return send(res, 409, { error: '執行中不能重置' });
-      delete state.sessions[m[1]]; saveState();
-      try { fs.unlinkSync(histFile(m[1])); } catch {}
-      broadcast({ agentId: m[1], kind: 'reset' });
+      if (!resetAgent(m[1])) return send(res, 409, { error: '執行中不能重置' });
       return send(res, 200, { ok: true });
     }
     // 讓聊天室能顯示 agent 產生的圖片/影片（限制在該 agent 的工作資料夾內）
@@ -437,8 +460,14 @@ server.on('error', (e) => {
 });
 server.listen(PORT, HOST, () => {
   console.log('✅ Agent Chat v' + VERSION + ' 已啟動： http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT + (TOKEN ? '/?token=' + TOKEN : ''));
-  for (const a of AGENTS) console.log('   ' + (a.avatar || '•') + ' ' + a.name + '（' + a.engine + '） → ' + a.cwd);
+  for (const a of AGENTS) console.log('   ' + (a.avatar || '•') + ' ' + a.name + '（' + [a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ') + '） → ' + a.cwd);
   for (const [k, v] of Object.entries(BIN)) console.log('   ' + (v ? '✔ ' + k + '：' + v : '✘ 找不到 ' + k + '（這個引擎的 agent 會無法回覆）'));
+});
+
+// Telegram 遙控（agents.json 有設定 telegram.botToken 才會啟動）
+require('./telegram').start({
+  config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState,
+  dispatch, stopRun, resetAgent, maxHops: MAX_HOPS,
 });
 
 const shutdown = () => { for (const id of runs.keys()) stopRun(id); process.exit(0); };

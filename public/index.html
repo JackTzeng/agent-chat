@@ -208,7 +208,8 @@ function agentCard(a, extraClass = '') {
       <div class="avatar">${esc(a.avatar || '🤖')}<span class="dot"></span></div>
       <div style="min-width:0">
         <div class="name">${esc(a.name)}${a.engine ? `<span class="badge ${esc(a.engine)}">${esc(a.engine)}</span>` : ''}</div>
-        <div class="role">${esc(a.role || a.model || '')}</div>
+        <div class="role">${esc(a.role || '')}</div>
+        ${a.engine ? `<div class="role">${esc([a.model || '預設模型', a.effort].filter(Boolean).join(' · '))}</div>` : ''}
       </div>
       <span class="unread"></span>
     </div>`;
@@ -230,7 +231,7 @@ function updateTop() {
     return;
   }
   const a = agentOf(current); if (!a) return;
-  $('title').innerHTML = esc(label(a)) + '<span class="sub">' + esc(a.engine + (a.model ? ' · ' + a.model : '')) + '</span>';
+  $('title').innerHTML = esc(label(a)) + '<span class="sub">' + esc([a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ')) + '</span>';
   $('resetBtn').style.display = '';
   inp.disabled = false; inp.placeholder = '輸入訊息…（寫 @名字 可以請它找同事協助）';
   btn.disabled = false;
@@ -251,7 +252,9 @@ function addUserRow(entry, agentId) {
   }
   const row = document.createElement('div'); row.className = 'row user' + (from ? ' relay' : '');
   const col = document.createElement('div'); col.className = 'col';
-  const who = from ? '📨 來自 ' + label(from) + '（自動轉交）' : (current === ALL ? '你 → ' + label(target) : '');
+  const via = entry.via === 'telegram' ? '📱 ' : '';
+  const who = from ? '📨 來自 ' + label(from) + '（自動轉交）'
+    : (current === ALL ? via + '你 → ' + label(target) : (via ? '📱 來自 Telegram' : ''));
   if (who) { const w = document.createElement('div'); w.className = 'who'; w.textContent = who; col.appendChild(w); }
   const b = document.createElement('div'); b.className = 'bubble';
   if (from) b.appendChild(renderMarkdown(entry.text, agentId)); else b.textContent = entry.text;
@@ -349,7 +352,7 @@ function connectEvents() {
     if (ev.kind === 'queued') { if (shown(ev.agentId)) toast(a.name + ' 忙碌中，同事的訊息已排隊'); return; }
     if (!shown(ev.agentId)) { if (['user', 'segment', 'done'].includes(ev.kind)) { unread.add(ev.agentId); renderAgents(); } return; }
     const stick = nearBottom();
-    if (ev.kind === 'user') { addUserRow({ text: ev.text, from: ev.from }, ev.agentId); addBotRow([], '', true, ev.agentId); scrollDown(true); return; }
+    if (ev.kind === 'user') { addUserRow({ text: ev.text, from: ev.from, via: ev.via }, ev.agentId); addBotRow([], '', true, ev.agentId); scrollDown(true); return; }
     if (ev.kind === 'segment') liveAppend(ev.agentId, ev.segment);
     if (ev.kind === 'done') liveFinish(ev.agentId, ev.meta);
     if (stick) scrollDown(true);
