@@ -181,7 +181,7 @@ const withToken = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + 
 
 const $ = (id) => document.getElementById(id);
 const ALL = '__all';
-const UI_VERSION = '1.3.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '1.3.2'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -401,11 +401,20 @@ input.addEventListener('input', autoGrow);
 
 
 // ---- 成員設定表單 ----
-const MODEL_SUGGEST = {
-  claude: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'opus', 'sonnet', 'haiku', 'fable'],
-  codex: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-terra'],
+// 順序與各 CLI 官方的模型選單一致；清單外的模型可以選「自訂…」自己輸入
+const MODELS = {
+  claude: [
+    ['claude-opus-5-5', 'Opus 5.5'], ['claude-sonnet-5-5', 'Sonnet 5.5'], ['claude-haiku-5-5', 'Haiku 5.5'],
+    ['claude-fable-5-2', 'Fable 5.2（需方案支援）'],
+  ],
+  codex: [
+    ['gpt-6.1-sol', 'GPT-6.1 Sol'], ['gpt-6-astra', 'GPT-6 Astra'], ['gpt-6.1-terra', 'GPT-6.1 Terra'],
+    ['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6-luna', 'GPT-6 Luna'],
+    ['gpt-5.6-sol', 'GPT-5.6 Sol'], ['gpt-5.6-terra', 'GPT-5.6 Terra'], ['gpt-5.6-luna', 'GPT-5.6 Luna'],
+  ],
 };
-const DEFAULT_MODEL = { claude: 'claude-opus-5-5', codex: 'gpt-6-sol' };
+const DEFAULT_MODEL = { claude: 'claude-opus-5-5', codex: 'gpt-6.1-sol' };
+const CUSTOM = '__custom';
 const EFFORT_LABEL = { '': '預設', low: 'low：最快', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max：最強、最慢' };
 const PERM_LABEL = {
   plan: 'plan：只規劃，不動手', acceptEdits: 'acceptEdits：可改檔，不能執行指令',
@@ -467,9 +476,9 @@ async function openAgentForm(id) {
       </div>
       <div class="field">
         <label>模型</label>
-        <input id="f_model" list="modelList" value="${esc(a.model || '')}" placeholder="留空 = 預設模型">
-        <datalist id="modelList"></datalist>
-        <span class="help">可從清單選，也可以直接輸入</span>
+        <select id="f_model_sel"></select>
+        <input id="f_model" value="${esc(a.model || '')}" placeholder="輸入模型代號，例如 gpt-6.1-sol" style="display:none">
+        <span class="help" id="f_model_help">「預設」= 該 CLI 目前設定的預設模型</span>
       </div>
       <div class="field">
         <label>推理強度</label>
@@ -506,11 +515,30 @@ async function openAgentForm(id) {
     </div>`);
 
   const engineSel = $('f_engine');
+  const modelSel = $('f_model_sel'), modelInput = $('f_model');
+  function syncModel() {
+    const custom = modelSel.value === CUSTOM;
+    modelInput.style.display = custom ? '' : 'none';
+    if (!custom) modelInput.value = modelSel.value;
+  }
+  function buildModels(value) {
+    const list = MODELS[engineSel.value];
+    const known = value === '' || list.some(([v]) => v === value);
+    modelSel.innerHTML = '<option value="">預設</option>' +
+      list.map(([v, label]) => `<option value="${esc(v)}">${esc(label)}</option>`).join('') +
+      `<option value="${CUSTOM}">自訂…</option>`;
+    modelSel.value = known ? value : CUSTOM;
+    modelInput.value = value;
+    syncModel();
+  }
+  modelSel.onchange = () => { syncModel(); if (modelSel.value === CUSTOM) { modelInput.value = ''; modelInput.focus(); } };
   function syncEngine(changed) {
     const eng = engineSel.value;
-    $('modelList').innerHTML = MODEL_SUGGEST[eng].map((m) => `<option value="${esc(m)}">`).join('');
-    const m = $('f_model');
-    if (changed && MODEL_SUGGEST[eng === 'claude' ? 'codex' : 'claude'].includes(m.value)) m.value = DEFAULT_MODEL[eng];
+    if (!changed) buildModels(a.model || '');
+    else {
+      // 換引擎時，原本的模型一定不適用，改成新引擎的預設（原本選「預設」就維持預設）
+      buildModels(modelSel.value === '' ? '' : DEFAULT_MODEL[eng]);
+    }
     $('f_perm').innerHTML = eng === 'claude'
       ? opts(CFG.options.permissionModes, PERM_LABEL, a.permissionMode || 'auto')
       : opts(CFG.options.sandboxes, SANDBOX_LABEL, a.sandbox || 'workspace-write');

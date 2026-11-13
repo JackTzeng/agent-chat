@@ -75,8 +75,8 @@
 
 | engine | model 範例 | effort 可用值 |
 |---|---|---|
-| claude | `claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-5-5`，或簡寫 `opus`、`sonnet` | `low`、`medium`、`high`、`xhigh`、`max` |
-| codex | `gpt-6-luna`、`gpt-6-sol`、`gpt-6.1-sol`、`gpt-6-astra` | `low`、`medium`、`high`、`xhigh`、`max` |
+| claude | `claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-5-5`、`claude-fable-5-2`，或簡寫 `opus`、`sonnet` | `low`、`medium`、`high`、`xhigh`、`max` |
+| codex | `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6.1-terra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `low`、`medium`、`high`、`xhigh`、`max` |
 
 - 強度越高，想得越久，也越耗用量額度
 - 能用哪些模型取決於你的訂閱方案；填了方案不支援的模型，聊天室會顯示錯誤訊息
