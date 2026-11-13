@@ -231,6 +231,9 @@
   .modebar button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .modebar .help { margin-left: 4px; }
   #stopBtn { display: none; }
+  .dirrow { display: grid; grid-template-columns: 1fr 130px auto; gap: 6px; margin-bottom: 6px; }
+  .dirrow input, .dirrow select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 6px 9px; min-width: 0; }
+  .dirrow button { padding: 4px 10px; }
   .toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: var(--err); color: #fff;
     padding: 8px 14px; border-radius: 10px; font-size: 13px; display: none; z-index: 9; }
 
@@ -289,7 +292,7 @@ const withToken = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + 
 
 const $ = (id) => document.getElementById(id);
 const ALL = '__all';
-const UI_VERSION = '2.3.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '2.4.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -368,6 +371,7 @@ function agentCard(a, extraClass = '') {
         <div class="name">${esc(a.name)}${a.engine ? `<span class="badge ${esc(a.engine)}">${esc(a.engine)}</span>` : ''}</div>
         <div class="role">${esc(a.role || '')}</div>
         ${a.engine ? `<div class="role">${esc([a.model || '預設模型', a.effort].filter(Boolean).join(' · '))}</div>` : ''}
+        ${a.extraDirs && a.extraDirs.length ? `<div class="role" title="${esc(a.extraDirs.map((d) => d.path + (d.mode === 'ro' ? '（唯讀）' : '（可讀寫）')).join('\n'))}">📁 +${a.extraDirs.length} 個資料夾</div>` : ''}
         ${a.queued ? `<div class="qline">🕒 排隊中${a.waitingOn && agentOf(a.waitingOn) ? '（等 ' + esc(agentOf(a.waitingOn).name) + ' 做完）' : ''}</div>` : ''}
       </div>
       <span class="unread"></span>
@@ -781,6 +785,13 @@ async function openAgentForm(id) {
         <span class="help">要和同事交接檔案的話，建議用同一個資料夾</span>
       </div>
       <div class="field full">
+        <label>額外可以存取的資料夾</label>
+        <div id="f_dirs"></div>
+        <div><button type="button" id="f_adddir">＋ 新增資料夾</button></div>
+        <span class="help">填完整路徑，例如 C:\\EM_reports_copy\\EM_DATA（在檔案總管對資料夾按右鍵「複製為路徑」再貼上）。
+          「唯讀」對 Codex 是沙箱強制擋下寫入；對 Claude 是明確規則要求不可修改。重要的原始資料建議只給唯讀，或先複製一份再給可讀寫。</span>
+      </div>
+      <div class="field full">
         <label>可以把工作交給誰</label>
         <label class="opt"><input type="checkbox" id="f_unres" ${unrestricted ? 'checked' : ''}> 不限制（可以交給所有同事）</label>
         <div class="checks ${unrestricted ? 'disabled' : ''}" id="f_handoff">
@@ -829,6 +840,20 @@ async function openAgentForm(id) {
     if (item) { e.preventDefault(); useImage(item.getAsFile()); }
   };
 
+  // ---- 額外資料夾 ----
+  const dirs = (a.extraDirs || []).map((d) => ({ ...d }));
+  function renderDirs() {
+    $('f_dirs').innerHTML = dirs.map((d, i) => `<div class="dirrow">
+        <input data-dir="${i}" value="${esc(d.path)}" placeholder="C:\\資料夾\\完整路徑">
+        <select data-dmode="${i}"><option value="rw" ${d.mode !== 'ro' ? 'selected' : ''}>可讀寫</option><option value="ro" ${d.mode === 'ro' ? 'selected' : ''}>唯讀</option></select>
+        <button type="button" data-drm="${i}" title="移除">✕</button></div>`).join('') || '<span class="help">目前只能存取工作資料夾。</span>';
+    $('f_dirs').querySelectorAll('[data-dir]').forEach((x) => (x.oninput = () => { dirs[+x.dataset.dir].path = x.value.trim().replace(/^"|"$/g, ''); }));
+    $('f_dirs').querySelectorAll('[data-dmode]').forEach((x) => (x.onchange = () => { dirs[+x.dataset.dmode].mode = x.value; }));
+    $('f_dirs').querySelectorAll('[data-drm]').forEach((x) => (x.onclick = () => { dirs.splice(+x.dataset.drm, 1); renderDirs(); }));
+  }
+  renderDirs();
+  $('f_adddir').onclick = () => { dirs.push({ path: '', mode: 'ro' }); renderDirs(); const ins = $('f_dirs').querySelectorAll('[data-dir]'); ins[ins.length - 1].focus(); };
+
   const engineSel = $('f_engine');
   const modelSel = $('f_model_sel'), modelInput = $('f_model');
   function syncModel() {
@@ -876,6 +901,7 @@ async function openAgentForm(id) {
       name: $('f_name').value, avatar: $('f_avatar').value, role: $('f_role').value, engine: engineSel.value,
       model: $('f_model').value, effort: $('f_effort').value, cwd: $('f_cwd').value, persona: $('f_persona').value,
       canHandoffTo: $('f_unres').checked ? null : [...document.querySelectorAll('#f_handoff input:checked')].map((x) => x.value),
+      extraDirs: dirs.filter((d) => d.path),
     };
     if (engineSel.value === 'claude') body.permissionMode = $('f_perm').value; else body.sandbox = $('f_perm').value;
     // 名稱若改了，人設裡的舊名字也一起換

@@ -60,16 +60,21 @@ function cleanWorkflow(input, agents) {
 }
 
 // ---------- 工作資料夾快照：比對一輪前後實際改了哪些檔案 ----------
-function snapshot(dir) {
+// roots：[{ dir, prefix }]，工作資料夾的 prefix 是空字串，額外資料夾用資料夾名稱當前綴
+function snapshot(roots) {
+  if (typeof roots === 'string') roots = [{ dir: roots, prefix: '' }];
   const files = new Map();
   let budget = 30 * 1024 * 1024, count = 0;
+  for (const { dir, prefix } of roots) walkRoot(dir, prefix);
+  return files;
+  function walkRoot(dir, prefix) {
   (function walk(d, rel) {
     let list; try { list = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
     for (const e of list) {
       if (count > 3000) return;
       const p = path.join(d, e.name), r = rel ? rel + '/' + e.name : e.name;
       if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(p, r); continue; }
-      if (!e.isFile() || (!rel && SKIP_FILES.has(e.name))) continue;
+      if (!e.isFile() || (rel === '' && SKIP_FILES.has(e.name))) continue;
       let st; try { st = fs.statSync(p); } catch { continue; }
       count++;
       const entry = { size: st.size, mtime: st.mtimeMs };
@@ -81,8 +86,13 @@ function snapshot(dir) {
       }
       files.set(r, entry);
     }
-  })(dir, '');
-  return files;
+  })(dir, prefix);
+  }
+}
+function rootsFor(agent) {
+  const roots = [{ dir: agent.cwd, prefix: '' }];
+  for (const d of agent.extraDirs || []) if (d.mode !== 'ro') roots.push({ dir: d.path, prefix: '[' + path.basename(d.path) + ']' });
+  return roots;
 }
 
 function lineDelta(a, b) {
@@ -177,6 +187,7 @@ exports.create = function create(ctx) {
     const lines = [];
     lines.push('【你的身分】你是「' + agent.name + '」' + (agent.role ? '，職責：' + agent.role : ''));
     if (agent.persona) lines.push(agent.persona);
+    if (ctx.accessText) lines.push('', ctx.accessText(agent));
     lines.push('', '【團隊成員】');
     for (const a of ctx.AGENTS) lines.push('- ' + a.name + '：' + (a.role || a.engine) + (a.id === agent.id ? '（就是你）' : ''));
     if (task) lines.push('', '【目前任務 #' + task.id + '】', task.goal);
@@ -212,13 +223,13 @@ exports.create = function create(ctx) {
     return lines.join('\n');
   }
 
-  function snapshotFor(agent) { return snapshot(agent.cwd); }
+  function snapshotFor(agent) { return snapshot(rootsFor(agent)); }
 
   // ---------- 一輪結束：判斷要交接、等使用者、還是完成 ----------
   function onTurnDone(agent, run, opts, before) {
     const task = get(opts.taskId);
     if (!task || !ACTIVE.includes(task.status)) return;
-    const changes = before ? diffSnapshots(before, snapshot(agent.cwd)) : [];
+    const changes = before ? diffSnapshots(before, snapshot(rootsFor(agent))) : [];
     const text = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n');
     const errors = run.segments.filter((s) => s.type === 'error');
     const st = stage(opts.stageId);
@@ -284,7 +295,7 @@ exports.create = function create(ctx) {
   function noteInterrupt(agent, opts, before, text) {
     const task = get(opts.taskId);
     if (!task || !ACTIVE.includes(task.status)) return;
-    const changes = before ? diffSnapshots(before, snapshot(agent.cwd)) : [];
+    const changes = before ? diffSnapshots(before, snapshot(rootsFor(agent))) : [];
     task.stageChanges = mergeChanges(task.stageChanges, changes);
     log(task, { type: 'interject', to: agent.id, text: short(text, 300) });
     changed(task);

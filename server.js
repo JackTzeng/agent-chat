@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '2.3.0';
+const VERSION = '2.4.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -135,11 +135,20 @@ function allowedTargets(agent) {
   return Array.isArray(agent.canHandoffTo) ? others.filter((a) => agent.canHandoffTo.includes(a.id)) : others;
 }
 
+// 成員可以存取的資料夾（每一輪都告訴它）
+function accessText(agent) {
+  const dirs = agent.extraDirs || [];
+  if (!dirs.length) return '【可以存取的資料夾】只有你的工作資料夾：' + agent.cwd + '（可讀寫）。其他位置的檔案請使用者用附件傳給你。';
+  return ['【可以存取的資料夾】', '- 工作資料夾：' + agent.cwd + '（可讀寫）']
+    .concat(dirs.map((d) => '- ' + d.path + (d.mode === 'ro' ? '（唯讀：只能讀取，絕對不可以修改、刪除、移動或新增任何檔案）' : '（可讀寫）'))).join('\n');
+}
+
 // 自由聊天模式每一輪附上的說明（身分、團隊、@ 規則）
 function freeHeader(agent) {
   const L = ['【你的身分】你是「' + agent.name + '」' + (agent.role ? '，職責：' + agent.role : '')];
   if (agent.persona) L.push(agent.persona);
   L.push('（介面說明：使用者透過聊天介面或 Telegram 跟你對話，回覆會以 Markdown 顯示。若你產生了圖片或影片檔，請在回覆中用 ![說明](相對路徑) 顯示它。）');
+  L.push(accessText(agent));
   const others = AGENTS.filter((a) => a.id !== agent.id);
   if (others.length) {
     L.push('', '【團隊成員】');
@@ -236,6 +245,7 @@ function buildCommand(agent, sid) {
     if (agent.permissionMode) args.push('--permission-mode', agent.permissionMode);
     if (agent.model) args.push('--model', agent.model);
     if (agent.effort) args.push('--effort', agent.effort);
+    for (const d of agent.extraDirs || []) args.push('--add-dir', d.path);
     if (sid) args.push('--resume', sid);
     return { cmd: getBin('claude'), args };
   }
@@ -243,6 +253,9 @@ function buildCommand(agent, sid) {
     const opts = ['--json', '--skip-git-repo-check', '-c', 'sandbox_mode="' + (agent.sandbox || 'workspace-write') + '"'];
     if (agent.model) opts.push('-m', agent.model);
     if (agent.effort) opts.push('-c', 'model_reasoning_effort="' + agent.effort + '"');
+    // 可讀寫的額外資料夾加進沙箱的可寫入清單（唯讀的不加：沙箱本來就允許讀取）
+    const rw = (agent.extraDirs || []).filter((d) => d.mode !== 'ro').map((d) => "'" + d.path + "'");
+    if (rw.length) opts.push('-c', 'sandbox_workspace_write.writable_roots=[' + rw.join(',') + ']');
     // 提示詞一律用 stdin 傳（"-"），避免 Windows 命令列的引號/換行問題
     const args = sid ? ['exec', 'resume', ...opts, sid, '-'] : ['exec', ...opts, '-'];
     return { cmd: getBin('codex'), args };
@@ -354,7 +367,9 @@ function startRun(agent, userText, opts = {}) {
   // .exe 直接執行；.cmd（npm 安裝的）要透過 cmd.exe，路徑有空白時要加引號
   const needShell = IS_WIN && !/\.exe$/i.test(cmd);
   const spawnCmd = needShell && /\s/.test(cmd) ? '"' + cmd + '"' : cmd;
-  const proc = spawn(spawnCmd, args, { cwd: agent.cwd, shell: needShell, env: process.env, windowsHide: true });
+  // 透過 cmd.exe 執行時，含空白或特殊符號的參數（例如資料夾路徑）要加引號
+  const spawnArgs = needShell ? args.map((x) => (/[\s&|<>^()]/.test(x) && !x.includes('"') ? '"' + x + '"' : x)) : args;
+  const proc = spawn(spawnCmd, spawnArgs, { cwd: agent.cwd, shell: needShell, env: process.env, windowsHide: true });
   run.proc = proc;
 
   const emit = (e) => {
@@ -464,7 +479,7 @@ function resetAgent(id) {
 
 // ---------- 任務與工作流程（tasks.js）----------
 const tasks = taskLib.create({
-  CONFIG, AGENTS, agentById, DATA_DIR, hooks, broadcast, dispatch, cancelTask,
+  CONFIG, AGENTS, agentById, DATA_DIR, hooks, broadcast, dispatch, cancelTask, accessText,
 });
 tasks.writeWorkflowDocs();
 
@@ -621,6 +636,24 @@ function cleanAgent(input, existingId) {
   } else {
     a.sandbox = SANDBOXES.includes(input.sandbox) ? input.sandbox : 'workspace-write';
   }
+  if (Array.isArray(input.extraDirs)) {
+    const seen = new Set();
+    a.extraDirs = [];
+    for (const d of input.extraDirs.slice(0, 10)) {
+      const raw = String((d && d.path) || '').trim().replace(/^"|"$/g, '');
+      if (!raw) continue;
+      if (!path.isAbsolute(raw)) throw new Error('資料夾要填完整路徑，例如 C:\\EM_reports_copy\\EM_DATA：' + raw);
+      if (/["%']/.test(raw)) throw new Error('資料夾路徑不能包含引號或 % 符號：' + raw);
+      const full = path.resolve(raw);
+      let st; try { st = fs.statSync(full); } catch { throw new Error('找不到這個資料夾：' + full); }
+      if (!st.isDirectory()) throw new Error('這不是資料夾：' + full);
+      if (full === path.resolve(ROOT) || full === path.parse(full).root) throw new Error('不能開放整個磁碟或 Agent Chat 程式資料夾：' + full);
+      if (seen.has(full.toLowerCase())) continue;
+      seen.add(full.toLowerCase());
+      a.extraDirs.push({ path: full, mode: d.mode === 'ro' ? 'ro' : 'rw' });
+    }
+    if (!a.extraDirs.length) delete a.extraDirs;
+  }
   if (Array.isArray(input.canHandoffTo)) {
     a.canHandoffTo = input.canHandoffTo.filter((id) => id !== existingId && AGENTS.some((x) => x.id === id));
   }
@@ -668,6 +701,7 @@ function readBody(req) {
 
 const publicAgent = (a) => ({
   id: a.id, name: a.name, avatar: a.avatar, engine: a.engine, model: a.model || '', effort: a.effort || '', role: a.role || '',
+  extraDirs: a.extraDirs || [],
   canHandoffTo: allowedTargets(a).map((t) => t.id),
   busy: runs.has(a.id), hasSession: !!state.sessions[a.id],
   queued: (queueInfo(a.id) || {}).count || 0, waitingOn: (queueInfo(a.id) || {}).waitingOn || null,
