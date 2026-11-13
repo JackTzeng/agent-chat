@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -141,12 +141,19 @@ function teamHint(agent) {
   return s;
 }
 
-function buildPrompt(agent, text, isNew, fromAgent) {
+function buildPrompt(agent, text, isNew, fromAgent, opts = {}) {
   let body;
   if (fromAgent) {
     body = '【來自同事 ' + fromAgent.name + ' 的訊息】\n' + text +
       '\n\n（要回覆對方請在回覆中寫 @' + fromAgent.name + '；事情處理完就直接向使用者總結，不要再 @ 對方。）';
-  } else body = isNew ? '【使用者訊息】\n' + text : text;
+  } else {
+    let note = '';
+    const ccOf = opts.cc && agentById(opts.cc);
+    const ccTo = (opts.ccTo || []).map(agentById).filter(Boolean);
+    if (ccOf) note = '（這則訊息使用者是交給 ' + ccOf.name + ' 的，並在訊息中 @ 了你，請依你的職責協助，需要時用 @' + ccOf.name + ' 跟對方協調。）\n';
+    else if (ccTo.length) note = '（使用者同時把這則訊息交給了 ' + ccTo.map((a) => a.name).join('、') + '，需要時用 @名字 協調分工。）\n';
+    body = (isNew ? '【使用者訊息】\n' : '') + note + text;
+  }
   if (!isNew) return body;
   const persona = agent.persona ? '【你的角色設定】\n' + agent.persona + '\n\n' : '';
   return persona + teamHint(agent) + '\n\n' + body;
@@ -156,6 +163,18 @@ const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function findMentions(agent, text) {
   return allowedTargets(agent).filter((a) =>
     new RegExp('@\\s?(' + escRe(a.name) + '|' + escRe(a.id) + ')', 'i').test(text));
+}
+
+// 使用者的訊息裡 @ 了誰（不受 canHandoffTo 限制），就同時交給那位
+function userMentions(agent, text) {
+  return AGENTS.filter((a) => a.id !== agent.id &&
+    new RegExp('@\\s?(' + escRe(a.name) + '|' + escRe(a.id) + ')', 'i').test(text));
+}
+function userSend(agent, text, via) {
+  const cc = userMentions(agent, text);
+  dispatch(agent, text, { via, ccTo: cc.map((a) => a.id) });
+  for (const t of cc) dispatch(t, text, { via, cc: agent.id });
+  return cc;
 }
 
 // 有空就馬上執行，忙碌中就排隊
@@ -252,10 +271,10 @@ function startRun(agent, userText, opts = {}) {
   const { cmd, args } = buildCommand(agent, sid);
   const fromAgent = opts.from ? agentById(opts.from) : null;
   const hops = opts.hops || 0;
-  const prompt = buildPrompt(agent, userText, !sid, fromAgent);
+  const prompt = buildPrompt(agent, userText, !sid, fromAgent, opts);
 
-  appendHistory(agent.id, { role: 'user', text: userText, from: opts.from, via: opts.via, ts: Date.now() });
-  broadcast({ agentId: agent.id, kind: 'user', text: userText, from: opts.from, via: opts.via });
+  appendHistory(agent.id, { role: 'user', text: userText, from: opts.from, via: opts.via, cc: opts.cc, ts: Date.now() });
+  broadcast({ agentId: agent.id, kind: 'user', text: userText, from: opts.from, via: opts.via, cc: opts.cc });
   hooks.emit('user', { agent, text: userText, from: opts.from, via: opts.via });
 
   const run = { segments: [], meta: '', finished: false, stderr: Buffer.alloc(0) };
@@ -527,8 +546,8 @@ const server = http.createServer(async (req, res) => {
       if (runs.has(agent.id)) return send(res, 409, { error: agent.name + ' 還在忙，等它做完或按停止' });
       const { text } = await readBody(req);
       if (!text || !String(text).trim()) return send(res, 400, { error: '訊息是空的' });
-      startRun(agent, String(text));
-      return send(res, 200, { ok: true });
+      const cc = userSend(agent, String(text));
+      return send(res, 200, { ok: true, cc: cc.map((a) => a.name) });
     }
     if (p === '/api/stopall' && req.method === 'POST') {
       for (const a of AGENTS) stopRun(a.id);
@@ -572,7 +591,7 @@ server.listen(PORT, HOST, () => {
 // Telegram 遙控（agents.json 有設定 telegram.botToken 才會啟動）
 require('./telegram').start({
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState,
-  dispatch, stopRun, resetAgent, maxHops,
+  dispatch, userSend, stopRun, resetAgent, maxHops,
 });
 
 const shutdown = () => { for (const id of runs.keys()) stopRun(id); process.exit(0); };

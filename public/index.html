@@ -19,7 +19,8 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
     font: 15px/1.6 -apple-system, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
-  .app { display: grid; grid-template-columns: 260px 1fr; height: 100dvh; }
+  body { display: flex; flex-direction: column; height: 100dvh; }
+  .app { display: grid; grid-template-columns: 260px 1fr; flex: 1; min-height: 0; }
 
   /* 側邊欄 */
   .side { border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
@@ -128,6 +129,8 @@
   .modal-actions { display: flex; gap: 8px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
   .modal-actions .spacer { flex: 1; }
   @media (max-width: 760px) { .fgrid { grid-template-columns: 1fr; } .agent .gear { opacity: .7; } }
+  .stale { background: #e2a72e; color: #2b2924; font-size: 13px; padding: 8px 16px; text-align: center; display: none; }
+  .stale.show { display: block; }
   .toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: var(--err); color: #fff;
     padding: 8px 14px; border-radius: 10px; font-size: 13px; display: none; z-index: 9; }
 
@@ -144,6 +147,7 @@
 </style>
 </head>
 <body>
+<div class="stale" id="stale"></div>
 <div class="app">
   <aside class="side">
     <h1>💬 Agent Chat <span id="ver" class="ver"></span></h1>
@@ -177,6 +181,7 @@ const withToken = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + 
 
 const $ = (id) => document.getElementById(id);
 const ALL = '__all';
+const UI_VERSION = '1.3.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -184,6 +189,7 @@ const liveBubbles = new Map(); // agentId -> 正在執行中的回覆泡泡（�
 
 function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.style.display = 'block';
+  t.style.background = /^(✅|📢)/.test(msg) ? 'var(--user)' : ''; // 成功／通知用綠色，錯誤用紅色
   clearTimeout(toast._t); toast._t = setTimeout(() => (t.style.display = 'none'), 3500);
 }
 async function api(path, opts = {}) {
@@ -287,7 +293,12 @@ function clearEmpty() { const e = $('msgs').querySelector('.empty'); if (e) e.re
 
 function addUserRow(entry, agentId) {
   clearEmpty();
-  const target = agentOf(agentId), from = entry.from ? agentOf(entry.from) : null;
+  const target = agentOf(agentId), from = entry.from ? agentOf(entry.from) : null, ccOf = entry.cc ? agentOf(entry.cc) : null;
+  if (ccOf && current === ALL) { // 全員頁：同一則訊息已經顯示過，這裡只標註
+    const d = document.createElement('div'); d.className = 'sysline';
+    d.innerHTML = '<span>📢 訊息中 @ 了 ' + esc(label(target)) + '，同時交給它</span>';
+    $('msgs').appendChild(d); return;
+  }
   if (from && current === ALL) { // 全員頁：轉交訊息只顯示一行（內容就是上方發話者的回覆）
     const d = document.createElement('div'); d.className = 'sysline';
     d.innerHTML = '<span>📨 ' + esc(label(from)) + ' → ' + esc(label(target)) + '（自動轉交）</span>';
@@ -297,6 +308,7 @@ function addUserRow(entry, agentId) {
   const col = document.createElement('div'); col.className = 'col';
   const via = entry.via === 'telegram' ? '📱 ' : '';
   const who = from ? '📨 來自 ' + label(from) + '（自動轉交）'
+    : ccOf ? via + '📢 你在給 ' + label(ccOf) + ' 的訊息中 @ 了這位'
     : (current === ALL ? via + '你 → ' + label(target) : (via ? '📱 來自 Telegram' : ''));
   if (who) { const w = document.createElement('div'); w.className = 'who'; w.textContent = who; col.appendChild(w); }
   const b = document.createElement('div'); b.className = 'bubble';
@@ -369,7 +381,10 @@ async function send() {
   if (a.busy) { try { await api('/api/stop/' + a.id, { method: 'POST' }); } catch (e) { toast(e.message); } return; }
   const text = $('input').value.trim(); if (!text) return;
   $('input').value = ''; autoGrow();
-  try { await api('/api/chat/' + a.id, { method: 'POST', body: JSON.stringify({ text }) }); }
+  try {
+    const r = await api('/api/chat/' + a.id, { method: 'POST', body: JSON.stringify({ text }) });
+    if (r.cc && r.cc.length) toast('📢 也同時交給 ' + r.cc.join('、'));
+  }
   catch (e) { toast(e.message); $('input').value = text; }
 }
 $('sendBtn').onclick = send;
@@ -587,6 +602,12 @@ async function openTeamForm() {
 
 $('settingsBtn').onclick = () => (current === ALL ? openTeamForm() : openAgentForm(current));
 
+function staleWarning(serverVer) {
+  const el = $('stale');
+  el.textContent = '⚠️ 伺服器還在跑舊版（' + serverVer + '），網頁已經是 v' + UI_VERSION + '。請關掉 start.bat 的黑色視窗再重開，然後按 F5。';
+  el.classList.add('show');
+}
+
 async function refreshAgents() {
   try { agents = await api('/api/agents'); } catch { return; }
   if (current !== ALL && !agentOf(current)) { selectAgent(ALL); return; }
@@ -605,7 +626,7 @@ function connectEvents() {
     if (ev.kind === 'queued') { if (shown(ev.agentId)) toast(a.name + ' 忙碌中，同事的訊息已排隊'); return; }
     if (!shown(ev.agentId)) { if (['user', 'segment', 'done'].includes(ev.kind)) { unread.add(ev.agentId); renderAgents(); } return; }
     const stick = nearBottom();
-    if (ev.kind === 'user') { addUserRow({ text: ev.text, from: ev.from, via: ev.via }, ev.agentId); addBotRow([], '', true, ev.agentId); scrollDown(true); return; }
+    if (ev.kind === 'user') { addUserRow({ text: ev.text, from: ev.from, via: ev.via, cc: ev.cc }, ev.agentId); addBotRow([], '', true, ev.agentId); scrollDown(true); return; }
     if (ev.kind === 'segment') liveAppend(ev.agentId, ev.segment);
     if (ev.kind === 'done') liveFinish(ev.agentId, ev.meta);
     if (stick) scrollDown(true);
@@ -617,7 +638,11 @@ function connectEvents() {
   try { agents = await api('/api/agents'); }
   catch (e) { $('msgs').innerHTML = '<div class="empty">連不上伺服器：' + esc(e.message) + '<br>如果有設定 token，網址要加上 ?token=你的密碼</div>'; return; }
   let saved = null; try { saved = localStorage.getItem('agentchat_current'); } catch {}
-  api('/api/info').then((i) => ($('ver').textContent = 'v' + i.version)).catch(() => {});
+  // 網頁檔案 git pull 後馬上是新的，但伺服器要重開才會更新；版本不一致就提醒
+  api('/api/info').then((i) => {
+    $('ver').textContent = 'v' + i.version;
+    if (i.version !== UI_VERSION) staleWarning(i.version);
+  }).catch(() => staleWarning('舊版'));
   connectEvents();
   selectAgent(saved === ALL || agents.some((a) => a.id === saved) ? saved : agents[0].id);
 })();

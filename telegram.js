@@ -137,8 +137,9 @@ exports.start = function start(ctx) {
     const at = text.match(/^@(\S+)\s*/);
     if (at) { const a = findAgent(at[1]); if (a) agent = a; }
     const busy = ctx.runs.has(agent.id);
-    ctx.dispatch(agent, text, { via: 'telegram' });
-    await say(chatId, busy ? '⏳ ' + label(agent) + ' 正在忙，已排隊' : '✅ 已交給 ' + label(agent));
+    const cc = ctx.userSend(agent, text, 'telegram');
+    await say(chatId, (busy ? '⏳ ' + label(agent) + ' 正在忙，已排隊' : '✅ 已交給 ' + label(agent)) +
+      (cc.length ? '\n📢 也同時交給 ' + cc.map(label).join('、') : ''));
   }
 
   // agent 每做完一輪就推送結果
