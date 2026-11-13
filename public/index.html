@@ -93,6 +93,41 @@
   .ver { font-size: 11px; font-weight: 400; color: var(--muted); margin-left: 4px; }
   .side .sep { height: 1px; background: var(--line); margin: 4px 6px; }
   textarea:disabled { opacity: .6; }
+
+  /* 新增 / 設定 */
+  .agent .gear { position: absolute; right: 8px; bottom: 8px; border: 0; background: none; padding: 2px 4px; font-size: 13px;
+    opacity: 0; cursor: pointer; border-radius: 6px; }
+  .agent:hover .gear, .agent.active .gear { opacity: .7; }
+  .agent .gear:hover { opacity: 1; background: var(--bg); }
+  .add-card { justify-content: center; color: var(--muted); border: 1px dashed var(--line) !important; font-size: 14px; }
+  .add-card:hover { color: var(--accent); border-color: var(--accent) !important; }
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: none; align-items: flex-start; justify-content: center;
+    z-index: 20; overflow-y: auto; padding: 32px 12px; }
+  .modal-bg.open { display: flex; }
+  .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; width: min(640px, 100%); padding: 20px 22px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.18); }
+  .modal h2 { margin: 0 0 4px; font-size: 18px; }
+  .modal .lead { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  .fgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .field.full { grid-column: 1 / -1; }
+  .field label { font-size: 13px; font-weight: 600; }
+  .field .help { font-size: 12px; color: var(--muted); }
+  .field input, .field select, .field textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 9px; padding: 7px 10px; outline: none; min-width: 0; }
+  .field textarea { resize: vertical; min-height: 110px; }
+  .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); }
+  .namerow { display: grid; grid-template-columns: 64px 1fr; gap: 8px; }
+  .namerow input:first-child { text-align: center; font-size: 20px; padding: 3px; }
+  .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 6px 0; }
+  .checks label { font-weight: 400; display: flex; gap: 5px; align-items: center; cursor: pointer; }
+  .checks.disabled { opacity: .45; pointer-events: none; }
+  .opt { display: flex; gap: 6px; align-items: center; font-size: 13px; cursor: pointer; }
+  .tpl { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tpl button { font-size: 12px; padding: 3px 10px; border-radius: 20px; }
+  .modal-actions { display: flex; gap: 8px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
+  .modal-actions .spacer { flex: 1; }
+  @media (max-width: 760px) { .fgrid { grid-template-columns: 1fr; } .agent .gear { opacity: .7; } }
   .toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: var(--err); color: #fff;
     padding: 8px 14px; border-radius: 10px; font-size: 13px; display: none; z-index: 9; }
 
@@ -117,7 +152,8 @@
   <main class="main">
     <div class="top">
       <div class="title" id="title">—</div>
-      <button id="resetBtn" title="清空這個 agent 的對話，下一句會重新開始">新對話</button>
+      <button id="settingsBtn">⚙️ 設定</button>
+      <button id="resetBtn" title="清空這個成員的對話，下一句會重新開始">新對話</button>
     </div>
     <div class="msgs" id="msgs"></div>
     <div class="composer">
@@ -130,6 +166,7 @@
   </main>
 </div>
 <div class="toast" id="toast"></div>
+<div class="modal-bg" id="modalBg"><div class="modal" id="modal"></div></div>
 
 <script>
 // ---- token（對外開放時用；網址帶 ?token=xxx 一次即可，會記在這台裝置）----
@@ -212,12 +249,16 @@ function agentCard(a, extraClass = '') {
         ${a.engine ? `<div class="role">${esc([a.model || '預設模型', a.effort].filter(Boolean).join(' · '))}</div>` : ''}
       </div>
       <span class="unread"></span>
+      ${a.id !== ALL ? `<button class="gear" data-edit="${esc(a.id)}" title="編輯成員">⚙️</button>` : ''}
     </div>`;
 }
 function renderAgents() {
   const allCard = { id: ALL, name: '全員', avatar: '👥', role: '看大家的對話與協作', busy: agents.some((a) => a.busy) };
-  $('agents').innerHTML = agentCard(allCard, 'all') + '<div class="sep"></div>' + agents.map((a) => agentCard(a)).join('');
-  document.querySelectorAll('.agent').forEach((el) => (el.onclick = () => selectAgent(el.dataset.id)));
+  $('agents').innerHTML = agentCard(allCard, 'all') + '<div class="sep"></div>' + agents.map((a) => agentCard(a)).join('') +
+    '<div class="agent add-card" id="addAgent">＋ 新增成員</div>';
+  document.querySelectorAll('.agent[data-id]').forEach((el) => (el.onclick = () => selectAgent(el.dataset.id)));
+  document.querySelectorAll('.gear').forEach((el) => (el.onclick = (e) => { e.stopPropagation(); openAgentForm(el.dataset.edit); }));
+  $('addAgent').onclick = () => openAgentForm(null);
 }
 
 function updateTop() {
@@ -225,6 +266,7 @@ function updateTop() {
   if (current === ALL) {
     $('title').innerHTML = '👥 全員<span class="sub">所有成員的對話，依時間排列</span>';
     $('resetBtn').style.display = 'none';
+    $('settingsBtn').textContent = '⚙️ 團隊設定';
     inp.disabled = true; inp.placeholder = '這裡只能觀看。要下指令請點選左邊的成員。';
     const busy = agents.some((a) => a.busy);
     btn.textContent = '全部停止'; btn.className = busy ? 'danger' : ''; btn.disabled = !busy;
@@ -233,6 +275,7 @@ function updateTop() {
   const a = agentOf(current); if (!a) return;
   $('title').innerHTML = esc(label(a)) + '<span class="sub">' + esc([a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ')) + '</span>';
   $('resetBtn').style.display = '';
+  $('settingsBtn').textContent = '⚙️ 設定';
   inp.disabled = false; inp.placeholder = '輸入訊息…（寫 @名字 可以請它找同事協助）';
   btn.disabled = false;
   if (a.busy) { btn.textContent = '停止'; btn.className = 'danger'; }
@@ -341,11 +384,221 @@ input.addEventListener('keydown', (e) => {
 function autoGrow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, window.innerHeight * 0.4) + 'px'; }
 input.addEventListener('input', autoGrow);
 
+
+// ---- 成員設定表單 ----
+const MODEL_SUGGEST = {
+  claude: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'opus', 'sonnet', 'haiku', 'fable'],
+  codex: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-terra'],
+};
+const DEFAULT_MODEL = { claude: 'claude-opus-5-5', codex: 'gpt-6-sol' };
+const EFFORT_LABEL = { '': '預設', low: 'low：最快', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max：最強、最慢' };
+const PERM_LABEL = {
+  plan: 'plan：只規劃，不動手', acceptEdits: 'acceptEdits：可改檔，不能執行指令',
+  auto: 'auto：自己判斷風險（建議）', bypassPermissions: 'bypassPermissions：全部允許（危險）',
+};
+const SANDBOX_LABEL = {
+  'read-only': 'read-only：只能讀', 'workspace-write': 'workspace-write：只能動工作資料夾（建議）',
+  'danger-full-access': 'danger-full-access：不受限制（危險）',
+};
+const ROLE_TEMPLATES = {
+  'PM': { role: 'PM · 定目標、派工、驗收', persona: '你叫{name}，是這個團隊的專案經理（PM），用繁體中文回覆。\n你的工作：釐清使用者的目標（不清楚就先問，不要猜）、訂出可驗證的驗收標準、把計畫寫進 PLAN.md、派工給工程師，最後驗收並向使用者總結。\n你不親自寫程式碼。派工時寫清楚要做什麼、放在哪個檔案、驗收標準是什麼。' },
+  'Coder': { role: 'Coder · 實作', persona: '你叫{name}，是這個團隊的工程師（Coder），用繁體中文回覆。\n你的工作：依照 PM 的派工與 PLAN.md 實作。完成後交給 QA 測試，說明改了哪些檔案、怎麼執行、要測什麼。\n規格不清楚時問 PM；QA 退回時修正後再送測。' },
+  'QA': { role: 'QA · 測試與驗證', persona: '你叫{name}，是這個團隊的品質保證（QA），用繁體中文回覆。\n你的工作：依照 PLAN.md 的驗收標準實際執行與測試，不要只讀程式碼就下結論。你不修改程式碼。\n不通過：退回工程師，列出重現步驟、預期結果與實際結果。通過：回報 PM，附上測了哪些項目與結果。' },
+  '文件': { role: '文件 · 撰寫說明與報告', persona: '你叫{name}，負責撰寫文件，用繁體中文回覆。\n你的工作：把團隊完成的成果整理成清楚的說明文件或報告（README、操作手冊、變更紀錄），寫完後回報給交辦的人。\n你不修改程式碼。' },
+  '研究': { role: '研究 · 查資料與比較方案', persona: '你叫{name}，負責研究與查資料，用繁體中文回覆。\n你的工作：針對交辦的問題查資料、比較可行方案，整理成重點與建議，附上來源，回報給交辦的人。\n你不修改程式碼。' },
+};
+let CFG = null;
+
+function openModal(html) { $('modal').innerHTML = html; $('modalBg').classList.add('open'); }
+function closeModal() { $('modalBg').classList.remove('open'); }
+$('modalBg').addEventListener('mousedown', (e) => { if (e.target === $('modalBg')) closeModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+function opts(list, labels, selected) {
+  return list.map((v) => `<option value="${esc(v)}" ${v === selected ? 'selected' : ''}>${esc(labels[v] || v)}</option>`).join('');
+}
+
+async function openAgentForm(id) {
+  try { CFG = await api('/api/config'); } catch (e) { toast(e.message); return; }
+  const editing = id ? CFG.agents.find((x) => x.id === id) : null;
+  if (id && !editing) { toast('找不到這位成員'); return; }
+  const a = editing || { name: '', avatar: '🤖', role: '', engine: 'claude', model: DEFAULT_MODEL.claude, effort: 'high',
+    permissionMode: 'auto', sandbox: 'workspace-write', cwd: './workspace', persona: '' };
+  const others = CFG.agents.filter((x) => x.id !== id);
+  const unrestricted = !Array.isArray(a.canHandoffTo);
+  const live = agentOf(id);
+
+  openModal(`
+    <h2>${editing ? '⚙️ 編輯成員' : '＋ 新增成員'}</h2>
+    <p class="lead">${editing ? '模型、強度、權限下一句就生效；名稱、職責、人設要「開新對話」才會生效。' : '新成員會出現在左邊。其他成員要開新對話後，才會知道有這位新同事。'}</p>
+    <div class="fgrid">
+      <div class="field full">
+        <label>快速套用職務範本</label>
+        <div class="tpl">${Object.keys(ROLE_TEMPLATES).map((k) => `<button type="button" data-tpl="${k}">${k}</button>`).join('')}</div>
+      </div>
+      <div class="field">
+        <label>頭像與名稱</label>
+        <div class="namerow"><input id="f_avatar" value="${esc(a.avatar || '🤖')}" maxlength="8"><input id="f_name" value="${esc(a.name)}" placeholder="例如：小安" maxlength="30"></div>
+        <span class="help">同事會用「@名稱」呼叫，不能有空白</span>
+      </div>
+      <div class="field">
+        <label>職責（簡短）</label>
+        <input id="f_role" value="${esc(a.role || '')}" placeholder="例如：QA · 測試與驗證" maxlength="60">
+        <span class="help">會告訴其他成員這位負責什麼</span>
+      </div>
+      <div class="field">
+        <label>引擎</label>
+        <select id="f_engine">${opts(['claude', 'codex'], { claude: 'Claude Code', codex: 'Codex' }, a.engine)}</select>
+      </div>
+      <div class="field">
+        <label>模型</label>
+        <input id="f_model" list="modelList" value="${esc(a.model || '')}" placeholder="留空 = 預設模型">
+        <datalist id="modelList"></datalist>
+        <span class="help">可從清單選，也可以直接輸入</span>
+      </div>
+      <div class="field">
+        <label>推理強度</label>
+        <select id="f_effort">${opts(CFG.options.efforts, EFFORT_LABEL, a.effort || '')}</select>
+        <span class="help">越高越聰明，也越慢、越耗額度</span>
+      </div>
+      <div class="field">
+        <label>權限</label>
+        <select id="f_perm"></select>
+      </div>
+      <div class="field full">
+        <label>工作資料夾</label>
+        <input id="f_cwd" value="${esc(a.cwd || './workspace')}" placeholder="./workspace 或 C:/Users/你/專案">
+        <span class="help">要和同事交接檔案的話，建議用同一個資料夾</span>
+      </div>
+      <div class="field full">
+        <label>可以把工作交給誰</label>
+        <label class="opt"><input type="checkbox" id="f_unres" ${unrestricted ? 'checked' : ''}> 不限制（可以交給所有同事）</label>
+        <div class="checks ${unrestricted ? 'disabled' : ''}" id="f_handoff">
+          ${others.length ? others.map((o) => `<label><input type="checkbox" value="${esc(o.id)}" ${!unrestricted && a.canHandoffTo.includes(o.id) ? 'checked' : ''}> ${esc((o.avatar || '🤖') + ' ' + o.name)}</label>`).join('') : '<span class="help">目前沒有其他成員</span>'}
+        </div>
+      </div>
+      <div class="field full">
+        <label>人設與工作說明</label>
+        <textarea id="f_persona" rows="7" placeholder="例如：你叫小安，是 QA。依 PLAN.md 的驗收標準實際測試，不通過就退回工程師……">${esc(a.persona || '')}</textarea>
+      </div>
+    </div>
+    <div class="modal-actions">
+      ${editing ? `<button class="danger" id="f_delete">刪除成員</button>` : ''}
+      ${editing ? `<label class="opt"><input type="checkbox" id="f_reset"> 儲存後開新對話</label>` : ''}
+      <span class="spacer"></span>
+      <button id="f_cancel">取消</button>
+      <button class="primary" id="f_save">${editing ? '儲存' : '新增'}</button>
+    </div>`);
+
+  const engineSel = $('f_engine');
+  function syncEngine(changed) {
+    const eng = engineSel.value;
+    $('modelList').innerHTML = MODEL_SUGGEST[eng].map((m) => `<option value="${esc(m)}">`).join('');
+    const m = $('f_model');
+    if (changed && MODEL_SUGGEST[eng === 'claude' ? 'codex' : 'claude'].includes(m.value)) m.value = DEFAULT_MODEL[eng];
+    $('f_perm').innerHTML = eng === 'claude'
+      ? opts(CFG.options.permissionModes, PERM_LABEL, a.permissionMode || 'auto')
+      : opts(CFG.options.sandboxes, SANDBOX_LABEL, a.sandbox || 'workspace-write');
+  }
+  syncEngine(false);
+  engineSel.onchange = () => syncEngine(true);
+  $('f_unres').onchange = (e) => $('f_handoff').classList.toggle('disabled', e.target.checked);
+  if (editing) ['f_name', 'f_role', 'f_persona', 'f_engine'].forEach((fid) =>
+    $(fid).addEventListener('change', () => { $('f_reset').checked = true; }));
+  document.querySelectorAll('[data-tpl]').forEach((b) => (b.onclick = () => {
+    const t = ROLE_TEMPLATES[b.dataset.tpl], name = $('f_name').value.trim() || '（名稱）';
+    if ($('f_persona').value.trim() && !confirm('要用範本取代目前的人設嗎？')) return;
+    $('f_role').value = t.role; $('f_persona').value = t.persona.replace('{name}', name);
+    if (editing) $('f_reset').checked = true;
+  }));
+  $('f_cancel').onclick = closeModal;
+
+  $('f_save').onclick = async () => {
+    const body = {
+      name: $('f_name').value, avatar: $('f_avatar').value, role: $('f_role').value, engine: engineSel.value,
+      model: $('f_model').value, effort: $('f_effort').value, cwd: $('f_cwd').value, persona: $('f_persona').value,
+      canHandoffTo: $('f_unres').checked ? null : [...document.querySelectorAll('#f_handoff input:checked')].map((x) => x.value),
+    };
+    if (engineSel.value === 'claude') body.permissionMode = $('f_perm').value; else body.sandbox = $('f_perm').value;
+    // 名稱若改了，人設裡的舊名字也一起換
+    if (editing && editing.name && body.name.trim() && editing.name !== body.name.trim()) body.persona = body.persona.split(editing.name).join(body.name.trim());
+    $('f_save').disabled = true;
+    try {
+      if (editing) {
+        await api('/api/agents/' + id, { method: 'PUT', body: JSON.stringify(body) });
+        if ($('f_reset').checked) {
+          try { await api('/api/reset/' + id, { method: 'POST' }); }
+          catch (e) { toast('已儲存，但' + (live && live.busy ? '成員工作中，' : '') + '沒辦法開新對話：' + e.message); }
+        }
+        closeModal(); toast('✅ 已儲存');
+      } else {
+        const r = await api('/api/agents', { method: 'POST', body: JSON.stringify(body) });
+        closeModal(); await refreshAgents(); selectAgent(r.id);
+        toast('✅ 已新增「' + body.name.trim() + '」。其他成員要開新對話才會認識它');
+      }
+    } catch (e) { toast(e.message); $('f_save').disabled = false; }
+  };
+  if (editing) $('f_delete').onclick = async () => {
+    if (!confirm('確定刪除「' + editing.name + '」？\n（對話記錄檔會保留在 data 資料夾，但介面上不會再顯示）')) return;
+    try { await api('/api/agents/' + id, { method: 'DELETE' }); closeModal(); toast('已刪除'); }
+    catch (e) { toast(e.message); }
+  };
+  setTimeout(() => $(editing ? 'f_persona' : 'f_name').focus(), 50);
+}
+
+async function openTeamForm() {
+  try { CFG = await api('/api/config'); } catch (e) { toast(e.message); return; }
+  openModal(`
+    <h2>⚙️ 團隊設定</h2>
+    <p class="lead">工作流程會告訴每位成員整個團隊怎麼分工。修改後要讓成員開新對話才會生效。</p>
+    <div class="fgrid">
+      <div class="field full">
+        <label>工作流程</label>
+        <textarea id="t_workflow" rows="9" placeholder="例如：\n1. PM 定目標、寫 PLAN.md，派工給 Coder\n2. Coder 實作後交給 QA\n3. QA 不通過退回 Coder，通過回報 PM\n4. PM 驗收後向使用者總結">${esc(CFG.workflow)}</textarea>
+      </div>
+      <div class="field">
+        <label>自動轉交上限</label>
+        <input id="t_hops" type="number" min="1" max="50" value="${CFG.maxRelayHops}">
+        <span class="help">成員之間最多自動來回幾次，避免無限循環</span>
+      </div>
+      <div class="field">
+        <label>成員目前的分工</label>
+        <span class="help">${CFG.agents.map((x) => esc((x.avatar || '🤖') + ' ' + x.name + '：' + (x.role || x.engine))).join('<br>')}</span>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <label class="opt"><input type="checkbox" id="t_reset" checked> 儲存後全部成員開新對話</label>
+      <span class="spacer"></span>
+      <button id="t_cancel">取消</button>
+      <button class="primary" id="t_save">儲存</button>
+    </div>`);
+  $('t_cancel').onclick = closeModal;
+  $('t_save').onclick = async () => {
+    try {
+      await api('/api/team', { method: 'PUT', body: JSON.stringify({ workflow: $('t_workflow').value, maxRelayHops: $('t_hops').value }) });
+      if ($('t_reset').checked) {
+        try { await api('/api/resetall', { method: 'POST' }); }
+        catch (e) { toast('已儲存，但沒辦法開新對話：' + e.message); closeModal(); return; }
+      }
+      closeModal(); toast('✅ 團隊設定已儲存');
+    } catch (e) { toast(e.message); }
+  };
+}
+
+$('settingsBtn').onclick = () => (current === ALL ? openTeamForm() : openAgentForm(current));
+
+async function refreshAgents() {
+  try { agents = await api('/api/agents'); } catch { return; }
+  if (current !== ALL && !agentOf(current)) { selectAgent(ALL); return; }
+  renderAgents(); updateTop();
+}
+
 // ---- 即時事件 ----
 function connectEvents() {
   const es = new EventSource(withToken('/api/events'));
   es.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
+    if (ev.kind === 'agents-changed') { refreshAgents(); return; }
     const a = agentOf(ev.agentId); if (!a) return;
     if (ev.kind === 'busy') { a.busy = ev.busy; renderAgents(); updateTop(); return; }
     if (ev.kind === 'reset') { if (shown(ev.agentId)) selectAgent(current); return; }

@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -74,15 +74,23 @@ fs.mkdirSync(HIST_DIR, { recursive: true });
 const AGENTS_FILE = path.join(ROOT, 'agents.json');
 if (!fs.existsSync(AGENTS_FILE)) fs.copyFileSync(path.join(ROOT, 'agents.example.json'), AGENTS_FILE);
 const CONFIG = JSON.parse(fs.readFileSync(AGENTS_FILE, 'utf8'));
-const MAX_HOPS = Number(CONFIG.maxRelayHops) || 12; // agent 之間自動轉交的上限
-function loadAgents() {
-  return CONFIG.agents.map((a) => {
-    const cwd = path.resolve(ROOT, a.cwd || './workspace');
-    fs.mkdirSync(cwd, { recursive: true });
-    return { ...a, cwd };
-  });
+const maxHops = () => Number(CONFIG.maxRelayHops) || 12; // agent 之間自動轉交的上限
+const prepAgent = (a) => {
+  const cwd = path.resolve(ROOT, a.cwd || './workspace');
+  fs.mkdirSync(cwd, { recursive: true });
+  return { ...a, cwd };
+};
+// AGENTS 是執行中使用的清單（cwd 已轉成完整路徑）；CONFIG.agents 是原始設定。
+// 修改時就地更新陣列，其他模組（Telegram）拿到的參照才會跟著變。
+const AGENTS = CONFIG.agents.map(prepAgent);
+function reloadAgents() {
+  AGENTS.splice(0, AGENTS.length, ...CONFIG.agents.map(prepAgent));
 }
-const AGENTS = loadAgents();
+function saveConfig() {
+  const tmp = AGENTS_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(CONFIG, null, 2));
+  fs.renameSync(tmp, AGENTS_FILE);
+}
 const agentById = (id) => AGENTS.find((a) => a.id === id);
 
 let state = { sessions: {} };
@@ -212,7 +220,8 @@ function parseClaude(ev, emit) {
   } else if (ev.type === 'result') {
     if (ev.session_id) emit({ kind: 'session', id: ev.session_id });
     if (ev.is_error || (ev.subtype && ev.subtype !== 'success')) emit({ kind: 'error', text: ev.result || ev.subtype });
-    const cost = typeof ev.total_cost_usd === 'number' ? 'US$' + ev.total_cost_usd.toFixed(4) : '';
+    // total_cost_usd 是「換算成 API 價格」的估計值；用訂閱帳號登入時不會真的收費
+    const cost = typeof ev.total_cost_usd === 'number' ? '≈API價 US$' + ev.total_cost_usd.toFixed(2) : '';
     emit({ kind: 'done', meta: [cost, ev.duration_ms ? (ev.duration_ms / 1000).toFixed(1) + 's' : ''].filter(Boolean).join(' · ') });
   }
 }
@@ -313,8 +322,8 @@ function startRun(agent, userText, opts = {}) {
     // 回覆裡 @ 了同事 → 自動轉交
     const replyText = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n');
     const targets = run.stopped || !replyText ? [] : findMentions(agent, replyText);
-    if (targets.length && hops >= MAX_HOPS) {
-      emit({ kind: 'tool', text: '⛔ 已達自動轉交上限（' + MAX_HOPS + ' 次），沒有再轉給 ' +
+    if (targets.length && hops >= maxHops()) {
+      emit({ kind: 'tool', text: '⛔ 已達自動轉交上限（' + maxHops() + ' 次），沒有再轉給 ' +
         targets.map((t) => t.name).join('、') + '。需要的話請你手動接手。' });
     }
 
@@ -322,9 +331,9 @@ function startRun(agent, userText, opts = {}) {
     runs.delete(agent.id);
     broadcast({ agentId: agent.id, kind: 'done', meta: run.meta });
     broadcast({ agentId: agent.id, kind: 'busy', busy: false });
-    hooks.emit('done', { agent, segments: run.segments, meta: run.meta, relayTo: hops < MAX_HOPS ? targets : [] });
+    hooks.emit('done', { agent, segments: run.segments, meta: run.meta, relayTo: hops < maxHops() ? targets : [] });
 
-    if (hops < MAX_HOPS) for (const t of targets) dispatch(t, replyText, { from: agent.id, hops: hops + 1 });
+    if (hops < maxHops()) for (const t of targets) dispatch(t, replyText, { from: agent.id, hops: hops + 1 });
 
     // 處理排隊中的轉交訊息
     const q = queues.get(agent.id);
@@ -352,6 +361,53 @@ function resetAgent(id) {
   broadcast({ agentId: id, kind: 'reset' });
   return true;
 }
+
+// ---------- 成員設定（網頁上新增 / 編輯 / 刪除）----------
+const ENGINES = ['claude', 'codex'];
+const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+const PERMISSION_MODES = ['plan', 'acceptEdits', 'auto', 'bypassPermissions'];
+const SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'];
+
+function cleanAgent(input, existingId) {
+  const str = (v, max = 4000) => String(v ?? '').trim().slice(0, max);
+  const a = {
+    id: existingId,
+    name: str(input.name, 30),
+    avatar: str(input.avatar, 8) || '🤖',
+    role: str(input.role, 60),
+    engine: str(input.engine),
+    model: str(input.model, 80),
+    effort: str(input.effort),
+    cwd: str(input.cwd, 300) || './workspace',
+    persona: str(input.persona, 8000),
+  };
+  if (!a.name) throw new Error('請填名稱');
+  if (/\s|@/.test(a.name)) throw new Error('名稱不能有空白或 @（同事要用 @名稱 呼叫）');
+  const dup = AGENTS.find((x) => x.id !== existingId && x.name.toLowerCase() === a.name.toLowerCase());
+  if (dup) throw new Error('已經有叫「' + a.name + '」的成員了');
+  if (!ENGINES.includes(a.engine)) throw new Error('引擎只能是 claude 或 codex');
+  if (!EFFORTS.includes(a.effort)) throw new Error('強度不正確');
+  if (/[\s"'`$&|;<>]/.test(a.model)) throw new Error('模型名稱不能有空白或特殊符號');
+  if (a.engine === 'claude') {
+    a.permissionMode = PERMISSION_MODES.includes(input.permissionMode) ? input.permissionMode : 'auto';
+  } else {
+    a.sandbox = SANDBOXES.includes(input.sandbox) ? input.sandbox : 'workspace-write';
+  }
+  if (Array.isArray(input.canHandoffTo)) {
+    a.canHandoffTo = input.canHandoffTo.filter((id) => id !== existingId && AGENTS.some((x) => x.id === id));
+  }
+  if (!a.model) delete a.model;
+  if (!a.effort) delete a.effort;
+  return a;
+}
+
+function newAgentId() {
+  let id;
+  do { id = 'a' + Date.now().toString(36).slice(-5) + Math.random().toString(36).slice(2, 4); } while (agentById(id));
+  return id;
+}
+
+const agentsChanged = () => broadcast({ agentId: '*', kind: 'agents-changed' });
 
 // ---------- HTTP ----------
 const MIME = {
@@ -398,9 +454,58 @@ const server = http.createServer(async (req, res) => {
     if (t !== TOKEN) return send(res, 401, { error: 'token 錯誤' });
   }
 
+  let m0;
   try {
     if (p === '/api/info') return send(res, 200, { version: VERSION });
-    if (p === '/api/agents') return send(res, 200, AGENTS.map(publicAgent));
+    if (p === '/api/agents' && req.method === 'GET') return send(res, 200, AGENTS.map(publicAgent));
+
+    if (p === '/api/config' && req.method === 'GET') {
+      return send(res, 200, {
+        agents: CONFIG.agents, workflow: CONFIG.workflow || '', maxRelayHops: maxHops(),
+        options: { engines: ENGINES, efforts: EFFORTS, permissionModes: PERMISSION_MODES, sandboxes: SANDBOXES },
+      });
+    }
+    if (p === '/api/agents' && req.method === 'POST') {
+      const body = await readBody(req);
+      let a;
+      try { a = cleanAgent(body, newAgentId()); } catch (e) { return send(res, 400, { error: e.message }); }
+      CONFIG.agents.push(a);
+      saveConfig(); reloadAgents(); agentsChanged();
+      return send(res, 200, { ok: true, id: a.id });
+    }
+    if ((m0 = p.match(/^\/api\/agents\/([\w-]+)$/)) && (req.method === 'PUT' || req.method === 'DELETE')) {
+      const idx = CONFIG.agents.findIndex((x) => x.id === m0[1]);
+      if (idx < 0) return send(res, 404, { error: '找不到這位成員' });
+      if (req.method === 'DELETE') {
+        if (runs.has(m0[1])) return send(res, 409, { error: '這位成員還在工作，先停止再刪除' });
+        if (CONFIG.agents.length <= 1) return send(res, 400, { error: '至少要留一位成員' });
+        CONFIG.agents.splice(idx, 1);
+        for (const x of CONFIG.agents) if (Array.isArray(x.canHandoffTo)) x.canHandoffTo = x.canHandoffTo.filter((id) => id !== m0[1]);
+        if (CONFIG.telegram && CONFIG.telegram.defaultAgent === m0[1]) CONFIG.telegram.defaultAgent = CONFIG.agents[0].id;
+        queues.delete(m0[1]);
+      } else {
+        const body = await readBody(req);
+        let a;
+        try { a = cleanAgent(body, m0[1]); } catch (e) { return send(res, 400, { error: e.message }); }
+        CONFIG.agents[idx] = a;
+      }
+      saveConfig(); reloadAgents(); agentsChanged();
+      return send(res, 200, { ok: true });
+    }
+    if (p === '/api/team' && req.method === 'PUT') {
+      const body = await readBody(req);
+      CONFIG.workflow = String(body.workflow ?? '').slice(0, 8000);
+      const h = Math.round(Number(body.maxRelayHops));
+      if (h >= 1 && h <= 50) CONFIG.maxRelayHops = h;
+      saveConfig(); agentsChanged();
+      return send(res, 200, { ok: true });
+    }
+    if (p === '/api/resetall' && req.method === 'POST') {
+      const busy = AGENTS.filter((a) => runs.has(a.id)).map((a) => a.name);
+      if (busy.length) return send(res, 409, { error: busy.join('、') + ' 還在工作，先停止再重置' });
+      for (const a of AGENTS) resetAgent(a.id);
+      return send(res, 200, { ok: true });
+    }
 
     if (p === '/api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
@@ -467,7 +572,7 @@ server.listen(PORT, HOST, () => {
 // Telegram 遙控（agents.json 有設定 telegram.botToken 才會啟動）
 require('./telegram').start({
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState,
-  dispatch, stopRun, resetAgent, maxHops: MAX_HOPS,
+  dispatch, stopRun, resetAgent, maxHops,
 });
 
 const shutdown = () => { for (const id of runs.keys()) stopRun(id); process.exit(0); };

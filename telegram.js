@@ -27,7 +27,9 @@ exports.start = function start(ctx) {
   const API = (process.env.TELEGRAM_API || 'https://api.telegram.org') + '/bot' + token;
   const allowed = (cfg.allowedUserIds || []).map(String);
   const tg = (ctx.state.telegram = ctx.state.telegram || { offset: 0, chats: {} });
-  const defaultTarget = (ctx.agentById(cfg.defaultAgent) || ctx.agents[0]).id;
+  const defaultTarget = () => (ctx.agentById(cfg.defaultAgent) || ctx.agents[0]).id;
+  // 成員可能在網頁上被刪除，找不到時退回第一位
+  const targetOf = (c) => ctx.agentById(c.target) || ctx.agents[0];
   const label = (a) => (a.avatar || '🤖') + ' ' + a.name;
 
   async function call(method, body, isForm) {
@@ -75,7 +77,7 @@ exports.start = function start(ctx) {
   }
 
   function chat(chatId) {
-    if (!tg.chats[chatId]) { tg.chats[chatId] = { target: defaultTarget, muted: false }; ctx.saveState(); }
+    if (!tg.chats[chatId]) { tg.chats[chatId] = { target: defaultTarget(), muted: false }; ctx.saveState(); }
     return tg.chats[chatId];
   }
 
@@ -88,9 +90,9 @@ exports.start = function start(ctx) {
 
   function listText(c) {
     return '成員：\n' + ctx.agents.map((a) =>
-      (a.id === c.target ? '👉 ' : '　 ') + label(a) + (ctx.runs.has(a.id) ? ' ⏳工作中' : '') +
+      (a.id === targetOf(c).id ? '👉 ' : '　 ') + label(a) + (ctx.runs.has(a.id) ? ' ⏳工作中' : '') +
       '\n　　' + [a.role, [a.model || a.engine, a.effort].filter(Boolean).join(' · ')].filter(Boolean).join('｜')
-    ).join('\n') + '\n\n目前對象：' + label(ctx.agentById(c.target)) + '\n用 /to 名字 切換';
+    ).join('\n') + '\n\n目前對象：' + label(targetOf(c)) + '\n用 /to 名字 切換';
   }
 
   async function handle(msg) {
@@ -121,7 +123,7 @@ exports.start = function start(ctx) {
           for (const a of ctx.agents) ctx.stopRun(a.id);
           return say(chatId, '⏹ 已全部停止');
         case 'new': {
-          const a = ctx.agentById(c.target);
+          const a = targetOf(c);
           return say(chatId, ctx.resetAgent(a.id) ? '🆕 ' + label(a) + ' 已開新對話' : a.name + ' 工作中，請先 /stop');
         }
         case 'mute': c.muted = true; ctx.saveState(); return say(chatId, '🔕 已暫停推送，/unmute 恢復');
@@ -131,7 +133,7 @@ exports.start = function start(ctx) {
     }
 
     // 開頭寫 @名字 → 直接交給那位，不切換對象
-    let agent = ctx.agentById(c.target);
+    let agent = targetOf(c);
     const at = text.match(/^@(\S+)\s*/);
     if (at) { const a = findAgent(at[1]); if (a) agent = a; }
     const busy = ctx.runs.has(agent.id);
