@@ -300,6 +300,12 @@ exports.start = function start(ctx) {
       (cc.length ? '\n📢 也同時交給 ' + cc.map(label).join('、') : ''));
   }
 
+  // 成員可能卡住
+  listen('stalled', async ({ agent, text }) => {
+    const chats = Object.keys(tg.chats).filter((id) => !tg.chats[id].muted);
+    for (const id of chats) await say(id, label(agent) + '\n' + text + '\n\n👉 /stop 全部停止');
+  });
+
   // agent 每做完一輪就推送結果
   listen('done', async ({ agent, segments, relayTo }) => {
     const chats = Object.keys(tg.chats).filter((id) => !tg.chats[id].muted);

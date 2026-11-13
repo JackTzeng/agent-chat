@@ -234,6 +234,10 @@
   .dirrow { display: grid; grid-template-columns: 1fr 130px auto; gap: 6px; margin-bottom: 6px; }
   .dirrow input, .dirrow select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 6px 9px; min-width: 0; }
   .dirrow button { padding: 4px 10px; }
+  .diag pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  .diag dl { display: grid; grid-template-columns: 110px 1fr; gap: 4px 10px; font-size: 13px; margin: 0 0 10px; }
+  .diag dt { color: var(--muted); } .diag dd { margin: 0; word-break: break-all; }
+  .stall { color: var(--err); font-weight: 600; }
   .toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: var(--err); color: #fff;
     padding: 8px 14px; border-radius: 10px; font-size: 13px; display: none; z-index: 9; }
 
@@ -260,6 +264,7 @@
   <main class="main">
     <div class="top">
       <div class="title" id="title">—</div>
+      <button id="diagBtn" title="查看這位成員正在執行的狀態與錯誤訊息">🔍 診斷</button>
       <button id="settingsBtn">⚙️ 設定</button>
       <button id="resetBtn" title="清空這個成員的對話，下一句會重新開始">新對話</button>
     </div>
@@ -292,7 +297,7 @@ const withToken = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + 
 
 const $ = (id) => document.getElementById(id);
 const ALL = '__all';
-const UI_VERSION = '2.5.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '2.6.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -372,6 +377,7 @@ function agentCard(a, extraClass = '') {
         <div class="role">${esc(a.role || '')}</div>
         ${a.engine ? `<div class="role">${esc([a.model || '預設模型', a.effort].filter(Boolean).join(' · '))}${a.takeTurns ? ' · <span title="和團隊輪流工作：同一時間只有一位輪流成員在動手">🔁 輪流</span>' : ''}</div>` : ''}
         ${a.extraDirs && a.extraDirs.length ? `<div class="role" title="${esc(a.extraDirs.map((d) => d.path + (d.mode === 'ro' ? '（唯讀）' : '（可讀寫）')).join('\n'))}">📁 +${a.extraDirs.length} 個資料夾</div>` : ''}
+        ${a.busy && a.runningSince ? `<div class="role ${a.stalled ? 'stall' : ''}">${a.stalled ? '⚠️ 可能卡住 · ' : '⏱ '}工作中 ${esc(ago(a.runningSince))}</div>` : ''}
         ${a.queued ? `<div class="qline">🕒 排隊中${a.waitingOn === a.id ? '（等它這輪做完）' : a.waitingOn && agentOf(a.waitingOn) ? '（等 ' + esc(agentOf(a.waitingOn).name) + ' 做完）' : ''}</div>` : ''}
       </div>
       <span class="unread"></span>
@@ -439,6 +445,7 @@ function updateTop() {
   if (current === ALL) {
     $('title').innerHTML = '👥 全員<span class="sub">所有成員的對話，依時間排列</span>';
     $('resetBtn').style.display = 'none';
+    $('diagBtn').style.display = 'none';
     $('settingsBtn').textContent = '⚙️ 團隊設定';
     renderModebar();
     const t = TASKS && TASKS.active, w = workingAgent();
@@ -455,6 +462,7 @@ function updateTop() {
   const a = agentOf(current); if (!a) return;
   $('title').innerHTML = (isImgAv(a.avatar) ? `<span class="av-inline">${avatarHTML(a.avatar)}</span>` + esc(a.name) : esc(label(a))) + '<span class="sub">' + esc([a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ')) + '</span>';
   $('resetBtn').style.display = '';
+  $('diagBtn').style.display = '';
   $('settingsBtn').textContent = '⚙️ 設定';
   $('taskbar').classList.remove('show');
   renderModebar();
@@ -1289,6 +1297,75 @@ function renderTelegramForm() {
   $('tg_close').onclick = closeModal;
 }
 
+
+// ---- 工作時間與診斷 ----
+function ago(ts) {
+  const m = Math.floor((Date.now() - ts) / 60000);
+  return m < 1 ? '不到 1 分鐘' : m < 60 ? m + ' 分鐘' : Math.floor(m / 60) + ' 小時 ' + (m % 60) + ' 分';
+}
+function updateThinking() {
+  for (const [aid, b] of liveBubbles) {
+    const a = agentOf(aid), t = b.querySelector('.thinking');
+    if (!a || !t) continue;
+    t.textContent = a.name + ' 工作中…' + (a.runningSince ? ' 已 ' + ago(a.runningSince) + (a.lastActivity && Date.now() - a.lastActivity > 120000 ? '（最後動靜 ' + ago(a.lastActivity) + '前）' : '') : '');
+    t.classList.toggle('stall', !!a.stalled);
+  }
+}
+setInterval(async () => {
+  if (!agents.some((a) => a.busy)) return;
+  try { const list = await api('/api/agents'); agents = list; renderAgents(); updateThinking(); } catch {}
+}, 20000);
+
+async function openDiag(id) {
+  let d;
+  try { d = await api('/api/diag/' + encodeURIComponent(id)); } catch (e) { toast(e.message); return; }
+  const r = d.run, a = d.agent || {};
+  const text = [
+    'Agent Chat v' + UI_VERSION + ' 診斷：' + a.name + '（' + [a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ') + '）',
+    'CLI：' + (d.bin || '找不到'), '工作資料夾：' + a.cwd,
+    r ? '執行中：PID ' + r.pid + '，開始 ' + new Date(r.startedAt).toLocaleString() + '，最後輸出 ' + new Date(r.lastActivity).toLocaleString() + (r.stalled ? '（判定可能卡住）' : '') : '目前沒有在執行',
+    r ? '指令：' + r.cmdline : '',
+    r ? '--- CLI 錯誤輸出（stderr）---\n' + (r.stderrTail || '（沒有）') : '',
+    r ? '--- 最後幾行輸出（stdout）---\n' + (r.stdoutTail.join('\n') || '（沒有）') : '',
+    d.queue ? '排隊中：' + d.queue.count + ' 則' : '沒有排隊',
+  ].filter(Boolean).join('\n');
+  openModal(`<div class="diag">
+    <h2>🔍 診斷：${esc(label(agentOf(id) || { name: a.name }))}</h2>
+    <p class="lead">成員看起來卡住時，這裡可以看到它實際在跑的指令與 CLI 的錯誤訊息。可以按「複製」貼給 Claude 協助判斷。超過 ${d.stallMinutes} 分鐘沒有任何輸出會自動標示「可能卡住」。</p>
+    <dl>
+      <dt>狀態</dt><dd>${r ? (r.stalled ? '<span class="stall">⚠️ 可能卡住</span>' : '▶ 執行中') + '，已 ' + esc(ago(r.startedAt)) + '，最後輸出在 ' + esc(ago(r.lastActivity)) + '前' : '閒置'}</dd>
+      <dt>CLI</dt><dd>${esc(d.bin || '找不到')}</dd>
+      <dt>工作資料夾</dt><dd>${esc(a.cwd || '')}</dd>
+      ${r ? `<dt>PID</dt><dd>${r.pid}</dd><dt>指令</dt><dd><code>${esc(r.cmdline)}</code></dd>` : ''}
+      <dt>排隊</dt><dd>${d.queue ? d.queue.count + ' 則' : '沒有'}</dd>
+    </dl>
+    ${r ? `<label>CLI 錯誤輸出（stderr，最後 40 行）</label><pre>${esc(r.stderrTail || '（沒有）')}</pre>
+      <label>最後幾行輸出（stdout）</label><pre>${esc(r.stdoutTail.join('\n') || '（沒有任何輸出）')}</pre>` : ''}
+    <div class="modal-actions">
+      ${r ? '<button class="danger" id="dg_stop">⏹ 停止這一輪</button>' : ''}
+      ${d.queue ? '<button id="dg_clear">清除排隊（' + d.queue.count + ' 則）</button>' : ''}
+      <span class="spacer"></span>
+      <button id="dg_copy">📋 複製診斷資訊</button>
+      <button id="dg_refresh">重新整理</button>
+      <button id="dg_close">關閉</button>
+    </div></div>`);
+  $('modal').classList.add('wide');
+  $('dg_close').onclick = closeModal;
+  $('dg_refresh').onclick = () => openDiag(id);
+  $('dg_copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(text); toast('✅ 已複製'); }
+    catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('✅ 已複製'); }
+  };
+  if ($('dg_stop')) $('dg_stop').onclick = async () => {
+    if (!confirm('停止 ' + a.name + ' 這一輪？（排隊中的訊息也會一起清除）')) return;
+    try { await api('/api/stop/' + id, { method: 'POST' }); setTimeout(() => openDiag(id), 800); } catch (e) { toast(e.message); }
+  };
+  if ($('dg_clear')) $('dg_clear').onclick = async () => {
+    try { await api('/api/queue/' + id + '/clear', { method: 'POST' }); openDiag(id); } catch (e) { toast(e.message); }
+  };
+}
+$('diagBtn').onclick = () => { if (current && current !== ALL) openDiag(current); };
+
 // ---- 即時事件 ----
 function connectEvents() {
   const es = new EventSource(withToken('/api/events'));
@@ -1300,7 +1377,7 @@ function connectEvents() {
     if (ev.kind === 'task') { loadTasks(); return; }
     if (ev.kind === 'queue') { refreshQueue(); return; }
     const a = agentOf(ev.agentId); if (!a) return;
-    if (ev.kind === 'busy') { a.busy = ev.busy; renderAgents(); updateTop(); return; }
+    if (ev.kind === 'busy') { a.busy = ev.busy; refreshAgents().then(updateThinking); return; }
     if (ev.kind === 'reset') { if (shown(ev.agentId)) selectAgent(current); return; }
     if (ev.kind === 'queued') { if (shown(ev.agentId)) toast(a.name + ' 忙碌中，同事的訊息已排隊'); return; }
     if (!shown(ev.agentId)) { if (['user', 'segment', 'done'].includes(ev.kind)) { unread.add(ev.agentId); renderAgents(); } return; }

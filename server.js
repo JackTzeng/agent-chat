@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '2.5.0';
+const VERSION = '2.6.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -338,7 +338,8 @@ function startRun(agent, userText, opts = {}) {
   broadcast({ agentId: agent.id, kind: 'user', text: userText, ...meta });
   hooks.emit('user', { agent, text: userText, from: opts.from, via: opts.via });
 
-  const run = { segments: [], meta: '', finished: false, stderr: Buffer.alloc(0), cwd: agent.cwd, opts, takeTurns: !!agent.takeTurns };
+  const run = { segments: [], meta: '', finished: false, stderr: Buffer.alloc(0), cwd: agent.cwd, opts, takeTurns: !!agent.takeTurns,
+    startedAt: Date.now(), lastActivity: Date.now(), stdoutTail: [], cmdline: '' };
   runs.set(agent.id, run);
   broadcast({ agentId: agent.id, kind: 'busy', busy: true });
 
@@ -373,6 +374,8 @@ function startRun(agent, userText, opts = {}) {
   const spawnArgs = needShell ? args.map((x) => (/[\s&|<>^()]/.test(x) && !x.includes('"') ? '"' + x + '"' : x)) : args;
   const proc = spawn(spawnCmd, spawnArgs, { cwd: agent.cwd, shell: needShell, env: process.env, windowsHide: true });
   run.proc = proc;
+  run.pid = proc.pid;
+  run.cmdline = [cmd, ...args].map((x) => (/[\s"']/.test(x) ? JSON.stringify(x) : x)).join(' ');
 
   const emit = (e) => {
     if (e.kind === 'session') {
@@ -389,15 +392,18 @@ function startRun(agent, userText, opts = {}) {
   proc.stdout.setEncoding('utf8');
   proc.stdout.on('data', (chunk) => {
     buf += chunk;
+    run.lastActivity = Date.now();
+    if (run.stalled) { run.stalled = false; broadcast({ agentId: agent.id, kind: 'busy', busy: true }); }
     let nl;
     while ((nl = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
+      if (line) { run.stdoutTail.push(line.length > 600 ? line.slice(0, 600) + '…' : line); if (run.stdoutTail.length > 25) run.stdoutTail.shift(); }
       if (!line.startsWith('{')) continue;
       try { parse(JSON.parse(line), emit); } catch {}
     }
   });
-  proc.stderr.on('data', (c) => { run.stderr = Buffer.concat([run.stderr, c]).subarray(-8000); });
+  proc.stderr.on('data', (c) => { run.stderr = Buffer.concat([run.stderr, c]).subarray(-16000); run.lastStderr = Date.now(); });
 
   proc.on('error', (err) => {
     emit({ kind: 'error', text: '無法啟動「' + cmd + '」：' + err.message + '。請確認已安裝並在終端機能執行。' });
@@ -470,6 +476,39 @@ function interject(agent, text, via) {
   dispatch(agent, text, { via });
   return runs.has(agent.id) ? 'started' : 'queued';
 }
+
+// ---------- 診斷與卡住偵測 ----------
+function diag(id) {
+  const a = agentById(id), run = runs.get(id);
+  return {
+    agent: a ? { id: a.id, name: a.name, engine: a.engine, model: a.model || '', effort: a.effort || '', cwd: a.cwd } : null,
+    bin: a ? getBin(a.engine) : null,
+    running: !!run,
+    run: run ? {
+      pid: run.pid, startedAt: run.startedAt, lastActivity: run.lastActivity, lastStderr: run.lastStderr || null, stalled: !!run.stalled,
+      cmdline: run.cmdline, stderrTail: decodeOutput(run.stderr).split(/\r?\n/).slice(-40).join('\n'),
+      stdoutTail: run.stdoutTail, segments: run.segments.length, taskId: run.opts.taskId || null,
+    } : null,
+    queue: queueInfo(id),
+    stallMinutes: stallMinutes(),
+  };
+}
+const stallMinutes = () => Number(CONFIG.stallMinutes) || 10;
+setInterval(() => {
+  const limit = stallMinutes() * 60000, now = Date.now();
+  for (const [id, run] of runs) {
+    if (run.stalled || now - run.lastActivity < limit) continue;
+    run.stalled = true;
+    const a = agentById(id);
+    const tail = decodeOutput(run.stderr).trim().split(/\r?\n/).filter(Boolean).slice(-3).join('\n');
+    const text = '⚠️ 已經 ' + Math.round((now - run.lastActivity) / 60000) + ' 分鐘沒有任何輸出，可能卡住了。可以按 ⏹ 停止，或按「🔍 診斷」看原因。' +
+      (tail ? '\nCLI 最後的訊息：' + tail : '');
+    run.segments.push({ type: 'error', text });
+    broadcast({ agentId: id, kind: 'segment', segment: { type: 'error', text } });
+    broadcast({ agentId: id, kind: 'busy', busy: true });
+    hooks.emit('stalled', { agent: a, minutes: Math.round((now - run.lastActivity) / 60000), text });
+  }
+}, 30000);
 
 function resetAgent(id) {
   if (runs.has(id)) return false;
@@ -708,6 +747,8 @@ const publicAgent = (a) => ({
   canHandoffTo: allowedTargets(a).map((t) => t.id),
   busy: runs.has(a.id), hasSession: !!state.sessions[a.id],
   queued: (queueInfo(a.id) || {}).count || 0, waitingOn: (queueInfo(a.id) || {}).waitingOn || null,
+  runningSince: runs.has(a.id) ? runs.get(a.id).startedAt : null, lastActivity: runs.has(a.id) ? runs.get(a.id).lastActivity : null,
+  stalled: runs.has(a.id) ? !!runs.get(a.id).stalled : false,
 });
 
 const server = http.createServer(async (req, res) => {
@@ -748,6 +789,13 @@ const server = http.createServer(async (req, res) => {
       if (CONFIG.telegram) CONFIG.telegram.allowedUserIds = [];
       saveConfig(); broadcast({ agentId: '*', kind: 'telegram' });
       return send(res, 200, telegram.status());
+    }
+    // ---- 診斷 ----
+    if ((m0 = p.match(/^\/api\/diag\/([\w-]+)$/)) && req.method === 'GET') return send(res, 200, diag(m0[1]));
+    if ((m0 = p.match(/^\/api\/queue\/([\w-]+)\/clear$/)) && req.method === 'POST') {
+      for (let i = pending.length - 1; i >= 0; i--) if (pending[i].agentId === m0[1]) pending.splice(i, 1);
+      broadcast({ agentId: '*', kind: 'queue' });
+      return send(res, 200, { ok: true });
     }
     // ---- 插話 ----
     if ((m0 = p.match(/^\/api\/interject\/([\w-]+)$/)) && req.method === 'POST') {
