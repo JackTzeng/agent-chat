@@ -1,10 +1,11 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawn, execFileSync } = require('child_process');
 const EventEmitter = require('events');
 const hooks = new EventEmitter(); // 給 Telegram 等外掛監聽：user / done
@@ -232,6 +233,7 @@ function describeClaudeTool(b) {
 
 // 把各家 CLI 的 JSON 事件轉成統一格式：{kind:'text'|'tool'|'error'|'session'|'done', ...}
 function parseClaude(ev, emit) {
+  if (ev.type === 'rate_limit_event' && ev.rate_limit_info) { updateClaudeUsage(ev.rate_limit_info); return; }
   if (ev.type === 'system' && ev.subtype === 'init' && ev.session_id) emit({ kind: 'session', id: ev.session_id });
   else if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
     for (const b of ev.message.content) {
@@ -340,6 +342,7 @@ function startRun(agent, userText, opts = {}) {
       const tail = decodeOutput(run.stderr).trim().split(/\r?\n/).slice(-6).join('\n');
       emit({ kind: 'error', text: 'CLI 結束碼 ' + code + (tail ? '\n' + tail : '') });
     }
+    if (agent.engine === 'codex') setTimeout(readCodexUsage, 500);
     // 回覆裡 @ 了同事 → 自動轉交
     const replyText = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n');
     const targets = run.stopped || !replyText ? [] : findMentions(agent, replyText);
@@ -381,6 +384,126 @@ function resetAgent(id) {
   try { fs.unlinkSync(histFile(id)); } catch {}
   broadcast({ agentId: id, kind: 'reset' });
   return true;
+}
+
+
+// ---------- 訂閱用量額度（5 小時 / 每週）----------
+// Claude Code：執行時輸出的 rate_limit_event（utilization 是 0~1 的比例）
+// Codex：每次執行寫進 ~/.codex/sessions/**/rollout-*.jsonl 的 rate_limits 快照
+state.usage = state.usage || { claude: { windows: {} }, codex: { windows: {} } };
+const USAGE = state.usage;
+
+function claudeWindowKey(type) {
+  return { five_hour: '5h', seven_day: 'week', seven_day_opus: 'week_opus', seven_day_sonnet: 'week_sonnet' }[type];
+}
+function updateClaudeUsage(info) {
+  const w = USAGE.claude.windows;
+  const put = (key, util, resetsAt, status) => {
+    if (!key || !Number.isFinite(util)) return;
+    w[key] = { pct: Math.round(util * 1000) / 10, resetsAt: resetsAt || null, status: status || null };
+  };
+  if (info.unifiedWindows) {
+    for (const [type, v] of Object.entries(info.unifiedWindows)) if (v) put(claudeWindowKey(type), v.utilization, v.resetsAt, v.status);
+  }
+  if (info.rateLimitType) put(claudeWindowKey(info.rateLimitType), info.utilization, info.resetsAt, info.status);
+  USAGE.claude.updatedAt = Date.now();
+  if (info.status) USAGE.claude.status = info.status;
+  saveState();
+  broadcast({ agentId: '*', kind: 'usage' });
+}
+
+const CODEX_SESSIONS = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions');
+function recentRolloutFiles(limit = 8) {
+  const files = [];
+  const listDesc = (dir) => { try { return fs.readdirSync(dir).sort().reverse(); } catch { return []; } };
+  outer: for (const y of listDesc(CODEX_SESSIONS)) for (const m of listDesc(path.join(CODEX_SESSIONS, y))) {
+    for (const d of listDesc(path.join(CODEX_SESSIONS, y, m))) {
+      const dir = path.join(CODEX_SESSIONS, y, m, d);
+      for (const f of listDesc(dir)) if (/^rollout-.*\.jsonl$/.test(f)) {
+        try { files.push({ f: path.join(dir, f), t: fs.statSync(path.join(dir, f)).mtimeMs }); } catch {}
+      }
+      if (files.length >= limit) break outer;
+    }
+  }
+  return files.sort((a, b) => b.t - a.t).map((x) => x.f);
+}
+function findRateLimits(o) {
+  if (!o || typeof o !== 'object') return null;
+  if (o.rate_limits && (o.rate_limits.primary || o.rate_limits.secondary)) return o.rate_limits;
+  for (const v of Object.values(o)) { const r = findRateLimits(v); if (r) return r; }
+  return null;
+}
+function readCodexUsage() {
+  for (const file of recentRolloutFiles()) {
+    let text;
+    try {
+      const st = fs.statSync(file), size = Math.min(st.size, 512 * 1024);
+      const fd = fs.openSync(file, 'r'); const buf = Buffer.alloc(size);
+      fs.readSync(fd, buf, 0, size, st.size - size); fs.closeSync(fd);
+      text = buf.toString('utf8');
+    } catch { continue; }
+    const lines = text.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('rate_limits')) continue;
+      let obj; try { obj = JSON.parse(lines[i]); } catch { continue; }
+      const rl = findRateLimits(obj); if (!rl) continue;
+      const ts = Date.parse(obj.timestamp) || fs.statSync(file).mtimeMs;
+      const windows = {};
+      for (const slot of ['primary', 'secondary']) {
+        const v = rl[slot]; if (!v || !Number.isFinite(v.used_percent)) continue;
+        const mins = v.window_minutes || (slot === 'primary' ? 300 : 10080);
+        const resetsAt = v.resets_at || (v.resets_in_seconds != null ? Math.round(ts / 1000) + v.resets_in_seconds : null);
+        windows[mins <= 360 ? '5h' : mins >= 10000 ? 'week' : slot] = { pct: Math.round(v.used_percent * 10) / 10, resetsAt, minutes: mins };
+      }
+      if (!Object.keys(windows).length) continue;
+      if (USAGE.codex.updatedAt === ts) return false; // 沒有新資料
+      USAGE.codex = { windows, updatedAt: ts, plan: rl.plan_type || null };
+      saveState();
+      broadcast({ agentId: '*', kind: 'usage' });
+      return true;
+    }
+  }
+  return false;
+}
+
+// 「🔄 查詢」：送一個極小的請求，讓 CLI 回報最新額度
+function runQuiet(cmd, args, input, timeoutMs, onLine) {
+  return new Promise((resolve) => {
+    const cwd = path.join(DATA_DIR, 'probe'); fs.mkdirSync(cwd, { recursive: true });
+    const needShell = IS_WIN && !/\.exe$/i.test(cmd);
+    const proc = spawn(needShell && /\s/.test(cmd) ? '"' + cmd + '"' : cmd, args, { cwd, shell: needShell, windowsHide: true });
+    let buf = '', err = '';
+    const timer = setTimeout(() => { try { proc.kill(); } catch {} }, timeoutMs);
+    proc.stdout.setEncoding('utf8');
+    proc.stdout.on('data', (c) => {
+      buf += c; let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1); if (onLine) onLine(line); }
+    });
+    proc.stderr.on('data', (c) => { err = (err + c).slice(-2000); });
+    proc.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, err: e.message }); });
+    proc.on('close', (code) => { clearTimeout(timer); resolve({ ok: code === 0, err }); });
+    proc.stdin.on('error', () => {}); proc.stdin.end(input);
+  });
+}
+let probing = false;
+async function probeUsage() {
+  if (probing) return; probing = true;
+  try {
+    const tasks = [];
+    if (getBin('claude')) tasks.push(runQuiet(getBin('claude'), ['-p', '--output-format', 'stream-json', '--verbose', '--model', 'haiku'],
+      'Reply with OK only.', 90000, (line) => {
+        if (!line.includes('rate_limit_event')) return;
+        try { const ev = JSON.parse(line); if (ev.rate_limit_info) updateClaudeUsage(ev.rate_limit_info); } catch {}
+      }));
+    if (getBin('codex')) tasks.push(runQuiet(getBin('codex'), ['exec', '--json', '--skip-git-repo-check', '-c', 'sandbox_mode="read-only"',
+      '-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-'], 'Reply with OK only.', 90000).then(() => readCodexUsage()));
+    await Promise.all(tasks);
+  } finally { probing = false; broadcast({ agentId: '*', kind: 'usage' }); }
+}
+
+function usageSnapshot() {
+  readCodexUsage(); // Codex 在別處（例如終端機）用過也會更新
+  return { claude: USAGE.claude, codex: USAGE.codex, probing, now: Date.now() };
 }
 
 // ---------- 成員設定（網頁上新增 / 編輯 / 刪除）----------
@@ -483,6 +606,8 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/info') return send(res, 200, { version: VERSION });
     if (p === '/api/agents' && req.method === 'GET') return send(res, 200, AGENTS.map(publicAgent));
 
+    if (p === '/api/usage' && req.method === 'GET') return send(res, 200, usageSnapshot());
+    if (p === '/api/usage/refresh' && req.method === 'POST') { probeUsage(); return send(res, 200, { ok: true }); }
     if (p === '/api/config' && req.method === 'GET') {
       return send(res, 200, {
         agents: CONFIG.agents, workflow: CONFIG.workflow || '', maxRelayHops: maxHops(),
@@ -612,7 +737,7 @@ server.listen(PORT, HOST, () => {
 // Telegram 遙控（agents.json 有設定 telegram.botToken 才會啟動）
 require('./telegram').start({
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState,
-  dispatch, userSend, stopRun, resetAgent, maxHops,
+  dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot,
 });
 
 const shutdown = () => { for (const id of runs.keys()) stopRun(id); process.exit(0); };

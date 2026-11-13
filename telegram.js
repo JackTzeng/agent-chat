@@ -12,6 +12,7 @@ const HELP =
   '/to 名字　切換對象\n' +
   '/stop　全部停止\n' +
   '/new　目前對象開新對話\n' +
+  '/usage　Claude / Codex 用量額度\n' +
   '/mute　暫停推送（/unmute 恢復）\n' +
   '/help　顯示這份說明';
 
@@ -76,6 +77,23 @@ exports.start = function start(ctx) {
     return out;
   }
 
+  function usageText() {
+    const u = ctx.usageSnapshot(), now = Date.now();
+    const NAMES = { '5h': '5 小時', week: '每週', week_opus: '每週 Opus', week_sonnet: '每週 Sonnet' };
+    const block = (title, x) => {
+      const wins = Object.entries((x && x.windows) || {});
+      if (!wins.length) return title + '：還沒有資料';
+      return title + (x.updatedAt ? '（' + new Date(x.updatedAt).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }) + ' 更新）' : '') + '\n' +
+        wins.map(([k, w]) => {
+          const reset = w.resetsAt && w.resetsAt * 1000 < now, used = reset ? 0 : w.pct;
+          let left = '';
+          if (w.resetsAt && !reset) { const m = Math.round((w.resetsAt * 1000 - now) / 60000); left = m < 1440 ? '，' + Math.floor(m / 60) + ' 小時 ' + (m % 60) + ' 分後重置' : '，' + Math.round(m / 1440) + ' 天後重置'; }
+          return '　' + (NAMES[k] || k) + '：剩 ' + Math.round(100 - used) + '%' + (reset ? '（已重置）' : left);
+        }).join('\n');
+    };
+    return '📊 用量額度\n\n' + block('Claude', u.claude) + '\n\n' + block('Codex', u.codex);
+  }
+
   function chat(chatId) {
     if (!tg.chats[chatId]) { tg.chats[chatId] = { target: defaultTarget(), muted: false }; ctx.saveState(); }
     return tg.chats[chatId];
@@ -126,6 +144,7 @@ exports.start = function start(ctx) {
           const a = targetOf(c);
           return say(chatId, ctx.resetAgent(a.id) ? '🆕 ' + label(a) + ' 已開新對話' : a.name + ' 工作中，請先 /stop');
         }
+        case 'usage': return say(chatId, usageText());
         case 'mute': c.muted = true; ctx.saveState(); return say(chatId, '🔕 已暫停推送，/unmute 恢復');
         case 'unmute': c.muted = false; ctx.saveState(); return say(chatId, '🔔 已恢復推送');
         default: return say(chatId, '不認得這個指令。\n\n' + HELP);
