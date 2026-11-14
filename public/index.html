@@ -6,6 +6,7 @@
 <title>Agent Chat</title>
 <script src="/vendor/marked.js"></script>
 <script src="/vendor/purify.js"></script>
+<script src="/office.js"></script>
 <style>
   :root {
     --bg: #f6f4ef; --panel: #fffdf9; --line: #e6e1d6; --text: #2b2924; --muted: #8a857a;
@@ -208,7 +209,7 @@
   .chip-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
   .chip-file button { border: 0; background: none; padding: 0 6px; font-size: 13px; cursor: pointer; }
   .chip-file.up { opacity: .6; }
-  .main { position: relative; }
+  .main { position: relative; min-width: 0; overflow: hidden; }
   .dropzone { position: absolute; inset: 0; background: rgba(200,100,59,.10); border: 3px dashed var(--accent); border-radius: 12px; z-index: 10;
     display: none; align-items: center; justify-content: center; font-size: 18px; font-weight: 600; color: var(--accent); pointer-events: none; }
   .dropzone.show { display: flex; }
@@ -238,12 +239,19 @@
   .diag dl { display: grid; grid-template-columns: 110px 1fr; gap: 4px 10px; font-size: 13px; margin: 0 0 10px; }
   .diag dt { color: var(--muted); } .diag dd { margin: 0; word-break: break-all; }
   .stall { color: var(--err); font-weight: 600; }
+  /* 🏢 辦公室 */
+  .office { flex: 1; min-height: 0; position: relative; display: none; background: #f7efe2; overflow: hidden; }
+  .office.show { display: block; }
+  .office-canvas { display: block; }
+  .office-tip { position: absolute; display: none; pointer-events: none; background: rgba(255,253,247,.97); color: #3a2f2a; border: 2px solid #3a2f2a;
+    border-radius: 10px; padding: 6px 10px; font-size: 12.5px; line-height: 1.5; box-shadow: 0 4px 12px rgba(0,0,0,.15); z-index: 3; max-width: 220px; }
+  .agent.office-card .avatar { background: #f6e4da; }
   .toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: var(--err); color: #fff;
     padding: 8px 14px; border-radius: 10px; font-size: 13px; display: none; z-index: 9; }
 
   /* 手機：側邊欄變成上方橫向列 */
   @media (max-width: 760px) {
-    .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
     .side { border-right: 0; border-bottom: 1px solid var(--line); }
     .side h1 { display: none; }
     .agents { flex-direction: row; overflow-x: auto; padding: 8px; }
@@ -264,11 +272,13 @@
   <main class="main">
     <div class="top">
       <div class="title" id="title">—</div>
+      <button id="officeBtn" title="切換辦公室／對話畫面">🏢 辦公室</button>
       <button id="diagBtn" title="查看這位成員正在執行的狀態與錯誤訊息">🔍 診斷</button>
       <button id="settingsBtn">⚙️ 設定</button>
       <button id="resetBtn" title="清空這個成員的對話，下一句會重新開始">新對話</button>
     </div>
     <div class="taskbar" id="taskbar"></div>
+    <div class="office" id="office"></div>
     <div class="msgs" id="msgs"></div>
     <div class="dropzone" id="dropzone">放開以附加檔案 📎</div>
     <div class="composer">
@@ -297,7 +307,10 @@ const withToken = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + 
 
 const $ = (id) => document.getElementById(id);
 const ALL = '__all';
-const UI_VERSION = '2.6.0'; // 要和 server.js 的 VERSION 一致
+const OFFICE = '__office';
+let officeMode = false;
+try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
+const UI_VERSION = '3.0.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -381,16 +394,25 @@ function agentCard(a, extraClass = '') {
         ${a.queued ? `<div class="qline">🕒 排隊中${a.waitingOn === a.id ? '（等它這輪做完）' : a.waitingOn && agentOf(a.waitingOn) ? '（等 ' + esc(agentOf(a.waitingOn).name) + ' 做完）' : ''}</div>` : ''}
       </div>
       <span class="unread"></span>
-      ${a.id !== ALL ? `<button class="gear" data-edit="${esc(a.id)}" title="編輯成員">⚙️</button>` : ''}
+      ${a.id !== ALL && a.id !== OFFICE ? `<button class="gear" data-edit="${esc(a.id)}" title="編輯成員">⚙️</button>` : ''}
     </div>`;
 }
 function renderAgents() {
   const at = TASKS && TASKS.active;
   const allCard = { id: ALL, name: '全員', avatar: '👥', busy: agents.some((a) => a.busy),
     role: at ? (STATUS_ICON[at.status] || '') + ' 任務 #' + at.id + '：' + at.statusText : '任務、交接與大家的對話' };
-  $('agents').innerHTML = agentCard(allCard, 'all') + '<div class="sep"></div>' + agents.map((a) => agentCard(a)).join('') +
+  const officeCard = { id: OFFICE, name: '辦公室', avatar: '🏢', role: '看大家在做什麼', busy: allCard.busy };
+  $('agents').innerHTML = agentCard(allCard, 'all') + agentCard(officeCard, 'all office-card') + '<div class="sep"></div>' + agents.map((a) => agentCard(a)).join('') +
     '<div class="agent add-card" id="addAgent">＋ 新增成員</div>';
-  document.querySelectorAll('.agent[data-id]').forEach((el) => (el.onclick = () => selectAgent(el.dataset.id)));
+  document.querySelectorAll('.agent[data-id]').forEach((el) => (el.onclick = () => {
+    const id = el.dataset.id;
+    if (id === OFFICE) { setOffice(true); selectAgent(ALL); }
+    else { if (id === ALL) setOffice(false); selectAgent(id); }
+  }));
+  // 全員 / 辦公室 卡片的選取狀態
+  const allEl = document.querySelector('.agent[data-id="' + ALL + '"]'), offEl = document.querySelector('.agent[data-id="' + OFFICE + '"]');
+  if (allEl) allEl.classList.toggle('active', current === ALL && !officeMode);
+  if (offEl) offEl.classList.toggle('active', current === ALL && officeMode);
   document.querySelectorAll('.gear').forEach((el) => (el.onclick = (e) => { e.stopPropagation(); openAgentForm(el.dataset.edit); }));
   $('addAgent').onclick = () => openAgentForm(null);
 }
@@ -443,8 +465,10 @@ function updateTop() {
   const inp = $('input');
   inp.disabled = false;
   if (current === ALL) {
-    $('title').innerHTML = '👥 全員<span class="sub">所有成員的對話，依時間排列</span>';
+    $('title').innerHTML = officeMode ? '🏢 辦公室<span class="sub">點角色可以開啟對話；工作中的成員會坐在位子上</span>' : '👥 全員<span class="sub">所有成員的對話，依時間排列</span>';
     $('resetBtn').style.display = 'none';
+    $('officeBtn').style.display = ''; $('officeBtn').textContent = officeMode ? '💬 對話' : '🏢 辦公室';
+    applyOfficeView();
     $('diagBtn').style.display = 'none';
     $('settingsBtn').textContent = '⚙️ 團隊設定';
     renderModebar();
@@ -463,6 +487,8 @@ function updateTop() {
   $('title').innerHTML = (isImgAv(a.avatar) ? `<span class="av-inline">${avatarHTML(a.avatar)}</span>` + esc(a.name) : esc(label(a))) + '<span class="sub">' + esc([a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ')) + '</span>';
   $('resetBtn').style.display = '';
   $('diagBtn').style.display = '';
+  $('officeBtn').style.display = 'none';
+  applyOfficeView();
   $('settingsBtn').textContent = '⚙️ 設定';
   $('taskbar').classList.remove('show');
   renderModebar();
@@ -1078,6 +1104,12 @@ async function openTeamForm() {
 let TASKS = null, WF = null;
 async function loadTasks() {
   try { TASKS = await api('/api/tasks'); } catch { return; }
+  // 任務剛完成 → 辦公室撒彩帶
+  if (lastActiveTask && !TASKS.active && window.Office) {
+    const t = (TASKS.tasks || []).find((x) => x.id === lastActiveTask);
+    if (t && t.status === 'done') Office.taskEvent({}, t);
+  }
+  lastActiveTask = TASKS.active ? TASKS.active.id : null;
   renderAgents();
   if (current === ALL) updateTop();
 }
@@ -1182,8 +1214,13 @@ async function refreshQueue() {
   }
 }
 
+let agentsSeq = 0; // 同時發出多次查詢時，只採用最新一次的結果（避免舊資料蓋掉新狀態）
 async function refreshAgents() {
-  try { agents = await api('/api/agents'); } catch { return; }
+  const seq = ++agentsSeq;
+  let list;
+  try { list = await api('/api/agents'); } catch { return; }
+  if (seq !== agentsSeq) return;
+  agents = list;
   if (current !== ALL && !agentOf(current)) { selectAgent(ALL); return; }
   renderAgents(); updateTop();
 }
@@ -1313,7 +1350,7 @@ function updateThinking() {
 }
 setInterval(async () => {
   if (!agents.some((a) => a.busy)) return;
-  try { const list = await api('/api/agents'); agents = list; renderAgents(); updateThinking(); } catch {}
+  try { await refreshAgents(); updateThinking(); } catch {}
 }, 20000);
 
 async function openDiag(id) {
@@ -1366,11 +1403,32 @@ async function openDiag(id) {
 }
 $('diagBtn').onclick = () => { if (current && current !== ALL) openDiag(current); };
 
+
+// ---- 🏢 辦公室 ----
+function setOffice(on) { officeMode = on; try { localStorage.setItem('agentchat_office', on ? '1' : '0'); } catch {} }
+function applyOfficeView() {
+  const show = current === ALL && officeMode && !!window.Office;
+  $('office').classList.toggle('show', show);
+  $('msgs').style.display = show ? 'none' : '';
+  if (!window.Office) return;
+  if (show) Office.start(); else Office.stop();
+}
+if (window.Office) {
+  Office.init($('office'), {
+    state: () => ({ agents, task: TASKS && TASKS.active, workflow: WF }),
+    avatarUrl: (v) => withToken('/api/avatar/' + v.slice(4)),
+    esc, open: (id) => selectAgent(id),
+  });
+}
+$('officeBtn').onclick = () => { setOffice(!officeMode); renderAgents(); updateTop(); if (!officeMode) selectAgent(ALL); };
+let lastActiveTask = null;
+
 // ---- 即時事件 ----
 function connectEvents() {
   const es = new EventSource(withToken('/api/events'));
   es.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
+    if (window.Office && ev.agentId !== '*') Office.event(ev);
     if (ev.kind === 'agents-changed') { refreshAgents(); loadWorkflow().then(() => current === ALL && updateTop()); return; }
     if (ev.kind === 'usage') { loadUsage(); return; }
     if (ev.kind === 'telegram') { loadTelegram(); return; }
