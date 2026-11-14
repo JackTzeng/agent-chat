@@ -271,7 +271,11 @@ exports.create = function create(ctx) {
         { taskId: task.id, stageId: st.id, system: true });
     }
     const pend = { from: agent.id, fromStage: st.id, toStage: target.id, content: ho.content || text, changes: task.stageChanges, ts: Date.now() };
-    if (st.approval) {
+    const nextAgent = ctx.agentById(target.owner);
+    const writableNext = nextAgent && (nextAgent.sandbox === 'workspace-write' ||
+      nextAgent.permissionMode === 'acceptEdits' || nextAgent.permissionMode === 'auto');
+    // 團隊設定「交給可寫入的成員一律要核准」打開時，才對每次寫入型交接要求核准（預設只在 🔒 階段核准）
+    if (st.approval || (ctx.CONFIG.approveWritableHandoffs === true && writableNext)) {
       task.status = 'awaiting_approval'; task.pending = pend;
       log(task, { type: 'awaiting', from: agent.id, to: target.owner, stage: target.id });
       return changed(task, 'awaiting_approval', agent.name + ' 完成「' + st.name + '」，要交給 ' + name(target.owner) +

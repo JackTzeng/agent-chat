@@ -4,6 +4,8 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const crypto = require('node:crypto');
+const { inside } = require('./security');
 
 const HELP =
   '🤖 Agent Chat 遙控\n\n' +
@@ -38,6 +40,7 @@ const STATUS = { state: 'off', username: '', error: '' };
 let session = null;   // 目前的連線，可以停止後重新開始（改 token 不用重開伺服器）
 let pairing = null;   // { code, expires }
 let lastCtx = null;
+const badPairing = new Map();
 
 function setStatus(patch) {
   Object.assign(STATUS, patch);
@@ -53,7 +56,7 @@ exports.status = () => {
   };
 };
 exports.newPairCode = () => {
-  pairing = { code: String(Math.floor(100000 + Math.random() * 900000)), expires: Date.now() + 10 * 60 * 1000 };
+  pairing = { code: String(crypto.randomInt(100000, 1000000)), expires: Date.now() + 5 * 60 * 1000 };
   return exports.status().pairing;
 };
 exports.stop = () => { if (session) { session.stop(); session = null; } setStatus({ state: 'off', username: '', error: '' }); };
@@ -75,6 +78,10 @@ exports.start = function start(ctx) {
   const API = (process.env.TELEGRAM_API || 'https://api.telegram.org') + '/bot' + token;
   const allowedIds = () => (cfg.allowedUserIds || []).map(String);
   const tg = (ctx.state.telegram = ctx.state.telegram || { offset: 0, chats: {} });
+  const pushRecipients = () => Object.keys(tg.chats).filter((id) => {
+    const c = tg.chats[id];
+    return c && !c.muted && allowedIds().includes(String(c.userId || ''));
+  });
   const defaultTarget = () => (ctx.agentById(cfg.defaultAgent) || ctx.agents[0]).id;
   // 成員可能在網頁上被刪除，找不到時退回第一位
   const targetOf = (c) => ctx.agentById(c.target) || ctx.agents[0];
@@ -114,12 +121,15 @@ exports.start = function start(ctx) {
     const re = /!\[[^\]]*\]\(([^)\s]+)\)/g;
     let m;
     while ((m = re.exec(text))) {
-      const src = decodeURI(m[1]);
+      let src; try { src = decodeURI(m[1]); } catch { continue; }
       if (/^(https?:|data:)/i.test(src)) continue;
-      const f = path.resolve(agent.cwd, src);
-      const rel = path.relative(agent.cwd, f);
-      if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
-      try { if (fs.statSync(f).size < 20e6 && !out.includes(f)) out.push(f); } catch {}
+      if (![...IMG_EXT, ...VIDEO_EXT].includes(path.extname(src).toLowerCase())) continue;
+      try {
+        const f = fs.realpathSync(path.resolve(agent.cwd, src));
+        const root = fs.realpathSync(agent.cwd);
+        if (!inside(root, f)) continue;
+        if (fs.statSync(f).isFile() && fs.statSync(f).size < 20e6 && !out.includes(f)) out.push(f);
+      } catch {}
     }
     return out;
   }
@@ -158,7 +168,7 @@ exports.start = function start(ctx) {
   // 任務事件推送（開始、等核准、等回覆、完成、停止、出錯）
   listen('task', async ({ task, event, message }) => {
     if (!event || event === 'handoff') return;
-    const chats = Object.keys(tg.chats).filter((id) => !tg.chats[id].muted);
+    const chats = pushRecipients();
     const head = { started: '📋', awaiting_approval: '🔔 需要你核准', waiting_user: '⏳ 等你回覆', done: '🎉 任務完成',
       stopped: '⏹', error: '⚠️ 任務暫停', rejected: '↩️' }[event] || '📋';
     let body = head + '（任務 #' + task.id + '）\n' + (message || '');
@@ -167,8 +177,11 @@ exports.start = function start(ctx) {
     for (const id of chats) await say(id, body);
   });
 
-  function chat(chatId) {
-    if (!tg.chats[chatId]) { tg.chats[chatId] = { target: defaultTarget(), muted: false }; ctx.saveState(); }
+  function chat(chatId, userId) {
+    if (!tg.chats[chatId]) tg.chats[chatId] = { target: defaultTarget(), muted: false };
+    // Every push recipient is bound to one private Telegram user, not merely a chat ID.
+    tg.chats[chatId].userId = String(userId);
+    ctx.saveState();
     return tg.chats[chatId];
   }
 
@@ -187,25 +200,33 @@ exports.start = function start(ctx) {
   }
 
   async function handle(msg) {
-    if (!msg || !msg.from) return;
+    if (!msg || !msg.from || !msg.chat || msg.chat.type !== 'private') return;
     const chatId = msg.chat.id, userId = String(msg.from.id);
     if (!allowedIds().includes(userId)) {
       // 配對：使用者在網頁上產生 6 位數配對碼，傳給 bot 就會加入白名單
-      const digits = String(msg.text || '').replace(/\D/g, '');
+      const digits = String(msg.text || '').trim();
+      const attempts = badPairing.get(userId);
+      const locked = attempts && attempts.until > Date.now() && attempts.count >= 5;
+      if (locked) return;
       if (pairing && pairing.expires > Date.now() && digits === pairing.code) {
+        badPairing.delete(userId);
         cfg.allowedUserIds = [...new Set([...(cfg.allowedUserIds || []), Number(userId)])];
         pairing = null;
         ctx.saveConfig();
         setStatus({});
         console.log('📱 Telegram：已配對使用者 ' + userId + (msg.from.username ? '（@' + msg.from.username + '）' : ''));
-        chat(chatId);
+        chat(chatId, userId);
         return say(chatId, '✅ 配對成功！之後可以用這個帳號遙控 Agent Chat。\n\n' + HELP);
+      }
+      if (/^\d{6}$/.test(digits)) {
+        const cur = badPairing.get(userId);
+        badPairing.set(userId, { count: cur && cur.until > Date.now() ? cur.count + 1 : 1, until: Date.now() + 10 * 60000 });
       }
       console.log('⚠️  Telegram：拒絕未授權的使用者 ' + userId + (msg.from.username ? '（@' + msg.from.username + '）' : ''));
       return say(chatId, '⛔ 你還沒有使用權限。\n請在 Agent Chat 網頁按「📱 Telegram」→「產生配對碼」，再把 6 位數配對碼傳給我。');
     }
     if (!msg.text) return say(chatId, '目前只支援文字訊息。');
-    const c = chat(chatId);
+    const c = chat(chatId, userId);
     const text = msg.text.trim();
     const cmd = text.match(/^\/(\w+)(?:@\w+)?\s*([\s\S]*)$/);
 
@@ -302,13 +323,13 @@ exports.start = function start(ctx) {
 
   // 成員可能卡住
   listen('stalled', async ({ agent, text }) => {
-    const chats = Object.keys(tg.chats).filter((id) => !tg.chats[id].muted);
+    const chats = pushRecipients();
     for (const id of chats) await say(id, label(agent) + '\n' + text + '\n\n👉 /stop 全部停止');
   });
 
   // agent 每做完一輪就推送結果
   listen('done', async ({ agent, segments, relayTo }) => {
-    const chats = Object.keys(tg.chats).filter((id) => !tg.chats[id].muted);
+    const chats = pushRecipients();
     if (!chats.length || !segments.length) return;
     const texts = segments.filter((s) => s.type === 'text').map((s) => s.text);
     const errors = segments.filter((s) => s.type === 'error').map((s) => '⚠️ ' + s.text);

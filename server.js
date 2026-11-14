@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.0.0';
+const VERSION = '3.0.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -10,11 +10,12 @@ const { spawn, execFileSync } = require('child_process');
 const EventEmitter = require('events');
 const hooks = new EventEmitter(); // 給 Telegram 等外掛監聽：user / done / task
 const taskLib = require('./tasks');
+const { createSecurity, inside } = require('./security');
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT) || 3939;
 const HOST = process.env.HOST || '127.0.0.1';
-const TOKEN = process.env.ACCESS_TOKEN || '';
+// ACCESS_TOKEN is handled exclusively by security.js. Never put it in URLs or logs.
 const IS_WIN = process.platform === 'win32';
 // 找出 CLI 的實際位置。Windows 上常見的問題是：剛裝好的指令還沒進到檔案總管的 PATH，
 // 所以除了 PATH 之外，也直接去常見安裝位置找。
@@ -61,8 +62,8 @@ function decodeOutput(buf) {
 }
 
 const LOCAL_HOSTS = ['127.0.0.1', 'localhost', '::1'];
-if (!LOCAL_HOSTS.includes(HOST) && !TOKEN) {
-  console.error('⚠️  對外開放（HOST=' + HOST + '）時必須設定 ACCESS_TOKEN，否則任何連得到的人都能操作你的電腦。');
+if (!LOCAL_HOSTS.includes(HOST) && !process.env.ALLOWED_HOSTS) {
+  console.error('對外開放時必須設定 ALLOWED_HOSTS（例如 Tailscale IP），否則拒絕啟動。');
   process.exit(1);
 }
 
@@ -73,16 +74,24 @@ const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const AVATAR_DIR = path.join(DATA_DIR, 'avatars'); // 自訂頭像圖片
 fs.mkdirSync(HIST_DIR, { recursive: true });
 fs.mkdirSync(AVATAR_DIR, { recursive: true });
+const security = createSecurity({ root: ROOT, dataDir: DATA_DIR, host: HOST, port: PORT });
 
 // agents.json 是你自己的設定（不進 git）；第一次啟動時從範本複製一份
 const AGENTS_FILE = path.join(ROOT, 'agents.json');
 if (!fs.existsSync(AGENTS_FILE)) fs.copyFileSync(path.join(ROOT, 'agents.example.json'), AGENTS_FILE);
 const CONFIG = JSON.parse(fs.readFileSync(AGENTS_FILE, 'utf8'));
 const maxHops = () => Number(CONFIG.maxRelayHops) || 12; // agent 之間自動轉交的上限
+// 舊設定不符合安全規則時，不讓整個伺服器無法啟動：這位成員標示為停用並說明原因，其他成員照常運作
 const prepAgent = (a) => {
-  const cwd = path.resolve(ROOT, a.cwd || './workspace');
-  fs.mkdirSync(cwd, { recursive: true });
-  return { ...a, cwd };
+  try {
+    const cwd = security.assertAllowedDir(a.cwd || './workspace');
+    security.checkAgent({ ...a, cwd });
+    fs.mkdirSync(cwd, { recursive: true });
+    return { ...a, cwd };
+  } catch (e) {
+    console.error('⛔ 成員「' + a.name + '」的設定不符合安全規則，已暫停使用：' + e.message);
+    return { ...a, cwd: path.resolve(ROOT, 'workspace'), blocked: e.message };
+  }
 };
 // AGENTS 是執行中使用的清單（cwd 已轉成完整路徑）；CONFIG.agents 是原始設定。
 // 修改時就地更新陣列，其他模組（Telegram）拿到的參照才會跟著變。
@@ -122,7 +131,10 @@ function appendHistory(id, msg) {
 const clients = new Set();
 function broadcast(ev) {
   const line = 'data: ' + JSON.stringify(ev) + '\n\n';
-  for (const res of clients) res.write(line);
+  for (const c of clients) {
+    if (security.authenticated(c.req)) c.res.write(line);
+    else { clients.delete(c); c.res.end(); }
+  }
 }
 
 // ---------- 執行 CLI ----------
@@ -242,12 +254,14 @@ function cancelTask(taskId) {
 const sessionKey = (agent, opts) => (opts.taskId ? 't' + opts.taskId + ':' + agent.id : agent.id);
 
 function buildCommand(agent, sid) {
+  security.checkAgent(agent);
+  if (sid && !/^[a-zA-Z0-9_-]{1,128}$/.test(sid)) throw new Error('不合法的 CLI Session ID');
   if (agent.engine === 'claude') {
     const args = ['-p', '--output-format', 'stream-json', '--verbose'];
     if (agent.permissionMode) args.push('--permission-mode', agent.permissionMode);
     if (agent.model) args.push('--model', agent.model);
     if (agent.effort) args.push('--effort', agent.effort);
-    for (const d of agent.extraDirs || []) args.push('--add-dir', d.path);
+    for (const d of agent.extraDirs || []) if (d.mode !== 'ro') args.push('--add-dir', d.path);
     if (sid) args.push('--resume', sid);
     return { cmd: getBin('claude'), args };
   }
@@ -329,7 +343,10 @@ function parseCodex(ev, emit) {
 function startRun(agent, userText, opts = {}) {
   const key = sessionKey(agent, opts);
   const sid = state.sessions[key];
-  const { cmd, args } = buildCommand(agent, sid);
+  let cmd = null, args = [], blocked = agent.blocked || null;
+  if (!blocked) {
+    try { ({ cmd, args } = buildCommand(agent, sid)); } catch (e) { blocked = e.message; }
+  }
   const hops = opts.hops || 0;
   const prompt = buildPrompt(agent, userText, opts);
   const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system, interject: opts.interject };
@@ -350,6 +367,16 @@ function startRun(agent, userText, opts = {}) {
     broadcast({ agentId: agent.id, kind: 'busy', busy: false });
   };
 
+  if (blocked) {
+    run.segments.push({ type: 'error', text: '⛔ 這位成員的設定不符合安全規則，暫停使用：\n' + blocked +
+      '\n請到成員的「⚙️ 設定」修改（例如把資料夾移到核准範圍、改用 Codex 唯讀或可讀寫），或在 start.bat 設定 AGENT_ALLOWED_ROOTS。' });
+    broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
+    finish();
+    hooks.emit('done', { agent, segments: run.segments, meta: '', relayTo: [] });
+    if (opts.taskId) tasks.onTurnDone(agent, run, opts, null);
+    setImmediate(pump);
+    return;
+  }
   if (!cmd) {
     const how = agent.engine === 'claude' ? 'npm.cmd i -g @anthropic-ai/claude-code' : 'npm.cmd i -g @openai/codex';
     run.segments.push({ type: 'error', text: '找不到 ' + agent.engine + ' 指令。\n' +
@@ -372,7 +399,7 @@ function startRun(agent, userText, opts = {}) {
   const spawnCmd = needShell && /\s/.test(cmd) ? '"' + cmd + '"' : cmd;
   // 透過 cmd.exe 執行時，含空白或特殊符號的參數（例如資料夾路徑）要加引號
   const spawnArgs = needShell ? args.map((x) => (/[\s&|<>^()]/.test(x) && !x.includes('"') ? '"' + x + '"' : x)) : args;
-  const proc = spawn(spawnCmd, spawnArgs, { cwd: agent.cwd, shell: needShell, env: process.env, windowsHide: true });
+  const proc = spawn(spawnCmd, spawnArgs, { cwd: agent.cwd, shell: needShell, env: security.safeEnvironment(), windowsHide: true });
   run.proc = proc;
   run.pid = proc.pid;
   run.cmdline = [cmd, ...args].map((x) => (/[\s"']/.test(x) ? JSON.stringify(x) : x)).join(' ');
@@ -486,8 +513,9 @@ function diag(id) {
     running: !!run,
     run: run ? {
       pid: run.pid, startedAt: run.startedAt, lastActivity: run.lastActivity, lastStderr: run.lastStderr || null, stalled: !!run.stalled,
-      cmdline: run.cmdline, stderrTail: decodeOutput(run.stderr).split(/\r?\n/).slice(-40).join('\n'),
-      stdoutTail: run.stdoutTail, segments: run.segments.length, taskId: run.opts.taskId || null,
+      cmdline: security.redact(run.cmdline, [CONFIG.telegram && CONFIG.telegram.botToken]),
+      stderrTail: security.redact(decodeOutput(run.stderr).split(/\r?\n/).slice(-40).join('\n'), [CONFIG.telegram && CONFIG.telegram.botToken]),
+      stdoutTail: run.stdoutTail.map((s) => security.redact(s, [CONFIG.telegram && CONFIG.telegram.botToken])), segments: run.segments.length, taskId: run.opts.taskId || null,
     } : null,
     queue: queueInfo(id),
     stallMinutes: stallMinutes(),
@@ -608,7 +636,7 @@ function runQuiet(cmd, args, input, timeoutMs, onLine) {
   return new Promise((resolve) => {
     const cwd = path.join(DATA_DIR, 'probe'); fs.mkdirSync(cwd, { recursive: true });
     const needShell = IS_WIN && !/\.exe$/i.test(cmd);
-    const proc = spawn(needShell && /\s/.test(cmd) ? '"' + cmd + '"' : cmd, args, { cwd, shell: needShell, windowsHide: true });
+    const proc = spawn(needShell && /\s/.test(cmd) ? '"' + cmd + '"' : cmd, args, { cwd, shell: needShell, env: security.safeEnvironment(), windowsHide: true });
     let buf = '', err = '';
     const timer = setTimeout(() => { try { proc.kill(); } catch {} }, timeoutMs);
     proc.stdout.setEncoding('utf8');
@@ -646,8 +674,8 @@ function usageSnapshot() {
 // ---------- 成員設定（網頁上新增 / 編輯 / 刪除）----------
 const ENGINES = ['claude', 'codex'];
 const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
-const PERMISSION_MODES = ['plan', 'acceptEdits', 'auto', 'bypassPermissions'];
-const SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'];
+const PERMISSION_MODES = ['plan', 'acceptEdits', 'auto'];
+const SANDBOXES = ['read-only', 'workspace-write'];
 
 function cleanAgent(input, existingId) {
   const str = (v, max = 4000) => String(v ?? '').trim().slice(0, max);
@@ -659,7 +687,7 @@ function cleanAgent(input, existingId) {
     engine: str(input.engine),
     model: str(input.model, 80),
     effort: str(input.effort),
-    cwd: str(input.cwd, 300) || './workspace',
+    cwd: security.assertAllowedDir(str(input.cwd, 300) || './workspace'),
     persona: str(input.persona, 8000),
   };
   if (!a.name) throw new Error('請填名稱');
@@ -667,6 +695,8 @@ function cleanAgent(input, existingId) {
     if (!/^img:[\w-]+\.png$/.test(a.avatar) || !fs.existsSync(path.join(AVATAR_DIR, a.avatar.slice(4)))) throw new Error('頭像圖片不存在，請重新上傳');
   } else if ([...a.avatar].length > 8) throw new Error('頭像請用一個 emoji，或上傳圖片');
   if (/\s|@/.test(a.name)) throw new Error('名稱不能有空白或 @（同事要用 @名稱 呼叫）');
+  if (['bypassPermissions', 'danger-full-access'].includes(input.permissionMode) ||
+      ['bypassPermissions', 'danger-full-access'].includes(input.sandbox)) throw new Error('Web/Telegram 禁止完整權限模式');
   const dup = AGENTS.find((x) => x.id !== existingId && x.name.toLowerCase() === a.name.toLowerCase());
   if (dup) throw new Error('已經有叫「' + a.name + '」的成員了');
   if (!ENGINES.includes(a.engine)) throw new Error('引擎只能是 claude 或 codex');
@@ -685,11 +715,12 @@ function cleanAgent(input, existingId) {
       const raw = String((d && d.path) || '').trim().replace(/^"|"$/g, '');
       if (!raw) continue;
       if (!path.isAbsolute(raw)) throw new Error('資料夾要填完整路徑，例如 C:\\EM_reports_copy\\EM_DATA：' + raw);
-      if (/["%']/.test(raw)) throw new Error('資料夾路徑不能包含引號或 % 符號：' + raw);
+      if (/["%'!^&|<>\r\n]/.test(raw)) throw new Error('資料夾路徑含有不允許的命令列特殊字元：' + raw);
       const full = path.resolve(raw);
       let st; try { st = fs.statSync(full); } catch { throw new Error('找不到這個資料夾：' + full); }
       if (!st.isDirectory()) throw new Error('這不是資料夾：' + full);
-      if (full === path.resolve(ROOT) || full === path.parse(full).root) throw new Error('不能開放整個磁碟或 Agent Chat 程式資料夾：' + full);
+      security.assertAllowedDir(full, { mustExist: true });
+      if (a.engine === 'claude' && d.mode === 'ro') throw new Error('Claude --add-dir 無法強制唯讀；請使用 OS ACL 或唯讀副本');
       if (seen.has(full.toLowerCase())) continue;
       seen.add(full.toLowerCase());
       a.extraDirs.push({ path: full, mode: d.mode === 'ro' ? 'ro' : 'rw' });
@@ -701,6 +732,7 @@ function cleanAgent(input, existingId) {
   }
   if (!a.model) delete a.model;
   if (!a.effort) delete a.effort;
+  security.checkAgent(a);
   return a;
 }
 
@@ -734,16 +766,24 @@ function sendFile(res, file) {
 }
 
 function readBody(req) {
-  return new Promise((resolve) => {
-    let d = '';
-    req.on('data', (c) => { d += c; if (d.length > 1e6) req.destroy(); });
-    req.on('end', () => { try { resolve(JSON.parse(d || '{}')); } catch { resolve({}); } });
+  return new Promise((resolve, reject) => {
+    let d = '', bytes = 0, tooBig = false;
+    req.on('data', (c) => {
+      bytes += c.length;
+      if (bytes > 1024 * 1024) { tooBig = true; return; }
+      d += c;
+    });
+    req.on('end', () => {
+      if (tooBig) { const e = new Error('JSON 大小超過 1MB'); e.status = 413; return reject(e); }
+      try { resolve(JSON.parse(d || '{}')); } catch { const e = new Error('不合法 JSON'); e.status = 400; reject(e); }
+    });
+    req.on('error', reject);
   });
 }
 
 const publicAgent = (a) => ({
   id: a.id, name: a.name, avatar: a.avatar, engine: a.engine, model: a.model || '', effort: a.effort || '', role: a.role || '',
-  extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns,
+  extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns, blocked: a.blocked || null,
   canHandoffTo: allowedTargets(a).map((t) => t.id),
   busy: runs.has(a.id), hasSession: !!state.sessions[a.id],
   queued: (queueInfo(a.id) || {}).count || 0, waitingOn: (queueInfo(a.id) || {}).waitingOn || null,
@@ -754,12 +794,29 @@ const publicAgent = (a) => ({
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
-
-  // 靜態頁面不需要 token（頁面本身沒有資料），所有 /api 都要
-  if (p.startsWith('/api/') && TOKEN) {
-    const t = url.searchParams.get('token') || req.headers['x-token'];
-    if (t !== TOKEN) return send(res, 401, { error: 'token 錯誤' });
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'");
+  if (!security.verifyHost(req)) return send(res, 403, { error: 'Host 不在白名單' });
+  if (!security.checkOrigin(req)) return send(res, 403, { error: '拒絕跨來源操作' });
+  if (p === '/api/auth/login' && req.method === 'POST') {
+    if (!security.jsonRequest(req)) return send(res, 415, { error: '只接受 application/json' });
+    try {
+      const body = await readBody(req), result = security.login(req, body.token);
+      if (!result.ok) return send(res, result.blocked ? 429 : 401, { error: '登入失敗或暫時鎖定' });
+      res.setHeader('Set-Cookie', result.cookie);
+      return send(res, 200, { ok: true });
+    } catch (e) { return send(res, e.status || 400, { error: e.message }); }
   }
+  if (p.startsWith('/api/') && !security.authenticated(req)) return send(res, 401, { error: '請先登入' });
+  if (p === '/api/auth/logout' && req.method === 'POST') {
+    res.setHeader('Set-Cookie', security.logout(req));
+    return send(res, 200, { ok: true });
+  }
+  if (p.startsWith('/api/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) &&
+      p !== '/api/upload' && !security.jsonRequest(req))
+    return send(res, 415, { error: '只接受 application/json' });
 
   let m0;
   try {
@@ -774,7 +831,11 @@ const server = http.createServer(async (req, res) => {
       if (typeof body.botToken === 'string' && body.botToken.trim()) {
         const tok = body.botToken.trim();
         if (!/^\d+:[\w-]{20,}$/.test(tok)) return send(res, 400, { error: 'bot token 格式不對，應該像 123456789:ABC… 這樣' });
-        if (tok !== t.botToken) t.allowedUserIds = []; // 換了 bot，原本的配對作廢
+        if (tok !== t.botToken) {
+          t.allowedUserIds = []; // 換了 bot，原本的配對作廢
+          if (state.telegram) state.telegram.chats = {};
+          saveState();
+        }
         t.botToken = tok;
       }
       if (typeof body.enabled === 'boolean') t.enabled = body.enabled;
@@ -787,7 +848,8 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/telegram/pair' && req.method === 'POST') return send(res, 200, { pairing: telegram.newPairCode() });
     if (p === '/api/telegram/clear' && req.method === 'POST') {
       if (CONFIG.telegram) CONFIG.telegram.allowedUserIds = [];
-      saveConfig(); broadcast({ agentId: '*', kind: 'telegram' });
+      if (state.telegram) state.telegram.chats = {};
+      saveConfig(); saveState(); broadcast({ agentId: '*', kind: 'telegram' });
       return send(res, 200, telegram.status());
     }
     // ---- 診斷 ----
@@ -830,7 +892,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/usage/refresh' && req.method === 'POST') { probeUsage(); return send(res, 200, { ok: true }); }
     if (p === '/api/config' && req.method === 'GET') {
       return send(res, 200, {
-        agents: CONFIG.agents, workflow: CONFIG.workflow, maxRelayHops: maxHops(),
+        agents: CONFIG.agents, workflow: CONFIG.workflow, maxRelayHops: maxHops(), approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
         options: { engines: ENGINES, efforts: EFFORTS, permissionModes: PERMISSION_MODES, sandboxes: SANDBOXES },
       });
     }
@@ -903,6 +965,7 @@ const server = http.createServer(async (req, res) => {
       if (body.workflow && typeof body.workflow === 'object') CONFIG.workflow = taskLib.cleanWorkflow(body.workflow, CONFIG.agents);
       const h = Math.round(Number(body.maxRelayHops));
       if (h >= 1 && h <= 50) CONFIG.maxRelayHops = h;
+      if (typeof body.approveWritableHandoffs === 'boolean') CONFIG.approveWritableHandoffs = body.approveWritableHandoffs;
       if (Array.isArray(body.takeTurns)) {
         for (const x of CONFIG.agents) { if (body.takeTurns.includes(x.id)) x.takeTurns = true; else delete x.takeTurns; }
         reloadAgents();
@@ -920,9 +983,13 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
       res.write(': ok\n\n');
-      clients.add(res);
-      const ping = setInterval(() => res.write(': ping\n\n'), 25000);
-      req.on('close', () => { clearInterval(ping); clients.delete(res); });
+      const client = { req, res };
+      clients.add(client);
+      const ping = setInterval(() => {
+        if (!security.authenticated(req)) { clearInterval(ping); clients.delete(client); res.end(); }
+        else res.write(': ping\n\n');
+      }, 25000);
+      req.on('close', () => { clearInterval(ping); clients.delete(client); });
       return;
     }
 
@@ -955,18 +1022,23 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/file') {
       const agent = agentById(url.searchParams.get('agent'));
       if (!agent) return send(res, 404, { error: 'agent?' });
-      const target = path.resolve(agent.cwd, url.searchParams.get('p') || '');
-      const rel = path.relative(agent.cwd, target);
-      if (rel.startsWith('..') || path.isAbsolute(rel)) return send(res, 403, { error: '只能讀取工作資料夾內的檔案' });
+      let target;
+      try { target = security.fileWithin(agent.cwd, url.searchParams.get('p') || ''); }
+      catch { return send(res, 403, { error: '檔案不可讀取或超出工作目錄' }); }
+      const ext = path.extname(target).toLowerCase();
+      const inline = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.webm', '.mp3', '.wav', '.txt', '.md'].includes(ext);
+      res.setHeader('Content-Security-Policy', 'sandbox');
+      if (!inline) res.setHeader('Content-Disposition', 'attachment');
       return sendFile(res, target);
     }
 
     // 靜態檔
-    const file = path.resolve(ROOT, 'public', '.' + (p === '/' ? '/index.html' : p));
-    if (!file.startsWith(path.join(ROOT, 'public'))) return send(res, 403, 'forbidden', 'text/plain');
+    const pubRoot = path.join(ROOT, 'public');
+    const file = path.resolve(pubRoot, '.' + (p === '/' ? '/index.html' : p));
+    if (!inside(pubRoot, file)) return send(res, 403, 'forbidden', 'text/plain');
     return sendFile(res, file);
   } catch (e) {
-    return send(res, 500, { error: String(e && e.message || e) });
+    return send(res, e.status || 500, { error: e.status ? e.message : '內部錯誤，請查看伺服器日誌' });
   }
 });
 
@@ -976,7 +1048,7 @@ server.on('error', (e) => {
   process.exit(1);
 });
 server.listen(PORT, HOST, () => {
-  console.log('✅ Agent Chat v' + VERSION + ' 已啟動： http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT + (TOKEN ? '/?token=' + TOKEN : ''));
+  console.log('✅ Agent Chat v' + VERSION + ' 已啟動： http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT);
   for (const a of AGENTS) console.log('   ' + (a.avatar && !a.avatar.startsWith('img:') ? a.avatar : '•') + ' ' + a.name + '（' + [a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ') + '） → ' + a.cwd);
   for (const [k, v] of Object.entries(BIN)) console.log('   ' + (v ? '✔ ' + k + '：' + v : '✘ 找不到 ' + k + '（這個引擎的 agent 會無法回覆）'));
 });

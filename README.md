@@ -116,10 +116,10 @@
 | claude | `"plan"` | 只看不改，只會提出計畫 |
 | claude | `"acceptEdits"` | 可以讀寫檔案；需要執行指令時會被擋下，並在聊天室回報 |
 | claude | `"auto"`（預設） | Claude 自己判斷風險，低風險直接執行、有風險的擋下 |
-| claude | `"bypassPermissions"` | 全部自動允許，**只在你信任的資料夾使用** |
+| claude | `"bypassPermissions"` | **安全修補後 Web/Telegram 禁用；請在本機 CLI 人工使用** |
 | codex | `"read-only"` | 只能讀 |
 | codex | `"workspace-write"`（預設） | 只能在工作資料夾內寫檔與執行指令 |
-| codex | `"danger-full-access"` | 不受限制，**小心使用** |
+| codex | `"danger-full-access"` | **安全修補後 Web/Telegram 禁用；請在本機 CLI 人工使用** |
 
 如果成員一直說「沒有權限執行指令」，可以把 permissionMode 改成 `auto`。
 
@@ -130,9 +130,9 @@
 1. 用遠端模式啟動，**一定要設密碼**：
    ```
    # PowerShell
-   $env:HOST="0.0.0.0"; $env:ACCESS_TOKEN="自己想一組長密碼"; node server.js
+   $env:HOST="0.0.0.0"; $env:ALLOWED_HOSTS="你的Tailscale-IP"; $env:ACCESS_TOKEN="至少16字元的隨機長密碼"; node server.js
    ```
-2. 手機瀏覽器打開 `http://電腦的Tailscale IP:3939/?token=你的密碼`
+2. 手機瀏覽器打開 `http://電腦的Tailscale IP:3939/（在登入視窗輸入密碼，網址不得攜帶 token）`
    （第一次帶 token 就好，之後這支手機會記住）
 
 ⚠️ 這個介面等於可以遙控你電腦上的 AI 執行指令。**不要**把 3939 port 直接開到公開網路上。
@@ -307,3 +307,17 @@ agents.json      你自己的 agent 設定（不會上傳到 git，git pull 也�
 data/            對話記錄與 session（自動產生）
 workspace/       預設工作資料夾（自動產生）
 ```
+
+
+## 安全修補（2026-11-14）
+- 所有 API（包含 localhost）均須登入。首次執行時，隨機密碼會顯示在 start.bat 的黑色視窗（只顯示一次），本機只保存 `data/admin-password-hash.json`；已有 ACCESS_TOKEN 環境變數時沿用。**忘記密碼**：刪除 `data/admin-password-hash.json` 再重開 start.bat，會產生新密碼。伺服器重開後需要重新登入。
+- Web 會話使用 HttpOnly / SameSite=Strict Cookie，未再使用 URL token / localStorage。
+- 遠端連線請配合 Tailscale，設定 `HOST` 與 `ALLOWED_HOSTS`；勿將 3939 port 公開到網際網路。
+- Agent 工作目錄預設只能在 `workspace/` 下；若需要其他根目錄，先建立資料夾再以 `AGENT_ALLOWED_ROOTS` 白名單設定，Windows 多個目錄以分號區隔。
+- 遠端控制端不接受 Claude `bypassPermissions`、Codex `danger-full-access`；需要全權限時請在本機終端機手動操作。
+- Claude 的 `--add-dir` 無法保證指定目錄唯讀，故不再接受 Claude 額外資料夾 ro 模式；請提供受 OS ACL 保護的資料副本。
+- 子程序環境變數採白名單，預設不傳 ACCESS_TOKEN、TELEGRAM_BOT_TOKEN 等控制端機密，也不傳 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`（避免意外改走 API 計費）。Windows 系統變數、公司網路的 proxy 與憑證設定（`HTTPS_PROXY`、`NODE_EXTRA_CA_CERTS` 等）會保留。需要其他變數時用 `AGENT_ENV_ALLOWLIST` 明確加入（逗號分隔）。
+- Telegram 僅接受私人聊天室指令與推播，並以 allowedUserIds 與聊天室 userId 雙重檢查；撤銷配對後立即停止推播。
+- 既有設定如使用白名單以外的工作目錄、危險權限或 Claude 唯讀資料夾，伺服器仍會啟動，但**那位成員會暫停使用**，卡片顯示「⛔ 設定需修正」，送訊息時會說明原因；修正設定（或在 start.bat 設定 `AGENT_ALLOWED_ROOTS`）後即可恢復。
+- 任務交接：預設只在 🔒 階段等你核准。在「⚙️ 工作流程」可以打開「🛡️ 交給有寫入權限的成員時，一律要我核准」，降低成員讀到惡意內容後自動連鎖執行的風險。
+- 安全測試：`node --test tests/security.test.js tests/http.test.js`。

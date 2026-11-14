@@ -2,3 +2,9 @@ data/
 workspace/
 agents.json
 node_modules/
+
+# Local secrets
+.env
+.env.*
+*.pem
+*.key

@@ -300,17 +300,17 @@
 
 <script>
 // ---- token（對外開放時用；網址帶 ?token=xxx 一次即可，會記在這台裝置）----
-const qs = new URLSearchParams(location.search);
-let TOKEN = qs.get('token') || '';
-try { if (TOKEN) localStorage.setItem('agentchat_token', TOKEN); else TOKEN = localStorage.getItem('agentchat_token') || ''; } catch {}
-const withToken = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN) : u;
+// Browser API calls authenticate via HttpOnly session cookie, never through URL/localStorage.
+try { localStorage.removeItem('agentchat_token'); } catch {}
+if (location.search) history.replaceState(null, '', location.pathname + location.hash);
+const withToken = (u) => u;
 
 const $ = (id) => document.getElementById(id);
 const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.0.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.0.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -322,7 +322,7 @@ function toast(msg) {
   clearTimeout(toast._t); toast._t = setTimeout(() => (t.style.display = 'none'), 3500);
 }
 async function api(path, opts = {}) {
-  const r = await fetch(withToken(path), { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } });
+  const r = await fetch(withToken(path), { credentials: 'same-origin', ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
   return j;
@@ -390,6 +390,7 @@ function agentCard(a, extraClass = '') {
         <div class="role">${esc(a.role || '')}</div>
         ${a.engine ? `<div class="role">${esc([a.model || '預設模型', a.effort].filter(Boolean).join(' · '))}${a.takeTurns ? ' · <span title="和團隊輪流工作：同一時間只有一位輪流成員在動手">🔁 輪流</span>' : ''}</div>` : ''}
         ${a.extraDirs && a.extraDirs.length ? `<div class="role" title="${esc(a.extraDirs.map((d) => d.path + (d.mode === 'ro' ? '（唯讀）' : '（可讀寫）')).join('\n'))}">📁 +${a.extraDirs.length} 個資料夾</div>` : ''}
+        ${a.blocked ? `<div class="role stall" title="${esc(a.blocked)}">⛔ 設定需修正，暫停使用</div>` : ''}
         ${a.busy && a.runningSince ? `<div class="role ${a.stalled ? 'stall' : ''}">${a.stalled ? '⚠️ 可能卡住 · ' : '⏱ '}工作中 ${esc(ago(a.runningSince))}</div>` : ''}
         ${a.queued ? `<div class="qline">🕒 排隊中${a.waitingOn === a.id ? '（等它這輪做完）' : a.waitingOn && agentOf(a.waitingOn) ? '（等 ' + esc(agentOf(a.waitingOn).name) + ' 做完）' : ''}</div>` : ''}
       </div>
@@ -993,6 +994,8 @@ async function openTeamForm() {
       <div class="field full"><label>🔁 輪流工作的成員</label>
         <div class="checks" id="w_turns">${members.map((m) => `<label><input type="checkbox" value="${esc(m.id)}" ${m.takeTurns ? 'checked' : ''}> ${esc(label(m))}</label>`).join('')}</div>
         <span class="help">勾選的成員同一時間只有一位在動手，其他的排隊。沒勾的成員不受限制，例如負責環境更新的成員可以隨時工作。</span></div>
+      <div class="field full"><label class="opt"><input type="checkbox" id="w_strict" ${CFG.approveWritableHandoffs ? 'checked' : ''}> 🛡️ 交給「有寫入權限」的成員時，一律要我核准</label>
+        <span class="help">打開後，除了 🔒 階段，只要下一位成員能修改檔案，每次交接都會先等你核准（例如 QA 退回給 Coder）。比較安全，可以防止成員讀到的惡意內容自動連鎖執行，但每件任務要多按幾次核准。關閉時只在 🔒 階段核准。</span></div>
       <div class="field full"><label>流程預覽</label><div class="flow-preview" id="w_preview"></div></div>
       <div class="field full"><label>階段</label><div id="w_stages"></div>
         <div class="tb-row"><button type="button" id="w_add">＋ 新增階段</button><button type="button" id="w_tpl">套用範本：PM → Coder → QA</button></div>
@@ -1094,7 +1097,7 @@ async function openTeamForm() {
     if (missing.length && !confirm('這些階段還沒指定負責成員：' + missing.join('、') + '\n還是要儲存嗎？')) return;
     try {
       const takeTurns = [...document.querySelectorAll('#w_turns input:checked')].map((x) => x.value);
-      await api('/api/team', { method: 'PUT', body: JSON.stringify({ workflow: wf, maxRelayHops: $('t_hops').value, takeTurns }) });
+      await api('/api/team', { method: 'PUT', body: JSON.stringify({ workflow: wf, maxRelayHops: $('t_hops').value, takeTurns, approveWritableHandoffs: $('w_strict').checked }) });
       closeModal(); toast('✅ 工作流程已儲存');
     } catch (e) { toast(e.message); }
   };
@@ -1448,9 +1451,9 @@ function connectEvents() {
   es.onerror = () => { es.close(); setTimeout(() => { connectEvents(); if (current) selectAgent(current); }, 2000); };
 }
 
-(async function init() {
+async function init() {
   try { agents = await api('/api/agents'); }
-  catch (e) { $('msgs').innerHTML = '<div class="empty">連不上伺服器：' + esc(e.message) + '<br>如果有設定 token，網址要加上 ?token=你的密碼</div>'; return; }
+  catch (e) { showLogin(e.message); return; }
   let saved = null; try { saved = localStorage.getItem('agentchat_current'); } catch {}
   // 網頁檔案 git pull 後馬上是新的，但伺服器要重開才會更新；版本不一致就提醒
   api('/api/info').then((i) => {
@@ -1462,7 +1465,30 @@ function connectEvents() {
   loadTelegram();
   await Promise.all([loadWorkflow(), loadTasks()]);
   selectAgent(saved === ALL || agents.some((a) => a.id === saved) ? saved : agents[0].id);
-})();
+}
+function showLogin(message) {
+  openModal(`<h2>Agent Chat 安全登入</h2>
+    <p class="lead">請輸入 ACCESS_TOKEN 或首次啟動顯示的管理密碼。系統只保存密碼雜湊；若遺失，請重新設定 ACCESS_TOKEN。</p>
+    <div class="field"><input id="authSecret" type="password" placeholder="管理密碼" autocomplete="current-password"></div>
+    <p id="authError" class="seg-error">${esc(message || '')}</p>
+    <div class="modal-actions"><button id="authSubmit" class="primary">登入</button></div>`);
+  async function submit() {
+    const password = $('authSecret').value;
+    $('authSubmit').disabled = true;
+    try {
+      const r = await fetch('/api/auth/login', { method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: password }) });
+      if (!r.ok) throw new Error('密碼不正確或暫時鎖定，請檢查伺服器設定');
+      closeModal();
+      await init();
+    } catch (e) { $('authError').textContent = e.message; }
+    finally { if ($('authSubmit')) $('authSubmit').disabled = false; }
+  }
+  $('authSubmit').onclick = submit;
+  $('authSecret').onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+  $('authSecret').focus();
+}
+init();
 </script>
 </body>
 </html>

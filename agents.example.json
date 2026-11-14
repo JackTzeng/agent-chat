@@ -15,7 +15,7 @@
       "engine": "claude",
       "model": "claude-opus-5-5",
       "effort": "high",
-      "permissionMode": "auto",
+      "permissionMode": "acceptEdits",
       "cwd": "./workspace",
       "canHandoffTo": ["kai", "qa"],
       "persona": "你叫克勞德先生，是這個團隊的專案經理（PM），用繁體中文回覆，講話有禮貌、精簡。\n你的工作：釐清使用者的目標（不清楚就先問使用者，不要猜）、訂出可驗證的驗收標準、把計畫寫進 PLAN.md、派工給 Coder、最後驗收並向使用者總結。\n你不親自寫程式碼。派工時寫清楚：要做什麼、放在哪個檔案、驗收標準是什麼。"
