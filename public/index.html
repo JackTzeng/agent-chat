@@ -199,6 +199,22 @@
   .flow-preview .back { color: var(--muted); font-size: 12px; width: 100%; }
   .modal.wide { width: min(820px, 100%); }
   .tlist { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; }
+  .hn-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 12px; }
+  .hn-tabs button.on { background: var(--accent, #4f6bed); color: #fff; border-color: transparent; }
+  .hn-dot { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: #e5484d; color: #fff; font-size: 11px; line-height: 18px; text-align: center; margin-left: 4px; }
+  .hn-list { display: flex; flex-direction: column; gap: 6px; max-height: 52vh; overflow-y: auto; }
+  .hn-item { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--bg); display: flex; gap: 8px; align-items: flex-start; }
+  .hn-item .grow { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
+  .hn-item small { color: var(--muted); display: block; margin-top: 2px; }
+  .hn-item.prop { border-color: #e2a72e; }
+  .hn-item .acts { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+  .hn-six { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .hn-six div { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 13px; background: var(--bg); }
+  .hn-six b { display: block; margin-bottom: 2px; }
+  table.hn-t { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.hn-t th, table.hn-t td { border-bottom: 1px solid var(--line); padding: 5px 6px; text-align: left; vertical-align: top; }
+  .hn-add { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .hn-add input { flex: 1; min-width: 180px; }
   .tlist button { text-align: left; display: flex; gap: 8px; align-items: center; }
   /* 附件 */
   .attach-btn { padding: 6px 10px; font-size: 16px; align-self: flex-end; }
@@ -310,7 +326,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.0.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.1.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -991,6 +1007,9 @@ async function openTeamForm() {
     <div class="fgrid">
       <div class="field"><label>流程名稱</label><input id="w_name" value="${esc(wf.name)}" maxlength="40"></div>
       <div class="field"><label>每件任務最多交接幾次</label><input id="t_hops" type="number" min="1" max="50" value="${CFG.maxRelayHops}"><span class="help">超過會暫停，請你決定下一步</span></div>
+      <div class="field"><label>🔁 同一階段最多重做幾次</label><input id="h_rework" type="number" min="1" max="20" value="${CFG.harness.maxReworks}"><span class="help">被退回或自動檢查失敗超過這個次數，就暫停交給你決定</span></div>
+      <div class="field"><label>⏱ 每件任務時間上限（分鐘，0 = 不限）</label><input id="h_minutes" type="number" min="0" max="1440" value="${CFG.harness.maxTaskMinutes}"><span class="help">超過會暫停；回覆後會再給一次同樣的時間</span></div>
+      <div class="field"><label>🧪 每個自動檢查最多跑幾秒</label><input id="h_timeout" type="number" min="10" max="3600" value="${CFG.harness.checkTimeoutSec}"></div>
       <div class="field full"><label>🔁 輪流工作的成員</label>
         <div class="checks" id="w_turns">${members.map((m) => `<label><input type="checkbox" value="${esc(m.id)}" ${m.takeTurns ? 'checked' : ''}> ${esc(label(m))}</label>`).join('')}</div>
         <span class="help">勾選的成員同一時間只有一位在動手，其他的排隊。沒勾的成員不受限制，例如負責環境更新的成員可以隨時工作。</span></div>
@@ -1016,7 +1035,7 @@ async function openTeamForm() {
     const main = [], back = [];
     wf.stages.forEach((st, i) => {
       const o = members.find((m) => m.id === st.owner);
-      main.push(`<span class="chip">${esc((o ? (isImgAv(o.avatar) ? '👤' : o.avatar || '🤖') + ' ' : '❓ ') + st.name)}${st.approval ? ' 🔒' : ''}</span>`);
+      main.push(`<span class="chip">${esc((o ? (isImgAv(o.avatar) ? '👤' : o.avatar || '🤖') + ' ' : '❓ ') + st.name)}${st.approval ? ' 🔒' : ''}${(st.checks || []).length ? ' 🧪' : ''}</span>`);
       for (const n of st.next) {
         const j = wf.stages.findIndex((x) => x.id === n);
         if (j !== i + 1) back.push(st.name + ' → ' + sName(n));
@@ -1024,7 +1043,7 @@ async function openTeamForm() {
     });
     $('w_preview').innerHTML = main.join('<span class="arr">→</span>') +
       (back.length ? `<div class="back">其他路線：${esc(back.join('、'))}</div>` : '') +
-      '<div class="back">🔒 = 交出前需要你核准；最後一個階段做完就是任務完成</div>';
+      '<div class="back">🔒 = 交出前需要你核准；🧪 = 交出前自動檢查；最後一個階段做完就是任務完成</div>';
   }
   function renderStages() {
     $('w_stages').innerHTML = wf.stages.map((st, i) => `
@@ -1040,6 +1059,7 @@ async function openTeamForm() {
         <div class="field"><label>完成後可以交給（都不勾 = 最後階段）</label>
           <div class="checks">${wf.stages.filter((x) => x.id !== st.id).map((x) => `<label><input type="checkbox" data-next="${esc(x.id)}" ${st.next.includes(x.id) ? 'checked' : ''}> ${esc(x.name)}</label>`).join('') || '<span class="help">新增其他階段後才能選</span>'}</div>
         </div>
+        <div class="field"><label>🧪 自動檢查（交出前在負責成員的工作資料夾執行，全部通過才交出；每行一個指令，可寫「名稱: 指令」，最多 5 個）</label><textarea data-checks rows="2" placeholder="例如：\n單元測試: npm test\n語法檢查: python -m py_compile main.py">${esc((st.checks || []).map((c) => (c.name ? c.name + ': ' : '') + c.command).join('\n'))}</textarea></div>
         <label class="opt"><input type="checkbox" data-k="approval" ${st.approval ? 'checked' : ''}> 🔒 交出前需要你核准</label>
       </div>`).join('') || '<p class="help">還沒有階段，按「＋ 新增階段」或套用範本。</p>';
     $('w_stages').querySelectorAll('.stage').forEach((el) => {
@@ -1052,6 +1072,7 @@ async function openTeamForm() {
           preview();
         });
       });
+      el.querySelector('[data-checks]').addEventListener('input', (e) => { st.checks = e.target.value.split('\n').map((x) => x.trim()).filter(Boolean); preview(); });
       el.querySelectorAll('[data-next]').forEach((cb) => cb.addEventListener('change', () => {
         st.next = cb.checked ? [...st.next, cb.dataset.next] : st.next.filter((n) => n !== cb.dataset.next); preview();
       }));
@@ -1097,7 +1118,8 @@ async function openTeamForm() {
     if (missing.length && !confirm('這些階段還沒指定負責成員：' + missing.join('、') + '\n還是要儲存嗎？')) return;
     try {
       const takeTurns = [...document.querySelectorAll('#w_turns input:checked')].map((x) => x.value);
-      await api('/api/team', { method: 'PUT', body: JSON.stringify({ workflow: wf, maxRelayHops: $('t_hops').value, takeTurns, approveWritableHandoffs: $('w_strict').checked }) });
+      const harness = { maxReworks: $('h_rework').value, maxTaskMinutes: $('h_minutes').value, checkTimeoutSec: $('h_timeout').value };
+      await api('/api/team', { method: 'PUT', body: JSON.stringify({ workflow: wf, maxRelayHops: $('t_hops').value, takeTurns, approveWritableHandoffs: $('w_strict').checked, harness }) });
       closeModal(); toast('✅ 工作流程已儲存');
     } catch (e) { toast(e.message); }
   };
@@ -1124,7 +1146,8 @@ function renderTaskbar() {
   if (current !== ALL) { el.classList.remove('show'); return; }
   el.classList.add('show');
   const t = TASKS && TASKS.active, stages = (WF && WF.stages) || [];
-  const tools = `<button id="tbHistory">📜 任務紀錄</button><button id="tbFlow">⚙️ 工作流程</button><button id="tbTg">📱 Telegram</button>`;
+  const hp = HARNESS ? HARNESS.proposals.length : 0;
+  const tools = `<button id="tbHarness" title="守則、自動檢查、預算、記憶、權限、觀測紀錄">🧭 Harness${hp ? '<span class="hn-dot">' + hp + '</span>' : ''}</button><button id="tbHistory">📜 任務紀錄</button><button id="tbFlow">⚙️ 工作流程</button><button id="tbTg">📱 Telegram</button>`;
   if (!t) {
     const last = TASKS && TASKS.tasks && TASKS.tasks[0];
     el.innerHTML = `<div class="tb-row"><span class="tb-title">📋 目前沒有進行中的任務</span>
@@ -1144,6 +1167,9 @@ function renderTaskbar() {
         ${ch ? `<div class="changes">變更的檔案：\n${esc(ch)}</div>` : ''}
         <textarea id="tbNote" rows="2" placeholder="核准時的補充，或退回的修改意見（退回時必填）"></textarea>
         <div class="tb-actions"><button class="primary" id="tbApprove">✅ 核准，交給 ${esc(to ? to.name : '')}</button><button id="tbReject">↩️ 退回給 ${esc(from ? from.name : '')}</button></div></div>`;
+    } else if (t.checking) {
+      const who = agentOf(t.checking.agent), st = stages.find((x) => x.id === t.checking.stageId);
+      card = `<div class="tb-card"><b>🧪 正在執行「${esc(st ? st.name : '')}」的自動檢查</b><div class="tb-hint">${esc(who ? who.name : '')} 已經寫好交接；全部通過才會交出，沒通過會退回修正。</div></div>`;
     } else if (t.status === 'waiting_user' || t.status === 'error') {
       const who = agentOf(t.waitingFor);
       card = `<div class="tb-card"><b>${t.status === 'error' ? '⚠️ 執行出錯，任務暫停' : '⏳ ' + esc(who ? label(who) : '成員') + ' 在等你回覆'}</b>
@@ -1162,9 +1188,106 @@ function renderTaskbar() {
     $('tbStop').onclick = () => { if (confirm('停止任務 #' + t.id + '？')) taskAction(t.id, 'stop', {}); };
   }
   $('tbHistory').onclick = openTaskHistory;
+  $('tbHarness').onclick = () => openHarness();
   $('tbFlow').onclick = openTeamForm;
   $('tbTg').onclick = openTelegramForm;
 }
+// ---- 🧭 Harness：守則、自動檢查、預算、記憶、權限、觀測 ----
+let HARNESS = null, hnTimer = null, hnTab = 'overview';
+async function loadHarness(debounce) {
+  if (debounce) { clearTimeout(hnTimer); hnTimer = setTimeout(() => loadHarness(false), 1500); return; }
+  const before = HARNESS ? HARNESS.proposals.length : -1;
+  try { HARNESS = await api('/api/harness'); } catch { return; }
+  if (HARNESS.proposals.length !== before && current === ALL) updateTop();
+}
+const fmtMs = (ms) => ms >= 3600000 ? (ms / 3600000).toFixed(1) + ' 小時' : ms >= 60000 ? Math.round(ms / 60000) + ' 分' : Math.round(ms / 1000) + ' 秒';
+const fmtTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n || 0);
+async function openHarness(tab) {
+  if (tab) hnTab = tab;
+  let cfg;
+  try { [HARNESS, cfg] = await Promise.all([api('/api/harness'), api('/api/config')]); } catch (e) { toast(e.message); return; }
+  const H = HARNESS, members = cfg.agents, wf = cfg.workflow || { stages: [] };
+  const who = (id) => { const a = members.find((m) => m.id === id); return a ? a.name : id ? id : '使用者'; };
+  const scopeSel = (val, attr) => `<select ${attr}><option value="all">所有成員</option>${members.map((m) => `<option value="${esc(m.id)}" ${m.id === val ? 'selected' : ''}>只給 ${esc(m.name)}</option>`).join('')}</select>`;
+  const writable = (m) => m.engine === 'codex' ? (m.sandbox || 'workspace-write') !== 'read-only' : ['acceptEdits', 'auto', 'bypassPermissions'].includes(m.permissionMode);
+  const checkedStages = wf.stages.filter((s) => (s.checks || []).length);
+  const S = H.stats, turns = S.agents.reduce((n, a) => n + a.turns, 0), errs = S.agents.reduce((n, a) => n + a.errors, 0);
+  const tabs = [['overview', '總覽'], ['guides', '📏 守則' + (H.proposals.length ? '<span class="hn-dot">' + H.proposals.length + '</span>' : '')],
+    ['memory', '🧠 記憶'], ['perm', '🔐 權限'], ['obs', '📊 紀錄']];
+  let body = '';
+  if (hnTab === 'overview') {
+    body = `<div class="hn-six">
+      <div><b>📏 守則 Guides</b>${H.guides.length} 條守則${H.proposals.length ? '，<a href="#" data-go="guides">' + H.proposals.length + ' 則建議等你核准</a>' : ''}<br><span class="help">把過去的失敗變成永久規則，每一輪都會告訴成員</span></div>
+      <div><b>🧪 自動檢查 Sensors</b>${checkedStages.length ? checkedStages.map((s) => esc(s.name) + '（' + s.checks.length + ' 項）').join('、') : '還沒有階段設定自動檢查'}<br><span class="help">在「⚙️ 工作流程」的每個階段設定測試指令</span></div>
+      <div><b>🔁 循環與預算 Agentic Loop</b>同一階段最多重做 ${cfg.harness.maxReworks} 次｜交接上限 ${cfg.maxRelayHops} 次｜時間 ${cfg.harness.maxTaskMinutes ? cfg.harness.maxTaskMinutes + ' 分鐘' : '不限'}<br><span class="help">超過就暫停交給你；在「⚙️ 工作流程」調整</span></div>
+      <div><b>🧠 外部記憶 Memory</b>${H.memory.length} 筆決策與任務成果<br><span class="help">寫在工作資料夾的 MEMORY.md，每一輪附上最近 15 筆</span></div>
+      <div><b>🔐 權限 Permissions</b>${members.filter(writable).length}/${members.length} 位成員可寫入｜🔒 階段 ${wf.stages.filter((s) => s.approval).length} 個${cfg.approveWritableHandoffs ? '｜寫入型交接一律核准' : ''}</div>
+      <div><b>📊 觀測 Observability</b>最近 ${S.days} 天：${turns} 輪、${errs} 次出錯、檢查 ${S.sensorsRun} 次（失敗 ${S.sensorsFailed}）、預算暫停 ${S.budgetStops} 次</div>
+    </div>
+    <p class="help">Agent = Model + Harness。模型是大腦，這裡是讓它可靠工作的執行系統。成員在回覆中寫「【守則建議】…」會出現在守則分頁等你核准；寫「【決策】…」會存進專案記憶；你退回交接時寫的意見也會變成守則建議。</p>`;
+  } else if (hnTab === 'guides') {
+    body = (H.proposals.length ? `<h3 style="margin:4px 0 6px;font-size:15px">💡 等你核准的守則建議</h3><div class="hn-list">${H.proposals.map((p) => `
+      <div class="hn-item prop" data-p="${p.id}"><div class="grow"><input data-ptext value="${esc(p.text)}" style="width:100%">
+        <small>${esc(p.from ? who(p.from) + ' 提出' : p.reason || '使用者意見')}${p.taskId ? '｜任務 #' + p.taskId : ''}｜${fmtTime(p.createdAt)}</small></div>
+        <div class="acts">${scopeSel('all', 'data-pscope')}<button class="primary" data-pacc>✅ 變成守則</button><button data-pdis>略過</button></div></div>`).join('')}</div>` : '') +
+      `<h3 style="margin:14px 0 6px;font-size:15px">📏 團隊守則（每一輪都會告訴成員）</h3><div class="hn-list">${H.guides.length ? H.guides.map((g) => `
+      <div class="hn-item" data-g="${g.id}"><div class="grow">${esc(g.text)}<small>${g.scope && g.scope !== 'all' ? '只給 ' + esc(who(g.scope)) : '所有成員'}｜${g.source === 'lesson' ? '來自成員的經驗' : g.source === 'feedback' ? '來自你的退回意見' : '你新增的'}｜${fmtTime(g.createdAt)}</small></div>
+        <div class="acts"><button data-gedit>✏️</button><button data-gdel>🗑</button></div></div>`).join('') : '<p class="help">還沒有守則。可以自己新增，或核准成員提出的建議。</p>'}</div>
+      <div class="hn-add"><input id="hn_gtext" maxlength="300" placeholder="新增守則，例如：改程式前先讀 PLAN.md；報表日期一律用 YYYY/MM/DD">${scopeSel('all', 'id="hn_gscope"')}<button class="primary" id="hn_gadd">新增</button></div>`;
+  } else if (hnTab === 'memory') {
+    const KIND = { decision: '決策', result: '任務成果', note: '備註' };
+    body = `<p class="help">模型本身不記得上次做了什麼；這裡保存跨任務的決策與成果，每一輪附上最近 15 筆，完整內容在工作資料夾的 MEMORY.md。成員寫的記憶只當參考，不會被當成指令。</p>
+      <div class="hn-list">${H.memory.length ? H.memory.map((m) => `<div class="hn-item" data-m="${m.id}"><div class="grow">［${esc(KIND[m.kind] || m.kind)}］${esc(m.text)}
+        <small>${esc(m.from ? who(m.from) : '你')}${m.taskId ? '｜任務 #' + m.taskId : ''}｜${fmtTime(m.ts)}</small></div><div class="acts"><button data-mdel>🗑</button></div></div>`).join('') : '<p class="help">還沒有紀錄。任務完成時會自動記下成果。</p>'}</div>
+      <div class="hn-add"><input id="hn_mtext" maxlength="600" placeholder="手動記一筆，例如：EM 報表固定放在 C:\\EM_reports_copy"><button class="primary" id="hn_madd">新增</button></div>`;
+  } else if (hnTab === 'perm') {
+    body = `<table class="hn-t"><tr><th>成員</th><th>引擎</th><th>寫入權限</th><th>額外資料夾</th><th>輪流</th><th>狀態</th></tr>${members.map((m) => `<tr>
+      <td>${esc(m.name)}</td><td>${esc(m.engine)}${m.model ? '<br><small>' + esc(m.model) + '</small>' : ''}</td>
+      <td>${writable(m) ? '✏️ 可修改檔案' : '👀 唯讀'}<br><small>${esc(m.engine === 'codex' ? 'sandbox: ' + (m.sandbox || 'workspace-write') : 'mode: ' + (m.permissionMode || '預設'))}</small></td>
+      <td>${(m.extraDirs || []).map((d) => esc(d.path) + (d.mode === 'ro' ? '（唯讀）' : '（可寫）')).join('<br>') || '—'}</td>
+      <td>${m.takeTurns ? '🔁' : '—'}</td><td>${(agentOf(m.id) || {}).blocked ? '⛔ 暫停使用' : '✅'}</td></tr>`).join('')}</table>
+      <p class="help">核准關卡：${wf.stages.filter((s) => s.approval).map((s) => '🔒 ' + esc(s.name)).join('、') || '沒有 🔒 階段'}${cfg.approveWritableHandoffs ? '；交給可寫入的成員一律要核准' : ''}。工作資料夾以外的位置要在 start.bat 的 AGENT_ALLOWED_ROOTS 核准。權限在每位成員的「⚙️ 設定」修改。</p>`;
+  } else if (hnTab === 'obs') {
+    const EV = { sensor: '🧪', budget: '⏸', proposal: '💡', guide: '📏', run: '⚠️' };
+    body = `<table class="hn-t"><tr><th>成員</th><th>輪數</th><th>出錯</th><th>插話</th><th>總時間</th><th>平均每輪</th><th>tokens（入/出）</th><th>≈API 價</th></tr>${S.agents.map((a) => `<tr>
+      <td>${esc(a.name)}</td><td>${a.turns}</td><td>${a.errors}</td><td>${a.interrupted}</td><td>${fmtMs(a.ms)}</td><td>${fmtMs(a.ms / Math.max(1, a.turns))}</td>
+      <td>${fmtTok(a.inTok)} / ${fmtTok(a.outTok)}</td><td>${a.costUsd ? 'US$' + a.costUsd.toFixed(2) : '—'}</td></tr>`).join('') || '<tr><td colspan="8" class="help">最近沒有紀錄</td></tr>'}</table>
+      <p class="help">≈API 價只是換算成 API 計價的估計；用訂閱帳號登入不會另外收費。完整紀錄在 data/harness/runs.jsonl。</p>
+      <h3 style="margin:14px 0 6px;font-size:15px">最近的事件</h3><div class="hn-list">${S.recent.map((r) => `<div class="hn-item"><div class="grow">${EV[r.type] || '•'} ${
+        r.type === 'sensor' ? esc((r.ok ? '自動檢查通過：' : '自動檢查沒通過：') + r.name) + '（' + esc(who(r.agent)) + '，' + fmtMs(r.ms || 0) + '）'
+        : r.type === 'run' ? esc(who(r.agent)) + (r.interrupted ? ' 被插話中斷' : '：' + esc(r.error || '出錯'))
+        : esc(r.text || '')}<small>${r.taskId ? '任務 #' + r.taskId + '｜' : ''}${fmtTime(r.ts)}</small></div></div>`).join('') || '<p class="help">沒有特別的事件</p>'}</div>`;
+  }
+  openModal(`<h2>🧭 Harness</h2><p class="lead">讓團隊可控、可衡量、可靠：守則、自動檢查、循環預算、外部記憶、權限與觀測紀錄。</p>
+    <div class="hn-tabs">${tabs.map(([k, n]) => `<button data-tab="${k}" class="${k === hnTab ? 'on' : ''}">${n}</button>`).join('')}</div>
+    <div id="hn_body">${body}</div>
+    <div class="modal-actions"><button id="hn_flow">⚙️ 工作流程與預算</button><span class="spacer"></span><button id="hn_close">關閉</button></div>`);
+  $('modal').classList.add('wide');
+  $('hn_close').onclick = closeModal;
+  $('hn_flow').onclick = openTeamForm;
+  document.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => openHarness(b.dataset.tab)));
+  document.querySelectorAll('[data-go]').forEach((b) => (b.onclick = (e) => { e.preventDefault(); openHarness(b.dataset.go); }));
+  const act = async (path, method, payload) => {
+    try { await api(path, { method, body: payload ? JSON.stringify(payload) : undefined }); await openHarness(); loadHarness(); }
+    catch (e) { toast(e.message); }
+  };
+  document.querySelectorAll('[data-p]').forEach((el) => {
+    const id = el.dataset.p;
+    el.querySelector('[data-pacc]').onclick = () => act('/api/harness/proposals/' + id + '/accept', 'POST', { text: el.querySelector('[data-ptext]').value, scope: el.querySelector('[data-pscope]').value });
+    el.querySelector('[data-pdis]').onclick = () => act('/api/harness/proposals/' + id, 'DELETE');
+  });
+  document.querySelectorAll('[data-g]').forEach((el) => {
+    const id = el.dataset.g, g = H.guides.find((x) => String(x.id) === id);
+    el.querySelector('[data-gdel]').onclick = () => { if (confirm('刪除這條守則？')) act('/api/harness/guides/' + id, 'DELETE'); };
+    el.querySelector('[data-gedit]').onclick = () => { const v = prompt('修改守則', g.text); if (v != null && v.trim()) act('/api/harness/guides/' + id, 'PUT', { text: v }); };
+  });
+  document.querySelectorAll('[data-m]').forEach((el) => {
+    el.querySelector('[data-mdel]').onclick = () => { if (confirm('刪除這筆記憶？')) act('/api/harness/memory/' + el.dataset.m, 'DELETE'); };
+  });
+  if ($('hn_gadd')) $('hn_gadd').onclick = () => { const v = $('hn_gtext').value.trim(); if (v) act('/api/harness/guides', 'POST', { text: v, scope: $('hn_gscope').value }); };
+  if ($('hn_madd')) $('hn_madd').onclick = () => { const v = $('hn_mtext').value.trim(); if (v) act('/api/harness/memory', 'POST', { text: v }); };
+}
+
 async function taskAction(id, act, body) {
   try { await api('/api/tasks/' + id + '/' + act, { method: 'POST', body: JSON.stringify(body) }); }
   catch (e) { toast(e.message); }
@@ -1436,6 +1559,7 @@ function connectEvents() {
     if (ev.kind === 'usage') { loadUsage(); return; }
     if (ev.kind === 'telegram') { loadTelegram(); return; }
     if (ev.kind === 'task') { loadTasks(); return; }
+    if (ev.kind === 'harness' || ev.kind === 'harness-run') { loadHarness(ev.kind === 'harness-run'); return; }
     if (ev.kind === 'queue') { refreshQueue(); return; }
     const a = agentOf(ev.agentId); if (!a) return;
     if (ev.kind === 'busy') { a.busy = ev.busy; refreshAgents().then(updateThinking); return; }
@@ -1463,6 +1587,7 @@ async function init() {
   connectEvents();
   loadUsage();
   loadTelegram();
+  loadHarness();
   await Promise.all([loadWorkflow(), loadTasks()]);
   selectAgent(saved === ALL || agents.some((a) => a.id === saved) ? saved : agents[0].id);
 }

@@ -2,6 +2,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { cleanChecks } = require('./harness');
 
 const DEFAULT_STAGES = [
   { id: 'plan', name: '規劃', owner: 'hikari', approval: true, next: ['build'],
@@ -23,7 +24,7 @@ const STATUS_TEXT = {
   done: '已完成', stopped: '已停止', error: '出錯暫停',
 };
 const SKIP_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.cache', '.agentchat']);
-const SKIP_FILES = new Set(['TASK.md', 'WORKFLOW.md']);
+const SKIP_FILES = new Set(['TASK.md', 'WORKFLOW.md', 'GUIDES.md', 'MEMORY.md']);
 
 const short = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) + '…' : s; };
 const pad = (n) => String(n).padStart(2, '0');
@@ -53,6 +54,7 @@ function cleanWorkflow(input, agents) {
       owner: ids.has(s.owner) ? s.owner : '',
       goal: str(s.goal, 2000), deliverable: str(s.deliverable, 300),
       approval: !!s.approval, next: Array.isArray(s.next) ? s.next.map(String) : [],
+      checks: cleanChecks(s.checks),
     };
   });
   for (const s of stages) s.next = [...new Set(s.next)].filter((n) => n !== s.id && used.has(n));
@@ -164,7 +166,7 @@ exports.create = function create(ctx) {
     fs.writeFileSync(FILE + '.tmp', JSON.stringify(store, null, 2)); fs.renameSync(FILE + '.tmp', FILE);
   };
   // 伺服器重開時，還在跑的任務已經沒有對應的程式了
-  for (const t of store.tasks) if (t.status === 'running') { t.status = 'waiting_user'; t.note = '伺服器重新啟動，任務暫停，請回覆讓它繼續或停止任務'; }
+  for (const t of store.tasks) if (t.status === 'running') { t.checking = null; t.status = 'waiting_user'; t.note = '伺服器重新啟動，任務暫停，請回覆讓它繼續或停止任務'; }
 
   const wf = () => ctx.CONFIG.workflow;
   const stage = (id) => wf().stages.find((s) => s.id === id);
@@ -203,10 +205,13 @@ exports.create = function create(ctx) {
         (s.approval ? '｜交出前需要使用者核准' : ''));
     });
     if (w.notes) lines.push('其他規則：' + w.notes);
+    if (ctx.harness) { const hb = ctx.harness.promptBlock(agent); if (hb) lines.push('', hb); }
     if (st) {
       lines.push('', '【你現在負責的階段：' + st.name + '】');
       if (st.goal) lines.push('要做什麼：' + st.goal);
       if (st.deliverable) lines.push('交付物：' + st.deliverable);
+      if (st.checks && st.checks.length) lines.push('自動檢查：你寫好交接（或總結）後，系統會在你的工作資料夾執行 ' +
+        st.checks.map((c) => '「' + c.command + '」').join('、') + '，全部通過才會交出；交出前請自己先跑過。');
       const nx = st.next.map(stage).filter(Boolean);
       if (nx.length) {
         lines.push('', '【交接方式】完成這個階段後，在回覆的最後加上交接區塊，格式要完全一樣：', '【交接】', '給：<下一位成員的名字>',
@@ -244,11 +249,20 @@ exports.create = function create(ctx) {
       log(task, { type: 'error', agent: agent.id, text: msg });
       return changed(task, 'error', msg + '\n回覆內容會交給 ' + agent.name + ' 重試，或停止任務。');
     }
+    if (ctx.harness && text) ctx.harness.collect(agent, text, task.id);
     const ho = parseHandoff(text);
     if (st && !st.next.length && text && !/[?？]\s*$/.test(text.trim())) { // 最後階段：寫完總結就完成（結尾是問句則視為在問使用者）
-      task.status = 'done'; task.summary = text;
-      log(task, { type: 'done', agent: agent.id });
-      return changed(task, 'done', text);
+      return withChecks(task, agent, st, () => {
+        task.status = 'done'; task.summary = text;
+        log(task, { type: 'done', agent: agent.id });
+        if (ctx.harness) { try { ctx.harness.addMemory('result', '任務 #' + task.id + '「' + task.title + '」完成：' + short(text, 400), agent.id, task.id); } catch {} }
+        changed(task, 'done', text);
+      });
+    }
+    // 預算：任務總時間
+    const minutes = Number(hcfg().maxTaskMinutes) || 0;
+    if (minutes > 0 && Date.now() - task.createdAt > minutes * 60000 * (1 + (task.extraBudget || 0))) {
+      return overBudget(task, agent, '任務已經進行超過 ' + minutes + ' 分鐘的時間預算');
     }
     if (!ho || !st || /使用者|^你$/.test(ho.to)) {
       task.status = 'waiting_user'; task.waitingFor = agent.id;
@@ -270,28 +284,80 @@ exports.create = function create(ctx) {
       return ctx.dispatch(agent, '交接對象不符合流程：「' + st.name + '」階段只能交給 ' + allowed + '。請重新寫交接區塊。',
         { taskId: task.id, stageId: st.id, system: true });
     }
-    const pend = { from: agent.id, fromStage: st.id, toStage: target.id, content: ho.content || text, changes: task.stageChanges, ts: Date.now() };
-    const nextAgent = ctx.agentById(target.owner);
-    const writableNext = nextAgent && (nextAgent.sandbox === 'workspace-write' ||
-      nextAgent.permissionMode === 'acceptEdits' || nextAgent.permissionMode === 'auto');
-    // 團隊設定「交給可寫入的成員一律要核准」打開時，才對每次寫入型交接要求核准（預設只在 🔒 階段核准）
-    if (st.approval || (ctx.CONFIG.approveWritableHandoffs === true && writableNext)) {
-      task.status = 'awaiting_approval'; task.pending = pend;
-      log(task, { type: 'awaiting', from: agent.id, to: target.owner, stage: target.id });
-      return changed(task, 'awaiting_approval', agent.name + ' 完成「' + st.name + '」，要交給 ' + name(target.owner) +
-        '（' + target.name + '）。\n\n' + short(pend.content, 1200));
-    }
-    transition(task, pend);
+    withChecks(task, agent, st, (checks) => {
+      const pend = { from: agent.id, fromStage: st.id, toStage: target.id, content: ho.content || text, changes: task.stageChanges, ts: Date.now(),
+        checks: checks && checks.length ? ctx.harness.checksText(checks) : '' };
+      const nextAgent = ctx.agentById(target.owner);
+      const writableNext = nextAgent && (nextAgent.sandbox === 'workspace-write' ||
+        nextAgent.permissionMode === 'acceptEdits' || nextAgent.permissionMode === 'auto');
+      // 團隊設定「交給可寫入的成員一律要核准」打開時，才對每次寫入型交接要求核准（預設只在 🔒 階段核准）
+      if (st.approval || (ctx.CONFIG.approveWritableHandoffs === true && writableNext)) {
+        task.status = 'awaiting_approval'; task.pending = pend;
+        log(task, { type: 'awaiting', from: agent.id, to: target.owner, stage: target.id });
+        return changed(task, 'awaiting_approval', agent.name + ' 完成「' + st.name + '」，要交給 ' + name(target.owner) +
+          '（' + target.name + '）。\n\n' + short(pend.content, 1200));
+      }
+      transition(task, pend);
+    });
+  }
+
+  const hcfg = () => (ctx.harness ? ctx.harness.cfg() : { maxReworks: 3, maxTaskMinutes: 0 });
+  // 超出預算：暫停，交給使用者決定（Agentic Loop 的「轉交人類」）
+  function overBudget(task, agent, why) {
+    task.status = 'waiting_user'; task.waitingFor = agent ? agent.id : task.waitingFor;
+    task.note = why + '，已暫停。回覆會讓它繼續（並多給一次預算），或停止任務。'; task.budgetHold = true;
+    log(task, { type: 'budget', agent: agent && agent.id, text: why });
+    if (ctx.harness) ctx.harness.record({ type: 'budget', agent: agent && agent.id, taskId: task.id, stage: task.stageId, text: why });
+    return changed(task, 'budget', '⏸ ' + why + '，任務暫停，請你決定下一步。');
+  }
+
+  // 自動檢查（Sensors）：階段要交出時執行，全部通過才繼續；沒通過就退回同一位成員修正
+  function withChecks(task, agent, st, proceed) {
+    const checks = (st && st.checks) || [];
+    if (!checks.length || !ctx.harness) return proceed(null);
+    task.checking = { stageId: st.id, agent: agent.id, startedAt: Date.now() };
+    log(task, { type: 'checking', agent: agent.id, stage: st.id });
+    changed(task, 'checking', '🧪 ' + agent.name + ' 完成「' + st.name + '」，正在執行自動檢查（' + checks.length + ' 項）');
+    ctx.harness.runChecks(agent, checks, task.id, (results) => {
+      task.checking = null;
+      if (!ACTIVE.includes(task.status) || task.stageId !== st.id) return changed(task);
+      const failed = results.filter((r) => !r.ok);
+      for (const r of results) ctx.harness.record({ type: 'sensor', agent: agent.id, taskId: task.id, stage: st.id, name: r.name || r.command, ok: r.ok, ms: r.ms, code: r.code });
+      log(task, { type: 'checks', agent: agent.id, stage: st.id, ok: !failed.length, text: ctx.harness.checksText(results) });
+      if (!failed.length) return proceed(results);
+      task.checkFails = task.checkFails || {};
+      const n = task.checkFails[st.id] = (task.checkFails[st.id] || 0) + 1;
+      const max = (Number(hcfg().maxReworks) || 3) + (task.extraBudget || 0);
+      if (n > max) return overBudget(task, agent, '「' + st.name + '」的自動檢查已經連續失敗 ' + n + ' 次（上限 ' + max + ' 次）');
+      changed(task, 'checks_failed', '❌ 自動檢查沒通過（第 ' + n + ' 次），退回給 ' + agent.name + ' 修正：\n' + ctx.harness.checksText(results));
+      const detail = failed.map((r) => '### ' + (r.name || r.command) + '\n指令：' + r.command + '\n' +
+        (r.timedOut ? '結果：超過時間上限，被強制停止' : '結束碼：' + r.code) + '\n輸出（最後一段）：\n```\n' + (r.output || '（沒有輸出）') + '\n```').join('\n\n');
+      ctx.dispatch(agent, '【自動檢查沒通過（第 ' + n + ' 次，上限 ' + max + ' 次）】你的交接還沒有送出。\n\n' + detail +
+        '\n\n請找出原因並修正，自己重新執行確認通過後，再寫一次交接區塊（最後階段則重新寫總結）。如果這是以後應該避免的錯誤，加一行【守則建議】。',
+      { taskId: task.id, stageId: st.id, system: true });
+    });
   }
 
   function transition(task, pend, note) {
     const to = stage(pend.toStage), from = ctx.agentById(pend.from), owner = ctx.agentById(to.owner);
+    // 預算：同一個階段被退回重做的次數
+    task.visits = task.visits || {};
+    const visits = task.visits[to.id] = (task.visits[to.id] || 0) + 1;
+    const max = (Number(hcfg().maxReworks) || 3) + (task.extraBudget || 0);
+    if (visits > max + 1) {
+      task.visits[to.id]--;
+      task.pending = null;
+      return overBudget(task, from, '「' + to.name + '」已經重做 ' + (visits - 1) + ' 次（上限 ' + max + ' 次），可能卡在同一個問題');
+    }
     task.stageId = to.id; task.status = 'running'; task.pending = null; task.waitingFor = null; task.stageChanges = [];
-    log(task, { type: 'handoff', from: pend.from, fromStage: pend.fromStage, to: to.owner, toStage: to.id, text: pend.content, changes: pend.changes });
-    changed(task, 'handoff', (from ? from.name : '') + ' → ' + owner.name + '（' + to.name + '）');
+    if (task.checkFails) delete task.checkFails[pend.fromStage];
+    log(task, { type: 'handoff', from: pend.from, fromStage: pend.fromStage, to: to.owner, toStage: to.id, text: pend.content, changes: pend.changes, checks: pend.checks || '' });
+    changed(task, 'handoff', (from ? from.name : '') + ' → ' + owner.name + '（' + to.name + '）' + (visits > 1 ? '｜第 ' + visits + ' 次' : ''));
     const msg = '【交接：' + (from ? from.name : '使用者') + '（' + ((stage(pend.fromStage) || {}).name || '') + '）→ 你（' + to.name + '）】\n' +
       pend.content + (note ? '\n\n【使用者核准時的補充】\n' + note : '') +
-      '\n\n【系統附註：上一個階段實際變更的檔案】\n' + changesText(pend.changes);
+      (pend.checks ? '\n\n【系統附註：交出前的自動檢查】\n' + pend.checks : '') +
+      '\n\n【系統附註：上一個階段實際變更的檔案】\n' + changesText(pend.changes) +
+      (visits > 1 ? '\n\n【系統附註】這個階段第 ' + visits + ' 次被交回給你（上限 ' + (max + 1) + ' 次）。' : '');
     ctx.dispatch(owner, msg, { taskId: task.id, stageId: to.id, from: pend.from });
   }
 
@@ -327,6 +393,7 @@ exports.create = function create(ctx) {
     const task = {
       id: ++store.seq, title: short(goal.split('\n')[0], 40), goal, status: 'running', stageId: first.id,
       workspace: owner.cwd, createdAt: Date.now(), turns: 0, log: [{ ts: Date.now(), type: 'start', via }],
+      visits: { [first.id]: 1 },
     };
     store.tasks.push(task);
     writeWorkflowDocs();
@@ -352,6 +419,8 @@ exports.create = function create(ctx) {
     const p = t.pending, back = ctx.agentById(p.from);
     t.status = 'running'; t.pending = null; t.stageId = p.fromStage;
     log(t, { type: 'rejected', text: feedback });
+    // 使用者的退回意見是「失敗經驗」：放進守則建議，由使用者決定要不要變成永久守則
+    if (ctx.harness && feedback !== '請修改後重新交接。') ctx.harness.propose(feedback, null, t.id, '使用者退回 ' + back.name + ' 的交接');
     changed(t, 'rejected', '已退回給 ' + back.name);
     ctx.dispatch(back, '【使用者退回你的交接】\n' + feedback + '\n\n請依照意見修改，完成後重新寫交接區塊。', { taskId: t.id, stageId: p.fromStage });
     return t;
@@ -360,6 +429,7 @@ exports.create = function create(ctx) {
     const t = need(id, ['waiting_user', 'error']);
     const who = ctx.agentById(t.waitingFor) || ctx.agentById((stage(t.stageId) || {}).owner);
     if (!who) throw new Error('找不到要回覆的成員');
+    if (t.budgetHold) { t.budgetHold = false; t.extraBudget = (t.extraBudget || 0) + 1; }
     t.status = 'running'; t.waitingFor = null; t.note = null;
     log(t, { type: 'reply', to: who.id, text: short(text, 300) });
     changed(t);
@@ -368,9 +438,10 @@ exports.create = function create(ctx) {
   }
   function stop(id) {
     const t = need(id, ACTIVE);
-    t.status = 'stopped'; t.pending = null;
+    t.status = 'stopped'; t.pending = null; t.checking = null;
     log(t, { type: 'stopped' });
     ctx.cancelTask(t.id);
+    if (ctx.harness) ctx.harness.cancelChecks(t.id);
     changed(t, 'stopped', '任務 #' + t.id + ' 已停止');
     return t;
   }
@@ -391,6 +462,7 @@ exports.create = function create(ctx) {
       if (e.type === 'handoff') {
         L.push('### ' + fmt(e.ts) + '　' + ((stage(e.fromStage) || {}).name || '') + ' → ' + ((stage(e.toStage) || {}).name || '') +
           '（' + name(e.from) + ' → ' + name(e.to) + '）', '', e.text || '', '', '**實際變更的檔案**', '', changesText(e.changes), '');
+        if (e.checks) L.push('**自動檢查**', '', e.checks, '');
       } else if (e.type === 'approved') L.push('- ' + fmt(e.ts) + ' ✅ 使用者核准' + (e.text ? '：' + e.text : ''));
       else if (e.type === 'rejected') L.push('- ' + fmt(e.ts) + ' ↩️ 使用者退回：' + e.text);
       else if (e.type === 'reply') L.push('- ' + fmt(e.ts) + ' 💬 使用者回覆 ' + name(e.to) + '：' + e.text);
@@ -398,6 +470,8 @@ exports.create = function create(ctx) {
       else if (e.type === 'note') L.push('- ' + fmt(e.ts) + ' 📌 使用者加入任務指示：' + e.text);
       else if (e.type === 'wait') L.push('- ' + fmt(e.ts) + ' ⏳ ' + name(e.agent) + ' 在等使用者：' + e.text);
       else if (e.type === 'error') L.push('- ' + fmt(e.ts) + ' ⚠️ ' + e.text);
+      else if (e.type === 'checks') L.push('- ' + fmt(e.ts) + ' 🧪 自動檢查' + (e.ok ? '通過' : '沒通過') + '（' + name(e.agent) + '）：' + String(e.text || '').replace(/\n/g, '；'));
+      else if (e.type === 'budget') L.push('- ' + fmt(e.ts) + ' ⏸ 超出預算：' + e.text);
       else if (e.type === 'done') L.push('- ' + fmt(e.ts) + ' 🎉 任務完成');
       else if (e.type === 'stopped') L.push('- ' + fmt(e.ts) + ' ⏹ 任務停止');
     }
@@ -419,6 +493,7 @@ exports.create = function create(ctx) {
       if (s.deliverable) L.push('- 交付物：' + s.deliverable);
       L.push('- 完成後交給：' + (s.next.length ? s.next.map((n) => (stage(n) || {}).name).join('、') : '（最後階段，向使用者總結）'));
       if (s.approval) L.push('- 交出前需要使用者核准');
+      if (s.checks && s.checks.length) L.push('- 自動檢查（全部通過才交出）：' + s.checks.map((c) => '`' + c.command + '`').join('、'));
       L.push('');
     });
     if (w.notes) L.push('## 其他規則', '', w.notes, '');
@@ -442,7 +517,8 @@ exports.create = function create(ctx) {
   const summary = (t) => t && ({
     id: t.id, title: t.title, goal: t.goal, status: t.status, statusText: STATUS_TEXT[t.status], stageId: t.stageId,
     waitingFor: t.waitingFor || null, pending: t.pending || null, turns: t.turns || 0, note: t.note || null,
-    createdAt: t.createdAt, updatedAt: t.updatedAt, notes: t.notes || [],
+    createdAt: t.createdAt, updatedAt: t.updatedAt, notes: t.notes || [], checking: t.checking || null,
+    visits: t.visits || {}, checkFails: t.checkFails || {}, extraBudget: t.extraBudget || 0,
     done: [...new Set(t.log.filter((e) => e.type === 'handoff').map((e) => e.fromStage))],
   });
 

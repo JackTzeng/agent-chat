@@ -167,14 +167,19 @@ exports.start = function start(ctx) {
 
   // 任務事件推送（開始、等核准、等回覆、完成、停止、出錯）
   listen('task', async ({ task, event, message }) => {
-    if (!event || event === 'handoff') return;
+    if (!event || event === 'handoff' || event === 'checking') return;
     const chats = pushRecipients();
     const head = { started: '📋', awaiting_approval: '🔔 需要你核准', waiting_user: '⏳ 等你回覆', done: '🎉 任務完成',
-      stopped: '⏹', error: '⚠️ 任務暫停', rejected: '↩️' }[event] || '📋';
+      stopped: '⏹', error: '⚠️ 任務暫停', rejected: '↩️', budget: '⏸ 超出預算', checks_failed: '🧪 自動檢查沒通過' }[event] || '📋';
     let body = head + '（任務 #' + task.id + '）\n' + (message || '');
     if (event === 'awaiting_approval') body += '\n\n👉 /approve 核准，或 /reject 意見 退回';
-    if (event === 'waiting_user' || event === 'error') body += '\n\n👉 直接打字回覆，或 /cancel 停止任務';
+    if (event === 'waiting_user' || event === 'error' || event === 'budget') body += '\n\n👉 直接打字回覆，或 /cancel 停止任務';
     for (const id of chats) await say(id, body);
+  });
+
+  // 新的守則建議（要到網頁的 🧭 Harness 核准）
+  listen('proposal', async ({ proposal, fromName }) => {
+    for (const id of pushRecipients()) await say(id, '💡 新的守則建議（' + fromName + (proposal.taskId ? '，任務 #' + proposal.taskId : '') + '）：\n' + proposal.text + '\n\n請到網頁的「🧭 Harness」核准或略過。');
   });
 
   function chat(chatId, userId) {

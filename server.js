@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.0.1';
+const VERSION = '3.1.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -10,6 +10,7 @@ const { spawn, execFileSync } = require('child_process');
 const EventEmitter = require('events');
 const hooks = new EventEmitter(); // 給 Telegram 等外掛監聽：user / done / task
 const taskLib = require('./tasks');
+const harnessLib = require('./harness');
 const { createSecurity, inside } = require('./security');
 
 const ROOT = __dirname;
@@ -170,6 +171,8 @@ function freeHeader(agent) {
       ? '【交接規則】你可以找：' + can.map((m) => m.name).join('、') + '。需要時在回覆中寫「@名字」加上要交代的事，系統會把你的回覆轉給對方；不需要時不要 @ 任何人。'
       : '【交接規則】你不能把工作交給其他成員，完成後直接向使用者回報。');
   }
+  const hb = harness.promptBlock(agent);
+  if (hb) L.push('', hb);
   return L.join('\n');
 }
 
@@ -315,7 +318,9 @@ function parseClaude(ev, emit) {
     if (ev.is_error || (ev.subtype && ev.subtype !== 'success')) emit({ kind: 'error', text: ev.result || ev.subtype });
     // total_cost_usd 是「換算成 API 價格」的估計值；用訂閱帳號登入時不會真的收費
     const cost = typeof ev.total_cost_usd === 'number' ? '≈API價 US$' + ev.total_cost_usd.toFixed(2) : '';
-    emit({ kind: 'done', meta: [cost, ev.duration_ms ? (ev.duration_ms / 1000).toFixed(1) + 's' : ''].filter(Boolean).join(' · ') });
+    const u = ev.usage || {};
+    emit({ kind: 'done', meta: [cost, ev.duration_ms ? (ev.duration_ms / 1000).toFixed(1) + 's' : ''].filter(Boolean).join(' · '),
+      stats: { costUsd: typeof ev.total_cost_usd === 'number' ? ev.total_cost_usd : 0, inTok: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0), outTok: u.output_tokens || 0, steps: ev.num_turns || 0 } });
   }
 }
 
@@ -332,7 +337,8 @@ function parseCodex(ev, emit) {
     else if (it.type === 'error') emit({ kind: 'error', text: it.message });
   } else if (ev.type === 'turn.completed') {
     const u = ev.usage || {};
-    emit({ kind: 'done', meta: u.input_tokens != null ? '輸入 ' + u.input_tokens + ' / 輸出 ' + u.output_tokens + ' tokens' : '' });
+    emit({ kind: 'done', meta: u.input_tokens != null ? '輸入 ' + u.input_tokens + ' / 輸出 ' + u.output_tokens + ' tokens' : '',
+      stats: { inTok: u.input_tokens || 0, outTok: u.output_tokens || 0 } });
   } else if (ev.type === 'turn.failed') emit({ kind: 'error', text: (ev.error && ev.error.message) || '執行失敗' });
   else if (ev.type === 'error') {
     const msg = ev.message || '錯誤';
@@ -362,6 +368,10 @@ function startRun(agent, userText, opts = {}) {
 
   const finish = () => {
     appendHistory(agent.id, { role: 'assistant', segments: run.segments, meta: run.meta, taskId: opts.taskId, ts: Date.now() });
+    const errSeg = run.segments.find((x) => x.type === 'error');
+    harness.record({ type: 'run', agent: agent.id, engine: agent.engine, model: agent.model || '', taskId: opts.taskId || null, stage: opts.stageId || null,
+      ms: Date.now() - run.startedAt, tools: run.segments.filter((x) => x.type === 'tool').length, ...(run.stats || {}),
+      error: errSeg && !run.interrupt ? short(errSeg.text, 160) : null, interrupted: !!run.interrupt, stopped: !!run.stopped });
     runs.delete(agent.id);
     broadcast({ agentId: agent.id, kind: 'done', meta: run.meta });
     broadcast({ agentId: agent.id, kind: 'busy', busy: false });
@@ -409,7 +419,7 @@ function startRun(agent, userText, opts = {}) {
       if (state.sessions[key] !== e.id) { state.sessions[key] = e.id; saveState(); }
       return;
     }
-    if (e.kind === 'done') { run.meta = e.meta || ''; run.finished = true; return; }
+    if (e.kind === 'done') { run.meta = e.meta || ''; run.finished = true; if (e.stats) run.stats = e.stats; return; }
     run.segments.push({ type: e.kind, text: e.text });
     broadcast({ agentId: agent.id, kind: 'segment', segment: { type: e.kind, text: e.text } });
   };
@@ -457,6 +467,7 @@ function startRun(agent, userText, opts = {}) {
 
     // 自由聊天模式：回覆裡 @ 了同事 → 自動轉交（任務模式改由流程決定）
     const replyText = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n');
+    if (!opts.taskId && replyText && !run.stopped) harness.collect(agent, replyText, null);
     const targets = opts.taskId || run.stopped || !replyText ? [] : findMentions(agent, replyText);
     if (targets.length && hops >= maxHops()) {
       emit({ kind: 'tool', text: '⛔ 已達自動轉交上限（' + maxHops() + ' 次），沒有再轉給 ' +
@@ -546,9 +557,16 @@ function resetAgent(id) {
   return true;
 }
 
+// ---------- Harness（守則、自動檢查、預算、記憶、觀測）----------
+const harness = harnessLib.create({
+  CONFIG, AGENTS, agentById, DATA_DIR, hooks, broadcast, IS_WIN, decode: decodeOutput,
+  safeEnv: () => security.safeEnvironment(),
+  redact: (s) => security.redact(s, [CONFIG.telegram && CONFIG.telegram.botToken]),
+});
+
 // ---------- 任務與工作流程（tasks.js）----------
 const tasks = taskLib.create({
-  CONFIG, AGENTS, agentById, DATA_DIR, hooks, broadcast, dispatch, cancelTask, accessText,
+  CONFIG, AGENTS, agentById, DATA_DIR, hooks, broadcast, dispatch, cancelTask, accessText, harness,
 });
 tasks.writeWorkflowDocs();
 
@@ -888,11 +906,29 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true });
       } catch (e) { return send(res, 400, { error: e.message }); }
     }
+    // ---- Harness：守則、守則建議、專案記憶、觀測紀錄 ----
+    if (p === '/api/harness' && req.method === 'GET') return send(res, 200, { ...harness.snapshot(), stats: harness.stats(url.searchParams.get('days') || 7) });
+    if (p.startsWith('/api/harness/') && req.method !== 'GET') {
+      const body = req.method === 'DELETE' ? {} : await readBody(req);
+      try {
+        if (p === '/api/harness/guides' && req.method === 'POST') return send(res, 200, harness.addGuide(body.text, body.scope, 'user'));
+        if ((m0 = p.match(/^\/api\/harness\/guides\/(\d+)$/))) {
+          if (req.method === 'PUT') return send(res, 200, harness.updateGuide(m0[1], body.text, body.scope));
+          if (req.method === 'DELETE') { harness.deleteGuide(m0[1]); return send(res, 200, { ok: true }); }
+        }
+        if ((m0 = p.match(/^\/api\/harness\/proposals\/(\d+)\/accept$/)) && req.method === 'POST') return send(res, 200, harness.acceptProposal(m0[1], body.text, body.scope));
+        if ((m0 = p.match(/^\/api\/harness\/proposals\/(\d+)$/)) && req.method === 'DELETE') { harness.dismissProposal(m0[1]); return send(res, 200, { ok: true }); }
+        if (p === '/api/harness/memory' && req.method === 'POST') return send(res, 200, harness.addMemory('note', body.text, null, null));
+        if ((m0 = p.match(/^\/api\/harness\/memory\/(\d+)$/)) && req.method === 'DELETE') { harness.deleteMemory(m0[1]); return send(res, 200, { ok: true }); }
+      } catch (e) { return send(res, 400, { error: e.message }); }
+      return send(res, 404, { error: '找不到' });
+    }
     if (p === '/api/usage' && req.method === 'GET') return send(res, 200, usageSnapshot());
     if (p === '/api/usage/refresh' && req.method === 'POST') { probeUsage(); return send(res, 200, { ok: true }); }
     if (p === '/api/config' && req.method === 'GET') {
       return send(res, 200, {
         agents: CONFIG.agents, workflow: CONFIG.workflow, maxRelayHops: maxHops(), approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
+        harness: harness.cfg(),
         options: { engines: ENGINES, efforts: EFFORTS, permissionModes: PERMISSION_MODES, sandboxes: SANDBOXES },
       });
     }
@@ -901,7 +937,7 @@ const server = http.createServer(async (req, res) => {
       let a;
       try { a = cleanAgent(body, newAgentId()); } catch (e) { return send(res, 400, { error: e.message }); }
       CONFIG.agents.push(a);
-      saveConfig(); reloadAgents(); agentsChanged();
+      saveConfig(); reloadAgents(); harness.docs(); agentsChanged();
       return send(res, 200, { ok: true, id: a.id });
     }
     if ((m0 = p.match(/^\/api\/agents\/([\w-]+)$/)) && (req.method === 'PUT' || req.method === 'DELETE')) {
@@ -921,7 +957,7 @@ const server = http.createServer(async (req, res) => {
         try { a = cleanAgent(body, m0[1]); } catch (e) { return send(res, 400, { error: e.message }); }
         CONFIG.agents[idx] = a;
       }
-      saveConfig(); reloadAgents(); tasks.writeWorkflowDocs(); agentsChanged(); pump();
+      saveConfig(); reloadAgents(); tasks.writeWorkflowDocs(); harness.docs(); agentsChanged(); pump();
       return send(res, 200, { ok: true });
     }
     // 附件：拖曳到對話框的檔案，存到該成員工作資料夾的 attachments/
@@ -966,6 +1002,13 @@ const server = http.createServer(async (req, res) => {
       const h = Math.round(Number(body.maxRelayHops));
       if (h >= 1 && h <= 50) CONFIG.maxRelayHops = h;
       if (typeof body.approveWritableHandoffs === 'boolean') CONFIG.approveWritableHandoffs = body.approveWritableHandoffs;
+      if (body.harness && typeof body.harness === 'object') {
+        const hc = CONFIG.harness = CONFIG.harness || {};
+        const num = (v, lo, hi) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; };
+        const r = num(body.harness.maxReworks, 1, 20); if (r != null) hc.maxReworks = r;
+        const mm = num(body.harness.maxTaskMinutes, 0, 1440); if (mm != null) hc.maxTaskMinutes = mm;
+        const ct = num(body.harness.checkTimeoutSec, 10, 3600); if (ct != null) hc.checkTimeoutSec = ct;
+      }
       if (Array.isArray(body.takeTurns)) {
         for (const x of CONFIG.agents) { if (body.takeTurns.includes(x.id)) x.takeTurns = true; else delete x.takeTurns; }
         reloadAgents();
