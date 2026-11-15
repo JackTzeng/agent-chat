@@ -290,6 +290,7 @@
       <div class="title" id="title">—</div>
       <button id="officeBtn" title="切換辦公室／對話畫面">🏢 辦公室</button>
       <button id="diagBtn" title="查看這位成員正在執行的狀態與錯誤訊息">🔍 診斷</button>
+      <button id="shiftBtn" title="請成員寫交班筆記，然後換成全新的對話接手（對話太長、開始健忘時用）">🔄 換班</button>
       <button id="settingsBtn">⚙️ 設定</button>
       <button id="resetBtn" title="清空這個成員的對話，下一句會重新開始">新對話</button>
     </div>
@@ -326,7 +327,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.1.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.2.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -407,7 +408,8 @@ function agentCard(a, extraClass = '') {
         ${a.engine ? `<div class="role">${esc([a.model || '預設模型', a.effort].filter(Boolean).join(' · '))}${a.takeTurns ? ' · <span title="和團隊輪流工作：同一時間只有一位輪流成員在動手">🔁 輪流</span>' : ''}</div>` : ''}
         ${a.extraDirs && a.extraDirs.length ? `<div class="role" title="${esc(a.extraDirs.map((d) => d.path + (d.mode === 'ro' ? '（唯讀）' : '（可讀寫）')).join('\n'))}">📁 +${a.extraDirs.length} 個資料夾</div>` : ''}
         ${a.blocked ? `<div class="role stall" title="${esc(a.blocked)}">⛔ 設定需修正，暫停使用</div>` : ''}
-        ${a.busy && a.runningSince ? `<div class="role ${a.stalled ? 'stall' : ''}">${a.stalled ? '⚠️ 可能卡住 · ' : '⏱ '}工作中 ${esc(ago(a.runningSince))}</div>` : ''}
+        ${a.shifting ? '<div class="role">🔄 換班中：正在寫交班筆記</div>' : a.busy && a.runningSince ? `<div class="role ${a.stalled ? 'stall' : ''}">${a.stalled ? '⚠️ 可能卡住 · ' : '⏱ '}工作中 ${esc(ago(a.runningSince))}</div>` : ''}
+        ${a.ctx || a.shiftNo > 1 ? `<div class="role ${a.ctx && CFG_H && CFG_H.shiftPercent && a.ctx.pct >= CFG_H.shiftPercent ? 'stall' : ''}" title="這段對話大約用了 ${a.ctx ? Math.round(a.ctx.tokens / 1000) + 'k / ' + Math.round(a.ctx.window / 1000) + 'k tokens' : '—'}；超過 ${CFG_H ? CFG_H.shiftPercent : 60}% 會自動換班">🧠 ${a.ctx ? a.ctx.pct + '%' : '新對話'}${a.shiftNo > 1 ? ' · 第 ' + a.shiftNo + ' 班' : ''}${a.ctx && CFG_H && CFG_H.shiftPercent && a.ctx.pct >= CFG_H.shiftPercent && !a.busy ? ' · 下一輪先換班' : ''}</div>` : ''}
         ${a.queued ? `<div class="qline">🕒 排隊中${a.waitingOn === a.id ? '（等它這輪做完）' : a.waitingOn && agentOf(a.waitingOn) ? '（等 ' + esc(agentOf(a.waitingOn).name) + ' 做完）' : ''}</div>` : ''}
       </div>
       <span class="unread"></span>
@@ -487,6 +489,7 @@ function updateTop() {
     $('officeBtn').style.display = ''; $('officeBtn').textContent = officeMode ? '💬 對話' : '🏢 辦公室';
     applyOfficeView();
     $('diagBtn').style.display = 'none';
+    $('shiftBtn').style.display = 'none';
     $('settingsBtn').textContent = '⚙️ 團隊設定';
     renderModebar();
     const t = TASKS && TASKS.active, w = workingAgent();
@@ -504,6 +507,7 @@ function updateTop() {
   $('title').innerHTML = (isImgAv(a.avatar) ? `<span class="av-inline">${avatarHTML(a.avatar)}</span>` + esc(a.name) : esc(label(a))) + '<span class="sub">' + esc([a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ')) + '</span>';
   $('resetBtn').style.display = '';
   $('diagBtn').style.display = '';
+  $('shiftBtn').style.display = a.engine ? '' : 'none';
   $('officeBtn').style.display = 'none';
   applyOfficeView();
   $('settingsBtn').textContent = '⚙️ 設定';
@@ -743,6 +747,7 @@ const ROLE_TEMPLATES = {
   '研究': { role: '研究 · 查資料與比較方案', persona: '你叫{name}，負責研究與查資料，用繁體中文回覆。\n你的工作：針對交辦的問題查資料、比較可行方案，整理成重點與建議，附上來源，回報給交辦的人。\n你不修改程式碼。' },
 };
 let CFG = null;
+let CFG_H = null; // Harness 設定（換班門檻等）
 const AVATAR_SETS = [
   ['人物與職業', '🧑‍💼 👩‍💼 👨‍💼 🧑‍💻 👩‍💻 👨‍💻 🧑‍🔬 👩‍🔬 🧑‍🏫 👩‍🏫 🧑‍⚕️ 👩‍⚕️ 🧑‍⚖️ 🕵️ 👷 🤵 💂 🧙 🦸 🥷 🧑‍🎨 🧑‍🚀 👩‍🍳 🧑‍🔧'],
   ['臉與角色', '🤖 👾 👽 😎 🤓 🧐 🤠 😺 👻 🎃 🦖 🐉'],
@@ -1010,6 +1015,7 @@ async function openTeamForm() {
       <div class="field"><label>🔁 同一階段最多重做幾次</label><input id="h_rework" type="number" min="1" max="20" value="${CFG.harness.maxReworks}"><span class="help">被退回或自動檢查失敗超過這個次數，就暫停交給你決定</span></div>
       <div class="field"><label>⏱ 每件任務時間上限（分鐘，0 = 不限）</label><input id="h_minutes" type="number" min="0" max="1440" value="${CFG.harness.maxTaskMinutes}"><span class="help">超過會暫停；回覆後會再給一次同樣的時間</span></div>
       <div class="field"><label>🧪 每個自動檢查最多跑幾秒</label><input id="h_timeout" type="number" min="10" max="3600" value="${CFG.harness.checkTimeoutSec}"></div>
+      <div class="field"><label>🔄 對話用到幾 % 就換班（0 = 不自動換班）</label><input id="h_shift" type="number" min="0" max="95" value="${CFG.harness.shiftPercent}"><span class="help">成員先寫交班筆記，再換成全新的對話接手，避免被自動壓縮而忘記細節</span></div>
       <div class="field full"><label>🔁 輪流工作的成員</label>
         <div class="checks" id="w_turns">${members.map((m) => `<label><input type="checkbox" value="${esc(m.id)}" ${m.takeTurns ? 'checked' : ''}> ${esc(label(m))}</label>`).join('')}</div>
         <span class="help">勾選的成員同一時間只有一位在動手，其他的排隊。沒勾的成員不受限制，例如負責環境更新的成員可以隨時工作。</span></div>
@@ -1118,7 +1124,7 @@ async function openTeamForm() {
     if (missing.length && !confirm('這些階段還沒指定負責成員：' + missing.join('、') + '\n還是要儲存嗎？')) return;
     try {
       const takeTurns = [...document.querySelectorAll('#w_turns input:checked')].map((x) => x.value);
-      const harness = { maxReworks: $('h_rework').value, maxTaskMinutes: $('h_minutes').value, checkTimeoutSec: $('h_timeout').value };
+      const harness = { maxReworks: $('h_rework').value, maxTaskMinutes: $('h_minutes').value, checkTimeoutSec: $('h_timeout').value, shiftPercent: $('h_shift').value };
       await api('/api/team', { method: 'PUT', body: JSON.stringify({ workflow: wf, maxRelayHops: $('t_hops').value, takeTurns, approveWritableHandoffs: $('w_strict').checked, harness }) });
       closeModal(); toast('✅ 工作流程已儲存');
     } catch (e) { toast(e.message); }
@@ -1138,7 +1144,7 @@ async function loadTasks() {
   renderAgents();
   if (current === ALL) updateTop();
 }
-async function loadWorkflow() { try { WF = (await api('/api/config')).workflow; } catch {} }
+async function loadWorkflow() { try { const c = await api('/api/config'); WF = c.workflow; CFG_H = c.harness || null; } catch {} }
 const STATUS_ICON = { running: '▶', awaiting_approval: '🔔', waiting_user: '⏳', done: '🎉', stopped: '⏹', error: '⚠️' };
 
 function renderTaskbar() {
@@ -1220,7 +1226,7 @@ async function openHarness(tab) {
       <div><b>📏 守則 Guides</b>${H.guides.length} 條守則${H.proposals.length ? '，<a href="#" data-go="guides">' + H.proposals.length + ' 則建議等你核准</a>' : ''}<br><span class="help">把過去的失敗變成永久規則，每一輪都會告訴成員</span></div>
       <div><b>🧪 自動檢查 Sensors</b>${checkedStages.length ? checkedStages.map((s) => esc(s.name) + '（' + s.checks.length + ' 項）').join('、') : '還沒有階段設定自動檢查'}<br><span class="help">在「⚙️ 工作流程」的每個階段設定測試指令</span></div>
       <div><b>🔁 循環與預算 Agentic Loop</b>同一階段最多重做 ${cfg.harness.maxReworks} 次｜交接上限 ${cfg.maxRelayHops} 次｜時間 ${cfg.harness.maxTaskMinutes ? cfg.harness.maxTaskMinutes + ' 分鐘' : '不限'}<br><span class="help">超過就暫停交給你；在「⚙️ 工作流程」調整</span></div>
-      <div><b>🧠 外部記憶 Memory</b>${H.memory.length} 筆決策與任務成果<br><span class="help">寫在工作資料夾的 MEMORY.md，每一輪附上最近 15 筆</span></div>
+      <div><b>🧠 外部記憶 Memory</b>${H.memory.length} 筆決策與任務成果｜最近 ${S.days} 天換班 ${S.shifts || 0} 次<br><span class="help">MEMORY.md 每一輪附上最近 15 筆；對話用到 ${cfg.harness.shiftPercent ? cfg.harness.shiftPercent + '%' : '（已關閉）'} 會寫交班筆記、換新對話</span></div>
       <div><b>🔐 權限 Permissions</b>${members.filter(writable).length}/${members.length} 位成員可寫入｜🔒 階段 ${wf.stages.filter((s) => s.approval).length} 個${cfg.approveWritableHandoffs ? '｜寫入型交接一律核准' : ''}</div>
       <div><b>📊 觀測 Observability</b>最近 ${S.days} 天：${turns} 輪、${errs} 次出錯、檢查 ${S.sensorsRun} 次（失敗 ${S.sensorsFailed}）、預算暫停 ${S.budgetStops} 次</div>
     </div>
@@ -1248,13 +1254,14 @@ async function openHarness(tab) {
       <td>${m.takeTurns ? '🔁' : '—'}</td><td>${(agentOf(m.id) || {}).blocked ? '⛔ 暫停使用' : '✅'}</td></tr>`).join('')}</table>
       <p class="help">核准關卡：${wf.stages.filter((s) => s.approval).map((s) => '🔒 ' + esc(s.name)).join('、') || '沒有 🔒 階段'}${cfg.approveWritableHandoffs ? '；交給可寫入的成員一律要核准' : ''}。工作資料夾以外的位置要在 start.bat 的 AGENT_ALLOWED_ROOTS 核准。權限在每位成員的「⚙️ 設定」修改。</p>`;
   } else if (hnTab === 'obs') {
-    const EV = { sensor: '🧪', budget: '⏸', proposal: '💡', guide: '📏', run: '⚠️' };
+    const EV = { sensor: '🧪', budget: '⏸', proposal: '💡', guide: '📏', run: '⚠️', shift: '🔄' };
     body = `<table class="hn-t"><tr><th>成員</th><th>輪數</th><th>出錯</th><th>插話</th><th>總時間</th><th>平均每輪</th><th>tokens（入/出）</th><th>≈API 價</th></tr>${S.agents.map((a) => `<tr>
       <td>${esc(a.name)}</td><td>${a.turns}</td><td>${a.errors}</td><td>${a.interrupted}</td><td>${fmtMs(a.ms)}</td><td>${fmtMs(a.ms / Math.max(1, a.turns))}</td>
       <td>${fmtTok(a.inTok)} / ${fmtTok(a.outTok)}</td><td>${a.costUsd ? 'US$' + a.costUsd.toFixed(2) : '—'}</td></tr>`).join('') || '<tr><td colspan="8" class="help">最近沒有紀錄</td></tr>'}</table>
       <p class="help">≈API 價只是換算成 API 計價的估計；用訂閱帳號登入不會另外收費。完整紀錄在 data/harness/runs.jsonl。</p>
       <h3 style="margin:14px 0 6px;font-size:15px">最近的事件</h3><div class="hn-list">${S.recent.map((r) => `<div class="hn-item"><div class="grow">${EV[r.type] || '•'} ${
         r.type === 'sensor' ? esc((r.ok ? '自動檢查通過：' : '自動檢查沒通過：') + r.name) + '（' + esc(who(r.agent)) + '，' + fmtMs(r.ms || 0) + '）'
+        : r.type === 'shift' ? esc(who(r.agent)) + ' 換到第 ' + r.n + ' 班' + (r.manual ? '（你要求的）' : r.pct != null ? '（對話用到 ' + r.pct + '%）' : '')
         : r.type === 'run' ? esc(who(r.agent)) + (r.interrupted ? ' 被插話中斷' : '：' + esc(r.error || '出錯'))
         : esc(r.text || '')}<small>${r.taskId ? '任務 #' + r.taskId + '｜' : ''}${fmtTime(r.ts)}</small></div></div>`).join('') || '<p class="help">沒有特別的事件</p>'}</div>`;
   }
@@ -1528,6 +1535,11 @@ async function openDiag(id) {
   };
 }
 $('diagBtn').onclick = () => { if (current && current !== ALL) openDiag(current); };
+$('shiftBtn').onclick = async () => {
+  const a = agentOf(current); if (!a || current === ALL) return;
+  if (!confirm('請 ' + a.name + ' 寫交班筆記，然後換成全新的對話接手？\n（對話太長、開始忘記前面內容時使用；超過設定的比例也會自動換班）')) return;
+  try { await api('/api/shift/' + a.id, { method: 'POST' }); toast('🔄 ' + a.name + ' 開始寫交班筆記'); } catch (e) { toast(e.message); }
+};
 
 
 // ---- 🏢 辦公室 ----

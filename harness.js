@@ -9,7 +9,7 @@ const short = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); retur
 const pad = (n) => String(n).padStart(2, '0');
 const fmtDate = (ts) => { const d = new Date(ts); return d.getFullYear() + '/' + pad(d.getMonth() + 1) + '/' + pad(d.getDate()); };
 
-const DEFAULTS = { maxReworks: 3, maxTaskMinutes: 0, checkTimeoutSec: 300 };
+const DEFAULTS = { maxReworks: 3, maxTaskMinutes: 0, checkTimeoutSec: 300, shiftPercent: 60 };
 const MAX_GUIDES = 60, MAX_MEMORY = 300, MAX_PROPOSALS = 50;
 
 // 回覆裡另起一行的標記：【守則建議】… / 【決策】…
@@ -246,7 +246,7 @@ exports.create = function create(ctx) {
     const since = Date.now() - (Number(days) || 7) * 86400000;
     const list = RUNS.filter((r) => r.ts >= since);
     const per = {};
-    let sensorsRun = 0, sensorsFailed = 0, budgetStops = 0;
+    let sensorsRun = 0, sensorsFailed = 0, budgetStops = 0, shifts = 0;
     for (const r of list) {
       if (r.type === 'run') {
         const p = per[r.agent] = per[r.agent] || { agent: r.agent, name: agentName(r.agent), turns: 0, errors: 0, interrupted: 0, ms: 0, costUsd: 0, inTok: 0, outTok: 0 };
@@ -254,10 +254,11 @@ exports.create = function create(ctx) {
         p.ms += r.ms || 0; p.costUsd += r.costUsd || 0; p.inTok += r.inTok || 0; p.outTok += r.outTok || 0;
       } else if (r.type === 'sensor') { sensorsRun++; if (!r.ok) sensorsFailed++; }
       else if (r.type === 'budget') budgetStops++;
+      else if (r.type === 'shift') shifts++;
     }
     const recent = list.filter((r) => r.type !== 'run' || r.error || r.interrupted).slice(-40).reverse()
       .map((r) => ({ ...r, agentName: r.agent ? agentName(r.agent) : null }));
-    return { days: Number(days) || 7, agents: Object.values(per), sensorsRun, sensorsFailed, budgetStops,
+    return { days: Number(days) || 7, agents: Object.values(per), sensorsRun, sensorsFailed, budgetStops, shifts,
       proposals: list.filter((r) => r.type === 'proposal').length, guidesAdded: list.filter((r) => r.type === 'guide').length, recent };
   }
 

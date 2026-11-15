@@ -333,9 +333,10 @@ exports.start = function start(ctx) {
   });
 
   // agent 每做完一輪就推送結果
-  listen('done', async ({ agent, segments, relayTo }) => {
+  listen('done', async ({ agent, segments, relayTo, shift }) => {
     const chats = pushRecipients();
     if (!chats.length || !segments.length) return;
+    if (shift) { for (const id of chats) await say(id, label(agent) + ' 🔄 對話太長，已經寫好交班筆記，下一輪換成全新的對話接手'); return; }
     const texts = segments.filter((s) => s.type === 'text').map((s) => s.text);
     const errors = segments.filter((s) => s.type === 'error').map((s) => '⚠️ ' + s.text);
     const steps = segments.filter((s) => s.type === 'tool').length;

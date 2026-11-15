@@ -1,6 +1,6 @@
 {
   "maxRelayHops": 12,
-  "harness": { "maxReworks": 3, "maxTaskMinutes": 0, "checkTimeoutSec": 300 },
+  "harness": { "maxReworks": 3, "maxTaskMinutes": 0, "checkTimeoutSec": 300, "shiftPercent": 60 },
   "workflow": "1. 使用者把目標交給 PM（克勞德先生）。\n2. PM 釐清目標、訂出驗收標準，寫進 PLAN.md，再派工給 Coder（許代書）。\n3. Coder 實作完成後，交給 QA（小安）測試，並說明改了哪些檔案、怎麼執行。\n4. QA 依 PLAN.md 的驗收標準實際測試：不通過就退回 Coder 並列出問題；通過就回報 PM。\n5. PM 對照驗收標準確認後，向使用者總結成果，流程結束。",
   "telegram": {
     "botToken": "",

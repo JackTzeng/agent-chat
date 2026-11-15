@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.1.0';
+const VERSION = '3.2.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -117,6 +117,9 @@ const agentById = (id) => AGENTS.find((a) => a.id === id);
 let state = { sessions: {} };
 try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
 const saveState = () => fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+state.ctx = state.ctx || {};       // 每段對話（session）目前大約用了多少 context：{ tokens, window, at }
+state.shifts = state.shifts || {}; // 換班：{ n: 第幾班, due: 下一輪前要換班, note: 交班筆記, pendingNote: 新的一班還沒讀到筆記 }
+state.lastKey = state.lastKey || {}; // 每位成員最近一次用的是哪一段對話
 
 const histFile = (id) => path.join(HIST_DIR, id + '.json');
 function loadHistory(id) {
@@ -180,6 +183,12 @@ function buildPrompt(agent, text, opts = {}) {
   const header = opts.taskId ? tasks.promptHeader(agent, opts) : freeHeader(agent);
   let body;
   const fromAgent = opts.from && agentById(opts.from);
+  if (opts.shift) return header + '\n\n' + shiftPrompt(agent, opts);
+  const key = sessionKey(agent, opts), sh = state.shifts[key];
+  const handover = sh && sh.pendingNote && !state.sessions[key]
+    ? '\n\n【換班：你是接手的第 ' + sh.n + ' 班】前一班的對話太長，換成你接手；你看不到前一班的對話。以下是前一班留下的交班筆記，先讀完，再處理下面的訊息' +
+      (opts.taskId ? '（也可以看工作資料夾的 TASK.md）' : '') + '：\n' + (sh.note || '（前一班沒有留下筆記，請從工作資料夾的檔案判斷進度）') + '\n【交班筆記結束】'
+    : '';
   if (opts.interject) {
     body = '【使用者插話：你剛才的工作被暫停了】\n' + text +
       '\n\n請依照這個指示調整，然後繼續完成你原本的工作（之前做到哪裡，可以從對話紀錄與工作資料夾的檔案判斷）。';
@@ -196,7 +205,54 @@ function buildPrompt(agent, text, opts = {}) {
     else if (ccTo.length) note = '（使用者同時把這則訊息交給了 ' + ccTo.map((a) => a.name).join('、') + '，需要時用 @名字 協調分工。）\n';
     body = '【使用者訊息】\n' + note + text;
   }
-  return header + '\n\n' + body;
+  return header + handover + '\n\n' + body;
+}
+
+// ---------- 換班：對話太長時，請成員寫交班筆記，再換成全新的一段對話接手 ----------
+const CTX_DEFAULT = { claude: 200000, codex: 272000 };
+function ctxInfo(key, engine) {
+  const c = state.ctx[key]; if (!c || !c.tokens) return null;
+  const window = c.window || CTX_DEFAULT[engine] || 200000;
+  return { tokens: c.tokens, window, pct: Math.min(100, Math.round((c.tokens / window) * 100)), at: c.at };
+}
+function shiftPrompt(agent, opts) {
+  const c = ctxInfo(sessionKey(agent, opts), agent.engine);
+  return '【系統：換班】' + (opts.manualShift ? '使用者要求換班。' : '這段對話已經很長' + (c ? '（約 ' + Math.round(c.tokens / 1000) + 'k tokens，上限的 ' + c.pct + '%）' : '') + '，再長下去會被自動壓縮、遺失細節。') +
+    '接下來會由一個全新的你接手，新的你看不到這段對話。\n請現在只寫一份交班筆記：不要繼續原本的工作、不要修改檔案、不要寫【交接】區塊。用下面的格式，寫得具體到可以直接照著接手，1500 字以內：\n' +
+    '## 目標\n## 已完成\n## 進行中（做到哪、卡在哪）\n## 下一步\n## 重要決定與注意事項（使用者的要求、規格、不能動的東西）\n## 相關檔案';
+}
+function shiftDue(agent, key) {
+  const pct = Number(harness.cfg().shiftPercent);
+  const c = ctxInfo(key, agent.engine);
+  return !!(state.sessions[key] && ((state.shifts[key] && state.shifts[key].due) || (pct > 0 && c && c.pct >= pct)));
+}
+function finishShift(agent, key, run, note) {
+  const prev = state.shifts[key] || { n: 1 };
+  const c = ctxInfo(key, agent.engine);
+  state.shifts[key] = { n: (prev.n || 1) + 1, note: note ? note.slice(0, 8000) : '', at: Date.now(), pendingNote: true, due: false };
+  delete state.sessions[key]; delete state.ctx[key];
+  saveState();
+  try {
+    const dir = path.join(DATA_DIR, 'harness', 'shifts'); fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, key.replace(/[^a-zA-Z0-9_-]/g, '_') + '.md'),
+      '\n\n# 第 ' + (prev.n || 1) + ' 班 → 第 ' + state.shifts[key].n + ' 班（' + new Date().toLocaleString('zh-TW', { hour12: false }) + '）\n\n' + (note || '（沒有交班筆記）') + '\n');
+  } catch {}
+  harness.record({ type: 'shift', agent: agent.id, taskId: run.opts.taskId || null, n: state.shifts[key].n, tokens: c ? c.tokens : null, pct: c ? c.pct : null, manual: !!run.opts.manualShift });
+  const t = '🔄 換班完成：下一輪起由第 ' + state.shifts[key].n + ' 班（全新的對話）接手，會先讀這份交班筆記';
+  run.segments.push({ type: 'tool', text: t });
+  broadcast({ agentId: agent.id, kind: 'segment', segment: { type: 'tool', text: t } });
+}
+// 手動換班：成員沒在工作時，馬上寫交班筆記
+function manualShift(agent) {
+  if (runs.has(agent.id)) return '工作中，等這一輪做完再換班（或先按 ⏹ 停止）';
+  const key = state.lastKey[agent.id] || agent.id;
+  const m = /^t(\d+):/.exec(key);
+  const d = m ? tasks.detail(Number(m[1])) : null, t = d && d.task;
+  const opts = t && ['running', 'waiting_user', 'awaiting_approval'].includes(t.status) ? { taskId: t.id, stageId: t.stageId } : {};
+  const k = sessionKey(agent, opts);
+  if (!state.sessions[k]) return '這段對話還沒開始，不需要換班';
+  startRun(agent, '（換班）', { ...opts, shift: true, manualShift: true, system: true });
+  return null;
 }
 
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -309,6 +365,8 @@ function parseClaude(ev, emit) {
   if (ev.type === 'rate_limit_event' && ev.rate_limit_info) { updateClaudeUsage(ev.rate_limit_info); return; }
   if (ev.type === 'system' && ev.subtype === 'init' && ev.session_id) emit({ kind: 'session', id: ev.session_id });
   else if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
+    const u = ev.message.usage;
+    if (u && u.input_tokens != null) emit({ kind: 'ctx', tokens: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.output_tokens || 0) });
     for (const b of ev.message.content) {
       if (b.type === 'text' && b.text.trim()) emit({ kind: 'text', text: b.text });
       else if (b.type === 'tool_use') emit({ kind: 'tool', text: describeClaudeTool(b) });
@@ -319,6 +377,8 @@ function parseClaude(ev, emit) {
     // total_cost_usd 是「換算成 API 價格」的估計值；用訂閱帳號登入時不會真的收費
     const cost = typeof ev.total_cost_usd === 'number' ? '≈API價 US$' + ev.total_cost_usd.toFixed(2) : '';
     const u = ev.usage || {};
+    const mu = ev.modelUsage && Object.values(ev.modelUsage).find((x) => x && x.contextWindow);
+    if (mu) emit({ kind: 'ctx', window: mu.contextWindow });
     emit({ kind: 'done', meta: [cost, ev.duration_ms ? (ev.duration_ms / 1000).toFixed(1) + 's' : ''].filter(Boolean).join(' · '),
       stats: { costUsd: typeof ev.total_cost_usd === 'number' ? ev.total_cost_usd : 0, inTok: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0), outTok: u.output_tokens || 0, steps: ev.num_turns || 0 } });
   }
@@ -348,6 +408,12 @@ function parseCodex(ev, emit) {
 
 function startRun(agent, userText, opts = {}) {
   const key = sessionKey(agent, opts);
+  // 對話太長：先換班（寫交班筆記），原本的訊息排在換班之後
+  if (!opts.shift && !opts.interject && !agent.blocked && shiftDue(agent, key)) {
+    pending.unshift({ agentId: agent.id, text: userText, opts });
+    return startRun(agent, '（換班）', { taskId: opts.taskId, stageId: opts.stageId, shift: true, system: true });
+  }
+  state.lastKey[agent.id] = key;
   const sid = state.sessions[key];
   let cmd = null, args = [], blocked = agent.blocked || null;
   if (!blocked) {
@@ -355,10 +421,11 @@ function startRun(agent, userText, opts = {}) {
   }
   const hops = opts.hops || 0;
   const prompt = buildPrompt(agent, userText, opts);
-  const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system, interject: opts.interject };
+  const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system, interject: opts.interject, shift: opts.shift };
 
-  appendHistory(agent.id, { role: 'user', text: userText, ...meta, ts: Date.now() });
-  broadcast({ agentId: agent.id, kind: 'user', text: userText, ...meta });
+  const shownText = opts.shift ? '🔄 換班：' + (opts.manualShift ? '你要求換班' : '對話已經很長') + '，請成員寫交班筆記，之後換成全新的對話接手' : userText;
+  appendHistory(agent.id, { role: 'user', text: shownText, ...meta, ts: Date.now() });
+  broadcast({ agentId: agent.id, kind: 'user', text: shownText, ...meta });
   hooks.emit('user', { agent, text: userText, from: opts.from, via: opts.via });
 
   const run = { segments: [], meta: '', finished: false, stderr: Buffer.alloc(0), cwd: agent.cwd, opts, takeTurns: !!agent.takeTurns,
@@ -371,7 +438,7 @@ function startRun(agent, userText, opts = {}) {
     const errSeg = run.segments.find((x) => x.type === 'error');
     harness.record({ type: 'run', agent: agent.id, engine: agent.engine, model: agent.model || '', taskId: opts.taskId || null, stage: opts.stageId || null,
       ms: Date.now() - run.startedAt, tools: run.segments.filter((x) => x.type === 'tool').length, ...(run.stats || {}),
-      error: errSeg && !run.interrupt ? short(errSeg.text, 160) : null, interrupted: !!run.interrupt, stopped: !!run.stopped });
+      error: errSeg && !run.interrupt ? short(errSeg.text, 160) : null, interrupted: !!run.interrupt, stopped: !!run.stopped, shift: !!opts.shift });
     runs.delete(agent.id);
     broadcast({ agentId: agent.id, kind: 'done', meta: run.meta });
     broadcast({ agentId: agent.id, kind: 'busy', busy: false });
@@ -402,7 +469,7 @@ function startRun(agent, userText, opts = {}) {
   }
 
   // 任務模式：記下工作資料夾目前的樣子，結束後比對出實際變更的檔案
-  const before = opts.taskId ? tasks.snapshotFor(agent) : null;
+  const before = opts.taskId && !opts.shift ? tasks.snapshotFor(agent) : null;
 
   // .exe 直接執行；.cmd（npm 安裝的）要透過 cmd.exe，路徑有空白時要加引號
   const needShell = IS_WIN && !/\.exe$/i.test(cmd);
@@ -416,7 +483,16 @@ function startRun(agent, userText, opts = {}) {
 
   const emit = (e) => {
     if (e.kind === 'session') {
+      const sh = state.shifts[key];
+      if (sh && sh.pendingNote && !opts.shift) sh.pendingNote = false; // 新的一班已經拿到交班筆記
       if (state.sessions[key] !== e.id) { state.sessions[key] = e.id; saveState(); }
+      return;
+    }
+    if (e.kind === 'ctx') {
+      const c = state.ctx[key] = state.ctx[key] || {};
+      if (e.tokens != null) c.tokens = e.tokens;
+      if (e.window) c.window = e.window;
+      c.at = Date.now();
       return;
     }
     if (e.kind === 'done') { run.meta = e.meta || ''; run.finished = true; if (e.stats) run.stats = e.stats; return; }
@@ -463,7 +539,16 @@ function startRun(agent, userText, opts = {}) {
       const tail = decodeOutput(run.stderr).trim().split(/\r?\n/).slice(-6).join('\n');
       emit({ kind: 'error', text: 'CLI 結束碼 ' + code + (tail ? '\n' + tail : '') });
     }
-    if (agent.engine === 'codex') setTimeout(readCodexUsage, 500);
+    if (agent.engine === 'codex') { setTimeout(readCodexUsage, 500); codexContext(key); }
+    saveState();
+    if (opts.shift) {
+      const note = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n').trim();
+      if (!run.stopped) finishShift(agent, key, run, note);
+      finish();
+      hooks.emit('done', { agent, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId, shift: true });
+      pump();
+      return;
+    }
 
     // 自由聊天模式：回覆裡 @ 了同事 → 自動轉交（任務模式改由流程決定）
     const replyText = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n');
@@ -551,7 +636,7 @@ setInterval(() => {
 
 function resetAgent(id) {
   if (runs.has(id)) return false;
-  delete state.sessions[id]; saveState();
+  delete state.sessions[id]; delete state.ctx[id]; delete state.shifts[id]; delete state.lastKey[id]; saveState();
   try { fs.unlinkSync(histFile(id)); } catch {}
   broadcast({ agentId: id, kind: 'reset' });
   return true;
@@ -647,6 +732,37 @@ function readCodexUsage() {
     }
   }
   return false;
+}
+
+// Codex 這段對話目前的 context 大小：從它自己的 rollout 紀錄（檔名含 thread id）讀最後一次 token_count
+function findTokenInfo(o) {
+  if (!o || typeof o !== 'object') return null;
+  if (o.last_token_usage && typeof o.last_token_usage === 'object') return o;
+  for (const v of Object.values(o)) { const r = findTokenInfo(v); if (r) return r; }
+  return null;
+}
+function codexContext(key) {
+  const sid = state.sessions[key]; if (!sid) return;
+  const file = recentRolloutFiles(60).find((f) => path.basename(f).includes(sid));
+  if (!file) return;
+  try {
+    const st = fs.statSync(file), size = Math.min(st.size, 512 * 1024);
+    const fd = fs.openSync(file, 'r'); const buf = Buffer.alloc(size);
+    fs.readSync(fd, buf, 0, size, st.size - size); fs.closeSync(fd);
+    const lines = buf.toString('utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('last_token_usage')) continue;
+      let info; try { info = findTokenInfo(JSON.parse(lines[i])); } catch { continue; }
+      if (!info) continue;
+      const u = info.last_token_usage;
+      const tokens = u.total_tokens || ((u.input_tokens || 0) + (u.output_tokens || 0));
+      if (!tokens) return;
+      state.ctx[key] = { tokens, window: info.model_context_window || CTX_DEFAULT.codex, at: Date.now() };
+      saveState();
+      broadcast({ agentId: '*', kind: 'agents' });
+      return;
+    }
+  } catch {}
 }
 
 // 「🔄 查詢」：送一個極小的請求，讓 CLI 回報最新額度
@@ -807,6 +923,8 @@ const publicAgent = (a) => ({
   queued: (queueInfo(a.id) || {}).count || 0, waitingOn: (queueInfo(a.id) || {}).waitingOn || null,
   runningSince: runs.has(a.id) ? runs.get(a.id).startedAt : null, lastActivity: runs.has(a.id) ? runs.get(a.id).lastActivity : null,
   stalled: runs.has(a.id) ? !!runs.get(a.id).stalled : false,
+  ctx: ctxInfo(state.lastKey[a.id] || a.id, a.engine), shiftNo: ((state.shifts[state.lastKey[a.id] || a.id] || {}).n) || 1,
+  shifting: runs.has(a.id) ? !!runs.get(a.id).opts.shift : false,
 });
 
 const server = http.createServer(async (req, res) => {
@@ -923,6 +1041,11 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { return send(res, 400, { error: e.message }); }
       return send(res, 404, { error: '找不到' });
     }
+    if ((m0 = p.match(/^\/api\/shift\/([\w-]+)$/)) && req.method === 'POST') {
+      const a = agentById(m0[1]); if (!a) return send(res, 404, { error: '找不到這位成員' });
+      const err = manualShift(a);
+      return err ? send(res, 409, { error: err }) : send(res, 200, { ok: true });
+    }
     if (p === '/api/usage' && req.method === 'GET') return send(res, 200, usageSnapshot());
     if (p === '/api/usage/refresh' && req.method === 'POST') { probeUsage(); return send(res, 200, { ok: true }); }
     if (p === '/api/config' && req.method === 'GET') {
@@ -1008,6 +1131,7 @@ const server = http.createServer(async (req, res) => {
         const r = num(body.harness.maxReworks, 1, 20); if (r != null) hc.maxReworks = r;
         const mm = num(body.harness.maxTaskMinutes, 0, 1440); if (mm != null) hc.maxTaskMinutes = mm;
         const ct = num(body.harness.checkTimeoutSec, 10, 3600); if (ct != null) hc.checkTimeoutSec = ct;
+        const sp = num(body.harness.shiftPercent, 0, 95); if (sp != null) hc.shiftPercent = sp;
       }
       if (Array.isArray(body.takeTurns)) {
         for (const x of CONFIG.agents) { if (body.takeTurns.includes(x.id)) x.takeTurns = true; else delete x.takeTurns; }
