@@ -73,11 +73,12 @@ exports.create = function create(ctx) {
   }
 
   // ---------- 守則（Guides）----------
-  function guidesFor(agent) {
-    return G.guides.filter((g) => !g.scope || g.scope === 'all' || g.scope === agent.id);
+  function guidesFor(agent, ownOnly) {
+    return G.guides.filter((g) => (ownOnly ? g.scope === agent.id : !g.scope || g.scope === 'all' || g.scope === agent.id));
   }
-  function guidesText(agent) {
-    const list = guidesFor(agent);
+  // ownOnly：獨立成員只看指定給自己的守則（團隊守則與它無關）
+  function guidesText(agent, ownOnly) {
+    const list = guidesFor(agent, ownOnly);
     if (!list.length) return '';
     const L = ['【團隊守則（使用者核准、從過去的經驗整理出來，一定要遵守）】'];
     let size = 0;

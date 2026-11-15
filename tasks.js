@@ -42,6 +42,7 @@ function normalizeWorkflow(raw, agents) {
 }
 
 function cleanWorkflow(input, agents) {
+  agents = (agents || []).filter((a) => !a.standalone); // 獨立成員不進工作流程
   const str = (v, n) => String(v ?? '').trim().slice(0, n);
   const ids = new Set(agents.map((a) => a.id));
   const used = new Set();

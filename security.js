@@ -29,6 +29,13 @@ const SAFE_ENV = new Set([
 const NEVER_CHILD = new Set(['ACCESS_TOKEN', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_API', 'AGENT_ALLOWED_ROOTS',
   'AGENT_ENV_ALLOWLIST', 'ALLOWED_HOSTS', 'COOKIE_SECURE']);
 
+// 成員專屬環境變數不能覆蓋這些：系統路徑、密碼與金鑰（避免改走付費 API）、會改變程式行為的變數
+function isProtectedEnvKey(k) {
+  const u = String(k).toUpperCase();
+  return SAFE_ENV.has(u) || NEVER_CHILD.has(u) || /^(ANTHROPIC|OPENAI|CLAUDE|CODEX|AWS|AZURE|GOOGLE_APPLICATION|NODE|NPM|PYTHON|LD_|DYLD_|GIT_|SSH_|GH_|GITHUB)/.test(u) ||
+    /(TOKEN|SECRET|PASSWORD|API_KEY|APIKEY)$/.test(u) || ['PATHEXT', 'COMSPEC', 'PROMPT', 'PSMODULEPATH', 'BASH_ENV', 'ENV'].includes(u);
+}
+
 function inside(root, candidate) {
   const rel = path.relative(root, candidate);
   return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel));
@@ -220,4 +227,4 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
   return { verifyHost, checkOrigin, authenticated, jsonRequest, login, logout, logoutAll, checkAgent,
     assertAllowedDir, fileWithin, safeEnvironment, redact, allowedRoots: [...allowedRoots] };
 }
-module.exports = { createSecurity, inside };
+module.exports = { createSecurity, inside, isProtectedEnvKey };

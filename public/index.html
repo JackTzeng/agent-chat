@@ -291,6 +291,7 @@
       <button id="officeBtn" title="切換辦公室／對話畫面">🏢 辦公室</button>
       <button id="diagBtn" title="查看這位成員正在執行的狀態與錯誤訊息">🔍 診斷</button>
       <button id="shiftBtn" title="請成員寫交班筆記，然後換成全新的對話接手（對話太長、開始健忘時用）">🔄 換班</button>
+      <button id="auditBtn" title="這位獨立成員每一輪的輸入、執行的指令、結束碼與回覆">📜 紀錄</button>
       <button id="settingsBtn">⚙️ 設定</button>
       <button id="resetBtn" title="清空這個成員的對話，下一句會重新開始">新對話</button>
     </div>
@@ -327,7 +328,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.2.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.3.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -408,6 +409,7 @@ function agentCard(a, extraClass = '') {
         ${a.engine ? `<div class="role">${esc([a.model || '預設模型', a.effort].filter(Boolean).join(' · '))}${a.takeTurns ? ' · <span title="和團隊輪流工作：同一時間只有一位輪流成員在動手">🔁 輪流</span>' : ''}</div>` : ''}
         ${a.extraDirs && a.extraDirs.length ? `<div class="role" title="${esc(a.extraDirs.map((d) => d.path + (d.mode === 'ro' ? '（唯讀）' : '（可讀寫）')).join('\n'))}">📁 +${a.extraDirs.length} 個資料夾</div>` : ''}
         ${a.blocked ? `<div class="role stall" title="${esc(a.blocked)}">⛔ 設定需修正，暫停使用</div>` : ''}
+        ${a.standalone ? `<div class="role" title="不進工作流程、不建立任務，訊息直接交給它處理">🧍 獨立成員${a.tgPrefix ? '｜Telegram ' + esc(a.tgPrefix) : ''}${a.tgBot ? '｜專屬 bot' : ''}</div>` : ''}
         ${a.shifting ? '<div class="role">🔄 換班中：正在寫交班筆記</div>' : a.busy && a.runningSince ? `<div class="role ${a.stalled ? 'stall' : ''}">${a.stalled ? '⚠️ 可能卡住 · ' : '⏱ '}工作中 ${esc(ago(a.runningSince))}</div>` : ''}
         ${a.ctx || a.shiftNo > 1 ? `<div class="role ${a.ctx && CFG_H && CFG_H.shiftPercent && a.ctx.pct >= CFG_H.shiftPercent ? 'stall' : ''}" title="這段對話大約用了 ${a.ctx ? Math.round(a.ctx.tokens / 1000) + 'k / ' + Math.round(a.ctx.window / 1000) + 'k tokens' : '—'}；超過 ${CFG_H ? CFG_H.shiftPercent : 60}% 會自動換班">🧠 ${a.ctx ? a.ctx.pct + '%' : '新對話'}${a.shiftNo > 1 ? ' · 第 ' + a.shiftNo + ' 班' : ''}${a.ctx && CFG_H && CFG_H.shiftPercent && a.ctx.pct >= CFG_H.shiftPercent && !a.busy ? ' · 下一輪先換班' : ''}</div>` : ''}
         ${a.queued ? `<div class="qline">🕒 排隊中${a.waitingOn === a.id ? '（等它這輪做完）' : a.waitingOn && agentOf(a.waitingOn) ? '（等 ' + esc(agentOf(a.waitingOn).name) + ' 做完）' : ''}</div>` : ''}
@@ -490,6 +492,7 @@ function updateTop() {
     applyOfficeView();
     $('diagBtn').style.display = 'none';
     $('shiftBtn').style.display = 'none';
+    $('auditBtn').style.display = 'none';
     $('settingsBtn').textContent = '⚙️ 團隊設定';
     renderModebar();
     const t = TASKS && TASKS.active, w = workingAgent();
@@ -508,6 +511,7 @@ function updateTop() {
   $('resetBtn').style.display = '';
   $('diagBtn').style.display = '';
   $('shiftBtn').style.display = a.engine ? '' : 'none';
+  $('auditBtn').style.display = a.standalone ? '' : 'none';
   $('officeBtn').style.display = 'none';
   applyOfficeView();
   $('settingsBtn').textContent = '⚙️ 設定';
@@ -732,6 +736,7 @@ const DEFAULT_MODEL = { claude: 'claude-opus-5-5', codex: 'gpt-6.1-sol' };
 const CUSTOM = '__custom';
 const EFFORT_LABEL = { '': '預設', low: 'low：最快', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max：最強、最慢' };
 const PERM_LABEL = {
+  default: 'default：只做允許清單裡的事，其他一律拒絕（獨立成員建議）',
   plan: 'plan：只規劃，不動手', acceptEdits: 'acceptEdits：可改檔，不能執行指令',
   auto: 'auto：自己判斷風險（建議）', bypassPermissions: 'bypassPermissions：全部允許（危險）',
 };
@@ -836,6 +841,42 @@ async function openAgentForm(id) {
         <select id="f_perm"></select>
       </div>
       <div class="field full">
+        <label class="opt"><input type="checkbox" id="f_standalone" ${a.standalone ? 'checked' : ''}> 🧍 獨立成員（不進工作流程）</label>
+        <span class="help">訊息直接交給它處理、直接回覆：不建立任務、不交接、不需要核准，也不會被其他成員 @ 轉交。適合記帳員這種常駐助手。</span>
+        <div class="tpl" style="margin-top:6px"><button type="button" id="f_tpl_ledger">📒 套用記帳員設定</button></div>
+      </div>
+      <div class="field full sa-only">
+        <label>角色設定檔（相對於工作資料夾，每一輪重新讀取）</label>
+        <input id="f_pfile" value="${esc(a.personaFile || '')}" placeholder="例如 ledger/agent/記帳員.md">
+      </div>
+      <div class="field sa-only">
+        <label>Telegram 前綴</label>
+        <input id="f_tgprefix" value="${esc((a.telegram || {}).prefix || '')}" placeholder="例如 /記帳" maxlength="12">
+        <span class="help">在主 bot 傳「/記帳 昨天晚餐 350」就交給它；也可以 /to 名字 切換過去</span>
+      </div>
+      <div class="field sa-only">
+        <label>專屬 Telegram bot token（選填）</label>
+        <input id="f_tgtoken" type="password" autocomplete="off" placeholder="${(a.telegram || {}).hasBotToken ? '已設定（bot ' + esc(a.telegram.botHint) + '），留空就不變' : '在 BotFather 另外開一個 bot，貼上 token'}">
+        ${(a.telegram || {}).hasBotToken ? '<label class="opt"><input type="checkbox" id="f_tgclear"> 移除專屬 bot</label>' : ''}
+        <span class="help">有專屬 bot 的話，在那個聊天打的每句話都交給它（適合「對」「撤銷」這種接續對話）。要先用主 bot 配對過帳號。</span>
+      </div>
+      <div class="field full sa-only">
+        <label>只接受這些 Telegram 帳號 ID（留空 = 所有已配對的帳號）</label>
+        <input id="f_tgusers" value="${esc(((a.telegram || {}).userIds || []).join(', '))}" placeholder="${TG && TG.allowedIds && TG.allowedIds.length ? '已配對：' + esc(TG.allowedIds.join(', ')) : '例如 123456789'}">
+      </div>
+      <div class="field full">
+        <label>成員專屬環境變數（名稱=值，一行一個，選填）</label>
+        <textarea id="f_env" rows="2" placeholder="例如：LEDGER_SHEET_ID=1hPF…">${esc(Object.entries(a.env || {}).map(([k, v]) => k + '=' + v).join('\n'))}</textarea>
+        <span class="help">只有這位成員看得到；不能覆蓋 PATH、金鑰之類的系統或敏感變數（也確保不會改走付費 API）。</span>
+      </div>
+      <div class="field full cl-only">
+        <label>Claude 工具限制（最小權限，選填）</label>
+        <input id="f_tools" value="${esc(a.tools || '')}" placeholder="只開放這些工具，例如 Bash,Read（留空 = 不限制）">
+        <textarea id="f_allow" rows="2" placeholder="允許的規則，一行一個，例如：&#10;Bash(ledger/ledger.cmd *)" style="margin-top:6px">${esc((a.allowedTools || []).join('\n'))}</textarea>
+        <textarea id="f_deny" rows="2" placeholder="禁止的規則，一行一個，例如：&#10;Bash(rm *)" style="margin-top:6px">${esc((a.disallowedTools || []).join('\n'))}</textarea>
+        <span class="help">搭配權限「default」：不在允許清單的指令會直接被拒絕。這是 Claude Code 本身強制的，不是只靠提示詞。</span>
+      </div>
+      <div class="field full team-only">
         <label class="opt"><input type="checkbox" id="f_turns" ${a.takeTurns ? 'checked' : ''}> 🔁 和團隊輪流工作</label>
         <span class="help">勾選的成員之間，同一時間只有一位在動手，其他的排隊（適合 PM / Coder / QA 這種會改同一批檔案的團隊）。不勾就不受限制，隨時都能和任何人同時工作。</span>
       </div>
@@ -851,7 +892,7 @@ async function openAgentForm(id) {
         <span class="help">填完整路徑，例如 C:\\EM_reports_copy\\EM_DATA（在檔案總管對資料夾按右鍵「複製為路徑」再貼上）。
           「唯讀」對 Codex 是沙箱強制擋下寫入；對 Claude 是明確規則要求不可修改。重要的原始資料建議只給唯讀，或先複製一份再給可讀寫。</span>
       </div>
-      <div class="field full">
+      <div class="field full team-only">
         <label>可以把工作交給誰</label>
         <label class="opt"><input type="checkbox" id="f_unres" ${unrestricted ? 'checked' : ''}> 不限制（可以交給所有同事）</label>
         <div class="checks ${unrestricted ? 'disabled' : ''}" id="f_handoff">
@@ -944,7 +985,32 @@ async function openAgentForm(id) {
       : opts(CFG.options.sandboxes, SANDBOX_LABEL, a.sandbox || 'workspace-write');
   }
   syncEngine(false);
-  engineSel.onchange = () => syncEngine(true);
+  const syncKind = () => {
+    const sa = $('f_standalone').checked, cl = engineSel.value === 'claude';
+    document.querySelectorAll('.sa-only').forEach((x) => (x.style.display = sa ? '' : 'none'));
+    document.querySelectorAll('.team-only').forEach((x) => (x.style.display = sa ? 'none' : ''));
+    document.querySelectorAll('.cl-only').forEach((x) => (x.style.display = cl ? '' : 'none'));
+  };
+  syncKind();
+  $('f_standalone').onchange = syncKind;
+  engineSel.onchange = () => { syncEngine(true); syncKind(); };
+  $('f_tpl_ledger').onclick = () => {
+    if (!$('f_name').value.trim()) $('f_name').value = '記帳員';
+    setAvatar('📒');
+    $('f_role').value = '家庭記帳：用 Telegram 文字或照片記帳';
+    $('f_standalone').checked = true;
+    engineSel.value = 'claude'; syncEngine(true); buildModels('claude-sonnet-5-5');
+    $('f_perm').value = 'default';
+    $('f_cwd').value = './workspace';
+    $('f_pfile').value = 'ledger/agent/記帳員.md';
+    $('f_tgprefix').value = '/記帳';
+    $('f_tools').value = 'Bash,Read';
+    $('f_allow').value = 'Bash(ledger/ledger.cmd *)\nBash(./ledger/ledger.cmd *)\nBash(ledger\\ledger.cmd *)';
+    if (!$('f_env').value.trim()) $('f_env').value = 'LEDGER_SHEET_ID=';
+    if (TG && TG.allowedIds && TG.allowedIds.length === 1 && !$('f_tgusers').value) $('f_tgusers').value = TG.allowedIds[0];
+    syncKind();
+    toast('已套用記帳員設定：記得在環境變數填 LEDGER_SHEET_ID 的值');
+  };
   $('f_unres').onchange = (e) => $('f_handoff').classList.toggle('disabled', e.target.checked);
   if (editing) ['f_name', 'f_role', 'f_persona', 'f_engine'].forEach((fid) =>
     $(fid).addEventListener('change', () => { $('f_reset').checked = true; }));
@@ -962,7 +1028,10 @@ async function openAgentForm(id) {
       model: $('f_model').value, effort: $('f_effort').value, cwd: $('f_cwd').value, persona: $('f_persona').value,
       canHandoffTo: $('f_unres').checked ? null : [...document.querySelectorAll('#f_handoff input:checked')].map((x) => x.value),
       extraDirs: dirs.filter((d) => d.path),
-      takeTurns: $('f_turns').checked,
+      takeTurns: $('f_turns').checked && !$('f_standalone').checked,
+      standalone: $('f_standalone').checked, personaFile: $('f_pfile').value, env: $('f_env').value,
+      tools: $('f_tools').value, allowedTools: $('f_allow').value, disallowedTools: $('f_deny').value,
+      telegram: { prefix: $('f_tgprefix').value, botToken: $('f_tgtoken').value, userIds: $('f_tgusers').value, clearBotToken: !!($('f_tgclear') && $('f_tgclear').checked) },
     };
     if (engineSel.value === 'claude') body.permissionMode = $('f_perm').value; else body.sandbox = $('f_perm').value;
     // 名稱若改了，人設裡的舊名字也一起換
@@ -1004,7 +1073,7 @@ const FLOW_TEMPLATE = () => ({
 async function openTeamForm() {
   try { CFG = await api('/api/config'); } catch (e) { toast(e.message); return; }
   const wf = JSON.parse(JSON.stringify(CFG.workflow || { name: '', notes: '', stages: [] }));
-  const members = CFG.agents;
+  const members = CFG.agents.filter((m) => !m.standalone); // 獨立成員不進工作流程
   const sName = (id) => (wf.stages.find((x) => x.id === id) || {}).name || '?';
   openModal(`
     <h2>⚙️ 團隊設定：工作流程</h2>
@@ -1452,6 +1521,9 @@ function renderTelegramForm() {
         <select id="tg_default">${agents.map((a) => `<option value="${esc(a.id)}" ${a.id === t.defaultAgent ? 'selected' : ''}>${esc(label(a))}</option>`).join('')}</select></div>
       <label class="opt" style="margin-top:8px"><input type="checkbox" id="tg_enabled" ${t.enabled ? 'checked' : ''}> 啟用 Telegram 遙控</label>
     </div>
+    ${(t.agentBots || []).length ? `<div class="tg-step"><b>📒 成員專屬 bot</b>${t.agentBots.map((b) => { const ag = agentOf(b.agentId);
+      return `<div class="tg-row"><span class="tg-dot ${b.state}"></span>${esc(ag ? ag.name : b.agentId)}：${esc(b.username ? '@' + b.username : '')} ${esc(TG_STATE[b.state] || b.state)}${b.error ? '（' + esc(b.error) + '）' : ''}</div>`; }).join('')}
+      <p class="help">在成員的「⚙️ 設定」新增或移除。專屬 bot 只接受已配對的帳號${t.allowedIds && t.allowedIds.length ? '（' + esc(t.allowedIds.join(', ')) + '）' : ''}。</p></div>` : ''}
     <div class="modal-actions"><span class="spacer"></span><button id="tg_close">關閉</button></div>`;
   if ($('tg_token')) $('tg_token').value = keepToken;
   const put = async (body) => { try { TG = await api('/api/telegram', { method: 'PUT', body: JSON.stringify(body) }); renderTelegramForm(); renderUsage(); } catch (e) { toast(e.message); } };
@@ -1537,6 +1609,23 @@ async function openDiag(id) {
   };
 }
 $('diagBtn').onclick = () => { if (current && current !== ALL) openDiag(current); };
+$('auditBtn').onclick = () => { if (current && current !== ALL) openAudit(current); };
+async function openAudit(id) {
+  const a = agentOf(id); let recs;
+  try { recs = (await api('/api/audit/' + id + '?limit=60')).records; } catch (e) { toast(e.message); return; }
+  openModal(`<h2>📜 ${esc(a ? a.name : id)} 的稽核紀錄</h2>
+    <p class="lead">每一輪的輸入、執行的指令與結束碼、回覆和錯誤（最新的在上面）。完整紀錄在 data/audit/${esc(id)}.jsonl。</p>
+    <div class="hn-list">${recs.map((r) => `<div class="hn-item"><div class="grow" style="white-space:normal">
+      <b>${fmtTime(r.ts)}</b>｜${r.via === 'telegram' ? '📱 Telegram' + (r.tgUser ? '（' + esc(r.tgUser) + '）' : '') : '💻 網頁'}｜${(r.ms / 1000).toFixed(1)} 秒${r.cliExit ? '｜CLI 結束碼 ' + r.cliExit : ''}
+      <small>輸入：${esc(r.input.slice(0, 300))}</small>
+      ${r.calls.map((c) => `<small>${c.isError ? '❌' : '✅'} ${esc(c.tool)}：<code>${esc(c.command)}</code>${c.exitCode != null ? '（結束碼 ' + c.exitCode + '）' : ''}${c.isError && c.output ? '<br>' + esc(c.output.slice(0, 300)) : ''}</small>`).join('')}
+      <small>回覆：${esc((r.reply || '（沒有）').slice(0, 400))}</small>
+      ${r.errors.length ? `<small style="color:#e5484d">錯誤：${esc(r.errors.join('；').slice(0, 400))}</small>` : ''}
+    </div></div>`).join('') || '<p class="help">還沒有紀錄。</p>'}</div>
+    <div class="modal-actions"><span class="spacer"></span><button id="au_close">關閉</button></div>`);
+  $('modal').classList.add('wide');
+  $('au_close').onclick = closeModal;
+}
 $('shiftBtn').onclick = async () => {
   const a = agentOf(current); if (!a || current === ALL) return;
   if (!confirm('請 ' + a.name + ' 寫交班筆記，然後換成全新的對話接手？\n（對話太長、開始忘記前面內容時使用；超過設定的比例也會自動換班）')) return;

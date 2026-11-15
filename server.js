@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.2.1';
+const VERSION = '3.3.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -11,7 +11,7 @@ const EventEmitter = require('events');
 const hooks = new EventEmitter(); // 給 Telegram 等外掛監聽：user / done / task
 const taskLib = require('./tasks');
 const harnessLib = require('./harness');
-const { createSecurity, inside } = require('./security');
+const { createSecurity, inside, isProtectedEnvKey } = require('./security');
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT) || 3939;
@@ -147,7 +147,8 @@ const pending = [];     // 排隊中的訊息：{ agentId, text, opts }
 
 // 這位成員可以 @ 誰（自由聊天模式）：有設定 canHandoffTo 就照設定，沒設定就是全部同事
 function allowedTargets(agent) {
-  const others = AGENTS.filter((a) => a.id !== agent.id);
+  if (agent.standalone) return [];
+  const others = AGENTS.filter((a) => a.id !== agent.id && !a.standalone); // 獨立成員不參與成員之間的轉交
   return Array.isArray(agent.canHandoffTo) ? others.filter((a) => agent.canHandoffTo.includes(a.id)) : others;
 }
 
@@ -160,15 +161,37 @@ function accessText(agent) {
 }
 
 // 自由聊天模式每一輪附上的說明（身分、團隊、@ 規則）
+// 角色設定檔（獨立成員常用）：每一輪重新讀取，改了檔案下一句就生效
+function personaFileText(agent) {
+  if (!agent.personaFile) return '';
+  try {
+    const full = path.resolve(agent.cwd, agent.personaFile);
+    security.assertAllowedDir(path.dirname(full));
+    const t = fs.readFileSync(full, 'utf8');
+    return '【角色設定（' + agent.personaFile + '）】\n' + (t.length > 20000 ? t.slice(0, 20000) + '\n……（後面省略）' : t);
+  } catch (e) { return '【角色設定】讀不到 ' + agent.personaFile + '（' + e.message + '），請先告訴使用者這個問題。'; }
+}
 function freeHeader(agent) {
   const L = ['【你的身分】你是「' + agent.name + '」' + (agent.role ? '，職責：' + agent.role : '')];
   if (agent.persona) L.push(agent.persona);
+  if (agent.personaFile) L.push(personaFileText(agent));
+  if (agent.standalone) {
+    // 獨立成員：不屬於團隊工作流程，沒有交接規則，直接回覆使用者
+    L.push('（介面說明：使用者透過聊天介面或 Telegram 跟你對話，你的回覆會直接傳回給使用者。照片等附件會存在你的工作資料夾，訊息裡會寫出相對路徑。）');
+    L.push(accessText(agent));
+    if (agent.engine === 'claude' && (agent.tools || (agent.allowedTools || []).length))
+      L.push('【權限】你只能使用系統允許的工具與指令；被擋下時直接告訴使用者，不要嘗試繞過。');
+    const g = harness.guidesText(agent, true);
+    if (g) L.push('', g);
+    return L.join('\n');
+  }
   L.push('（介面說明：使用者透過聊天介面或 Telegram 跟你對話，回覆會以 Markdown 顯示。若你產生了圖片或影片檔，請在回覆中用 ![說明](相對路徑) 顯示它。）');
   L.push(accessText(agent));
-  const others = AGENTS.filter((a) => a.id !== agent.id);
+  const team = AGENTS.filter((a) => !a.standalone);
+  const others = team.filter((a) => a.id !== agent.id);
   if (others.length) {
     L.push('', '【團隊成員】');
-    for (const m of AGENTS) L.push('- ' + m.name + '：' + (m.role || m.engine) + (m.id === agent.id ? '（就是你）' : ''));
+    for (const m of team) L.push('- ' + m.name + '：' + (m.role || m.engine) + (m.id === agent.id ? '（就是你）' : ''));
     const can = allowedTargets(agent);
     L.push('', can.length
       ? '【交接規則】你可以找：' + can.map((m) => m.name).join('、') + '。需要時在回覆中寫「@名字」加上要交代的事，系統會把你的回覆轉給對方；不需要時不要 @ 任何人。'
@@ -321,6 +344,10 @@ function buildCommand(agent, sid) {
     if (agent.model) args.push('--model', agent.model);
     if (agent.effort) args.push('--effort', agent.effort);
     for (const d of agent.extraDirs || []) if (d.mode !== 'ro') args.push('--add-dir', d.path);
+    // 工具限制（獨立成員的最小權限）：--tools 只留這些內建工具；allowed/disallowed 是 Claude Code 的權限規則
+    if (agent.tools) args.push('--tools', agent.tools);
+    if ((agent.allowedTools || []).length) args.push('--allowedTools', ...agent.allowedTools);
+    if ((agent.disallowedTools || []).length) args.push('--disallowedTools', ...agent.disallowedTools);
     if (sid) args.push('--resume', sid);
     return { cmd: getBin('claude'), args };
   }
@@ -369,7 +396,13 @@ function parseClaude(ev, emit) {
     if (u && u.input_tokens != null) emit({ kind: 'ctx', tokens: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.output_tokens || 0) });
     for (const b of ev.message.content) {
       if (b.type === 'text' && b.text.trim()) emit({ kind: 'text', text: b.text });
-      else if (b.type === 'tool_use') emit({ kind: 'tool', text: describeClaudeTool(b) });
+      else if (b.type === 'tool_use') emit({ kind: 'tool', text: describeClaudeTool(b), call: { id: b.id, name: b.name, input: b.input } });
+    }
+  } else if (ev.type === 'user' && ev.message && Array.isArray(ev.message.content)) {
+    for (const b of ev.message.content) {
+      if (b.type !== 'tool_result') continue;
+      const text = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map((x) => x.text || '').join('\n') : '';
+      emit({ kind: 'toolres', id: b.tool_use_id, isError: !!b.is_error, text });
     }
   } else if (ev.type === 'result') {
     if (ev.session_id) emit({ kind: 'session', id: ev.session_id });
@@ -393,7 +426,10 @@ function parseCodex(ev, emit) {
     else if (it.type === 'file_change') emit({ kind: 'tool', text: '📝 修改：' + short((it.changes || []).map((c) => c.path).join(', ')) });
     else if (it.type === 'mcp_tool_call') emit({ kind: 'tool', text: '🔌 ' + it.server + '.' + it.tool });
     else if (it.type === 'web_search') emit({ kind: 'tool', text: '🌐 搜尋網路：' + short(it.query) });
-    else if (it.type === 'command_execution' && it.exit_code) emit({ kind: 'tool', text: '⚠️ 指令結束碼 ' + it.exit_code });
+    else if (it.type === 'command_execution') {
+      emit({ kind: 'toolres', call: { name: 'command', input: { command: it.command } }, exitCode: it.exit_code, isError: !!it.exit_code, text: it.aggregated_output || '' });
+      if (it.exit_code) emit({ kind: 'tool', text: '⚠️ 指令結束碼 ' + it.exit_code });
+    }
     else if (it.type === 'error') emit({ kind: 'error', text: it.message });
   } else if (ev.type === 'turn.completed') {
     const u = ev.usage || {};
@@ -404,6 +440,26 @@ function parseCodex(ev, emit) {
     const msg = ev.message || '錯誤';
     emit({ kind: /^Reconnecting/i.test(msg) ? 'tool' : 'error', text: /^Reconnecting/i.test(msg) ? '🔄 ' + short(msg) : msg });
   }
+}
+
+// 稽核紀錄（獨立成員）：每一輪的輸入、呼叫的指令與結果、回覆、錯誤，寫在 data/audit/<成員>.jsonl
+function writeAudit(agent, run, input) {
+  try {
+    const dir = path.join(DATA_DIR, 'audit'); fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, agent.id + '.jsonl');
+    const o = run.opts || {};
+    const rec = { ts: Date.now(), agent: agent.id, via: o.via || 'web', tgUser: o.tgUser || null, input: security.redact(String(input || '').slice(0, 4000)),
+      calls: run.calls.map((c) => ({ tool: c.name, command: c.input && (c.input.command || c.input.file_path || c.input.pattern) || '', exitCode: c.exitCode, isError: !!c.isError, output: c.output || '' })),
+      reply: security.redact(run.segments.filter((x) => x.type === 'text').map((x) => x.text).join('\n\n').slice(0, 8000)),
+      errors: run.segments.filter((x) => x.type === 'error').map((x) => x.text), cliExit: run.exitCode != null ? run.exitCode : null,
+      ms: Date.now() - run.startedAt, stopped: !!run.stopped, shift: !!o.shift };
+    fs.appendFileSync(file, JSON.stringify(rec) + '\n');
+    if (fs.statSync(file).size > 10 * 1024 * 1024) { const lines = fs.readFileSync(file, 'utf8').trim().split('\n'); fs.writeFileSync(file, lines.slice(-5000).join('\n') + '\n'); }
+  } catch (e) { console.error('稽核紀錄寫入失敗：' + e.message); }
+}
+function readAudit(agentId, limit = 50) {
+  try { return fs.readFileSync(path.join(DATA_DIR, 'audit', agentId + '.jsonl'), 'utf8').trim().split('\n').slice(-limit).reverse().map((l) => JSON.parse(l)); }
+  catch { return []; }
 }
 
 function startRun(agent, userText, opts = {}) {
@@ -428,13 +484,14 @@ function startRun(agent, userText, opts = {}) {
   broadcast({ agentId: agent.id, kind: 'user', text: shownText, ...meta });
   hooks.emit('user', { agent, text: userText, from: opts.from, via: opts.via });
 
-  const run = { segments: [], meta: '', finished: false, stderr: Buffer.alloc(0), cwd: agent.cwd, opts, takeTurns: !!agent.takeTurns,
+  const run = { segments: [], calls: [], meta: '', finished: false, stderr: Buffer.alloc(0), cwd: agent.cwd, opts, takeTurns: !!agent.takeTurns && !agent.standalone,
     startedAt: Date.now(), lastActivity: Date.now(), stdoutTail: [], cmdline: '' };
   runs.set(agent.id, run);
   broadcast({ agentId: agent.id, kind: 'busy', busy: true });
 
   const finish = () => {
     appendHistory(agent.id, { role: 'assistant', segments: run.segments, meta: run.meta, taskId: opts.taskId, ts: Date.now() });
+    if (agent.standalone) writeAudit(agent, run, userText);
     const errSeg = run.segments.find((x) => x.type === 'error');
     harness.record({ type: 'run', agent: agent.id, engine: agent.engine, model: agent.model || '', taskId: opts.taskId || null, stage: opts.stageId || null,
       ms: Date.now() - run.startedAt, tools: run.segments.filter((x) => x.type === 'tool').length, ...(run.stats || {}),
@@ -449,7 +506,7 @@ function startRun(agent, userText, opts = {}) {
       '\n請到成員的「⚙️ 設定」修改（例如把資料夾移到核准範圍、改用 Codex 唯讀或可讀寫），或在 start.bat 設定 AGENT_ALLOWED_ROOTS。' });
     broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
     finish();
-    hooks.emit('done', { agent, segments: run.segments, meta: '', relayTo: [] });
+    hooks.emit('done', { agent, tg: opts.tg, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
     if (opts.taskId) tasks.onTurnDone(agent, run, opts, null);
     setImmediate(pump);
     return;
@@ -462,7 +519,7 @@ function startRun(agent, userText, opts = {}) {
       agent.engine.toUpperCase() + '_BIN。' });
     broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
     finish();
-    hooks.emit('done', { agent, segments: run.segments, meta: '', relayTo: [] });
+    hooks.emit('done', { agent, tg: opts.tg, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
     if (opts.taskId) tasks.onTurnDone(agent, run, opts, null);
     setImmediate(pump);
     return;
@@ -476,7 +533,7 @@ function startRun(agent, userText, opts = {}) {
   const spawnCmd = needShell && /\s/.test(cmd) ? '"' + cmd + '"' : cmd;
   // 透過 cmd.exe 執行時，含空白或特殊符號的參數（例如資料夾路徑）要加引號
   const spawnArgs = needShell ? args.map((x) => (/[\s&|<>^()]/.test(x) && !x.includes('"') ? '"' + x + '"' : x)) : args;
-  const proc = spawn(spawnCmd, spawnArgs, { cwd: agent.cwd, shell: needShell, env: security.safeEnvironment(), windowsHide: true });
+  const proc = spawn(spawnCmd, spawnArgs, { cwd: agent.cwd, shell: needShell, env: { ...security.safeEnvironment(), ...(agent.env || {}) }, windowsHide: true });
   run.proc = proc;
   run.pid = proc.pid;
   run.cmdline = [cmd, ...args].map((x) => (/[\s"']/.test(x) ? JSON.stringify(x) : x)).join(' ');
@@ -496,6 +553,20 @@ function startRun(agent, userText, opts = {}) {
       return;
     }
     if (e.kind === 'done') { run.meta = e.meta || ''; run.finished = true; if (e.stats) run.stats = e.stats; return; }
+    if (e.kind === 'toolres') {
+      // 工具結果：記進稽核紀錄；被擋下或失敗的顯示一行
+      let c = e.id && run.calls.find((x) => x.id === e.id);
+      if (!c) { c = { ...(e.call || {}), at: Date.now() }; run.calls.push(c); }
+      const m = /exit code[:\s]+(\d+)/i.exec(e.text || '');
+      c.isError = e.isError; c.exitCode = e.exitCode != null ? e.exitCode : m ? Number(m[1]) : e.isError ? null : 0;
+      c.output = security.redact(String(e.text || '').slice(0, 2000));
+      if (e.isError && agent.engine === 'claude') {
+        const seg = { type: 'tool', text: '⛔ ' + short(e.text || '工具執行失敗', 160) };
+        run.segments.push(seg); broadcast({ agentId: agent.id, kind: 'segment', segment: seg });
+      }
+      return;
+    }
+    if (e.call) run.calls.push({ ...e.call, at: Date.now() });
     run.segments.push({ type: e.kind, text: e.text });
     broadcast({ agentId: agent.id, kind: 'segment', segment: { type: e.kind, text: e.text } });
   };
@@ -526,7 +597,7 @@ function startRun(agent, userText, opts = {}) {
       // 使用者插話：結束這一輪（不轉交、不判斷任務交接），馬上帶著指示接著做同一段對話
       emit({ kind: 'tool', text: '⚡ 使用者插話，這一輪先暫停' });
       finish();
-      hooks.emit('done', { agent, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
+      hooks.emit('done', { agent, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
       if (opts.taskId) tasks.noteInterrupt(agent, opts, before, run.interrupt.text);
       if (agent.engine === 'codex') setTimeout(readCodexUsage, 500);
       startRun(agentById(agent.id) || agent, run.interrupt.text,
@@ -534,6 +605,7 @@ function startRun(agent, userText, opts = {}) {
       pump();
       return;
     }
+    run.exitCode = code;
     if (run.stopped) emit({ kind: 'error', text: '⏹ 已手動停止' });
     else if (code && !run.finished && !run.segments.some((s) => s.type === 'error')) {
       const tail = decodeOutput(run.stderr).trim().split(/\r?\n/).slice(-6).join('\n');
@@ -545,21 +617,21 @@ function startRun(agent, userText, opts = {}) {
       const note = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n').trim();
       if (!run.stopped) finishShift(agent, key, run, note);
       finish();
-      hooks.emit('done', { agent, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId, shift: true });
+      hooks.emit('done', { agent, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId, shift: true });
       pump();
       return;
     }
 
     // 自由聊天模式：回覆裡 @ 了同事 → 自動轉交（任務模式改由流程決定）
     const replyText = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n');
-    if (!opts.taskId && replyText && !run.stopped) harness.collect(agent, replyText, null);
+    if (!opts.taskId && replyText && !run.stopped && !agent.standalone) harness.collect(agent, replyText, null);
     const targets = opts.taskId || run.stopped || !replyText ? [] : findMentions(agent, replyText);
     if (targets.length && hops >= maxHops()) {
       emit({ kind: 'tool', text: '⛔ 已達自動轉交上限（' + maxHops() + ' 次），沒有再轉給 ' +
         targets.map((t) => t.name).join('、') + '。需要的話請你手動接手。' });
     }
     finish();
-    hooks.emit('done', { agent, segments: run.segments, meta: run.meta, relayTo: hops < maxHops() ? targets : [], taskId: opts.taskId });
+    hooks.emit('done', { agent, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: hops < maxHops() ? targets : [], taskId: opts.taskId });
 
     if (opts.taskId && !run.silentStop) tasks.onTurnDone(agent, run, opts, before);
     if (hops < maxHops()) for (const t of targets) dispatch(t, replyText, { from: agent.id, hops: hops + 1 });
@@ -808,7 +880,7 @@ function usageSnapshot() {
 // ---------- 成員設定（網頁上新增 / 編輯 / 刪除）----------
 const ENGINES = ['claude', 'codex'];
 const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
-const PERMISSION_MODES = ['plan', 'acceptEdits', 'auto'];
+const PERMISSION_MODES = ['default', 'plan', 'acceptEdits', 'auto'];
 const SANDBOXES = ['read-only', 'workspace-write'];
 
 function cleanAgent(input, existingId) {
@@ -866,8 +938,76 @@ function cleanAgent(input, existingId) {
   }
   if (!a.model) delete a.model;
   if (!a.effort) delete a.effort;
+  cleanStandalone(a, input, existingId);
   security.checkAgent(a);
   return a;
+}
+
+// 獨立成員與最小權限設定：角色設定檔、成員專屬環境變數、Claude 工具限制、Telegram 路由
+const TG_TOKEN_RE = /^\d+:[\w-]{20,}$/;
+function parseLines(v) { return (Array.isArray(v) ? v : String(v || '').split(/\r?\n/)).map((x) => String(x).trim()).filter(Boolean); }
+function cleanStandalone(a, input, existingId) {
+  const old = CONFIG.agents.find((x) => x.id === existingId) || {};
+  if (input.standalone) { a.standalone = true; delete a.takeTurns; delete a.canHandoffTo; }
+  // 角色設定檔：相對於工作資料夾，例如 ledger/agent/記帳員.md
+  const pf = String(input.personaFile || '').trim().replace(/^"|"$/g, '');
+  if (pf) {
+    if (/["%!^\r\n\0]/.test(pf) || pf.length > 300) throw new Error('角色設定檔路徑不合法');
+    const full = path.resolve(a.cwd, pf);
+    security.assertAllowedDir(path.dirname(full));
+    let st; try { st = fs.statSync(full); } catch { throw new Error('找不到角色設定檔：' + full); }
+    if (!st.isFile()) throw new Error('角色設定檔不是檔案：' + full);
+    a.personaFile = pf;
+  }
+  // 成員專屬環境變數（KEY=VALUE，一行一個）
+  const env = {};
+  const pairs = input.env && typeof input.env === 'object' && !Array.isArray(input.env) ? Object.entries(input.env) : parseLines(input.env).map((l) => { const i = l.indexOf('='); return i > 0 ? [l.slice(0, i), l.slice(i + 1)] : [l, null]; });
+  for (const [k0, v] of pairs.slice(0, 20)) {
+    const k = String(k0).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(k)) throw new Error('環境變數名稱不合法：' + k + '（格式：名稱=值，一行一個）');
+    if (v == null) throw new Error('環境變數「' + k + '」少了 =值');
+    if (isProtectedEnvKey(k)) throw new Error('環境變數「' + k + '」是系統或敏感變數，不能在這裡設定');
+    if (String(v).length > 1000 || /[\r\n\0]/.test(v)) throw new Error('環境變數「' + k + '」的值太長或含換行');
+    env[k] = String(v).trim();
+  }
+  if (Object.keys(env).length) a.env = env;
+  // Claude 工具限制
+  if (a.engine === 'claude') {
+    const tools = String(input.tools || '').replace(/\s+/g, '');
+    if (tools) {
+      if (!/^[A-Za-z]+(,[A-Za-z]+){0,30}$/.test(tools)) throw new Error('可用工具請用逗號分隔，例如 Bash,Read');
+      a.tools = tools;
+    }
+    for (const key of ['allowedTools', 'disallowedTools']) {
+      const rules = parseLines(input[key]).slice(0, 20);
+      for (const r of rules)
+        if (r.length > 300 || !/^[A-Za-z_]+(\(.+\))?$/.test(r) || /["%!^`\r\n\0]/.test(r)) throw new Error('權限規則格式不對：' + r + '（例如 Bash(ledger/ledger.cmd *)）');
+      if (rules.length) a[key] = rules;
+    }
+  }
+  // Telegram 路由（只給獨立成員）：訊息前綴、專屬 bot、只接受哪些帳號
+  if (a.standalone && input.telegram && typeof input.telegram === 'object') {
+    const t = {}, ti = input.telegram, ot = old.telegram || {};
+    const prefix = String(ti.prefix || '').trim();
+    if (prefix) {
+      if (prefix.length > 12 || /\s/.test(prefix)) throw new Error('Telegram 前綴最多 12 個字、不能有空白，例如 /記帳');
+      const dupP = AGENTS.find((x) => x.id !== existingId && x.telegram && x.telegram.prefix === prefix);
+      if (dupP) throw new Error('前綴「' + prefix + '」已經給 ' + dupP.name + ' 用了');
+      t.prefix = prefix;
+    }
+    const tok = ti.clearBotToken ? '' : String(ti.botToken || '').trim() || ot.botToken || '';
+    if (tok) {
+      if (!TG_TOKEN_RE.test(tok)) throw new Error('專屬 bot token 格式不對，應該像 123456789:ABC…');
+      const mainTok = process.env.TELEGRAM_BOT_TOKEN || (CONFIG.telegram || {}).botToken;
+      if (tok === mainTok) throw new Error('專屬 bot 不能和主 bot 用同一個 token（同一個 bot 只能有一個程式接收訊息），請在 BotFather 另外開一個');
+      if (CONFIG.agents.some((x) => x.id !== existingId && x.telegram && x.telegram.botToken === tok)) throw new Error('這個 bot token 已經給其他成員用了');
+      t.botToken = tok;
+    }
+    const ids = parseLines(String(ti.userIds || '').replace(/[,，、\s]+/g, '\n')).slice(0, 10);
+    for (const id of ids) if (!/^\d{3,15}$/.test(id)) throw new Error('Telegram 帳號 ID 只能是數字：' + id);
+    if (ids.length) t.userIds = ids.map(Number);
+    if (Object.keys(t).length) a.telegram = t;
+  }
 }
 
 function newAgentId() {
@@ -876,7 +1016,13 @@ function newAgentId() {
   return id;
 }
 
-const agentsChanged = () => broadcast({ agentId: '*', kind: 'agents-changed' });
+const agentsChanged = () => { broadcast({ agentId: '*', kind: 'agents-changed' }); try { telegram.startAgentBots(tgCtx); } catch (e) { console.error('專屬 bot 重新啟動失敗：' + e.message); } };
+// 給網頁的成員設定：不回傳 bot token，只告訴它有沒有設定
+function maskAgent(a) {
+  if (!a.telegram || !a.telegram.botToken) return a;
+  const { botToken, ...t } = a.telegram;
+  return { ...a, telegram: { ...t, hasBotToken: true, botHint: botToken.split(':')[0] } };
+}
 
 // ---------- HTTP ----------
 const MIME = {
@@ -918,6 +1064,7 @@ function readBody(req) {
 const publicAgent = (a) => ({
   id: a.id, name: a.name, avatar: a.avatar, engine: a.engine, model: a.model || '', effort: a.effort || '', role: a.role || '',
   extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns, blocked: a.blocked || null,
+  standalone: !!a.standalone, tgPrefix: (a.telegram && a.telegram.prefix) || '', tgBot: !!(a.telegram && a.telegram.botToken),
   canHandoffTo: allowedTargets(a).map((t) => t.id),
   busy: runs.has(a.id), hasSession: !!state.sessions[a.id],
   queued: (queueInfo(a.id) || {}).count || 0, waitingOn: (queueInfo(a.id) || {}).waitingOn || null,
@@ -980,7 +1127,7 @@ const server = http.createServer(async (req, res) => {
       if (body.defaultAgent && agentById(body.defaultAgent)) t.defaultAgent = body.defaultAgent;
       if (!Array.isArray(t.allowedUserIds)) t.allowedUserIds = [];
       saveConfig();
-      telegram.start(tgCtx);
+      telegram.start(tgCtx); telegram.startAgentBots(tgCtx);
       return send(res, 200, telegram.status());
     }
     if (p === '/api/telegram/pair' && req.method === 'POST') return send(res, 200, { pairing: telegram.newPairCode() });
@@ -1048,11 +1195,15 @@ const server = http.createServer(async (req, res) => {
       const err = manualShift(a);
       return err ? send(res, 409, { error: err }) : send(res, 200, { ok: true });
     }
+    if ((m0 = p.match(/^\/api\/audit\/([\w-]+)$/)) && req.method === 'GET') {
+      if (!agentById(m0[1])) return send(res, 404, { error: '找不到這位成員' });
+      return send(res, 200, { records: readAudit(m0[1], Math.min(200, Number(url.searchParams.get('limit')) || 50)) });
+    }
     if (p === '/api/usage' && req.method === 'GET') return send(res, 200, usageSnapshot());
     if (p === '/api/usage/refresh' && req.method === 'POST') { probeUsage(); return send(res, 200, { ok: true }); }
     if (p === '/api/config' && req.method === 'GET') {
       return send(res, 200, {
-        agents: CONFIG.agents, workflow: CONFIG.workflow, maxRelayHops: maxHops(), approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
+        agents: CONFIG.agents.map(maskAgent), workflow: CONFIG.workflow, maxRelayHops: maxHops(), approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
         harness: harness.cfg(),
         options: { engines: ENGINES, efforts: EFFORTS, permissionModes: PERMISSION_MODES, sandboxes: SANDBOXES },
       });
@@ -1080,6 +1231,8 @@ const server = http.createServer(async (req, res) => {
         const body = await readBody(req);
         let a;
         try { a = cleanAgent(body, m0[1]); } catch (e) { return send(res, 400, { error: e.message }); }
+        const owned = a.standalone && (CONFIG.workflow.stages || []).filter((st) => st.owner === a.id);
+        if (owned && owned.length) return send(res, 400, { error: '「' + a.name + '」是工作流程「' + owned.map((x) => x.name).join('、') + '」的負責人，請先到「⚙️ 工作流程」換人，再改成獨立成員' });
         CONFIG.agents[idx] = a;
       }
       saveConfig(); reloadAgents(); tasks.writeWorkflowDocs(); harness.docs(); agentsChanged(); pump();
@@ -1229,6 +1382,7 @@ const tgCtx = {
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,
 };
 telegram.start(tgCtx);
+telegram.startAgentBots(tgCtx);
 
 const shutdown = () => { for (const id of runs.keys()) stopRun(id); process.exit(0); };
 process.on('SIGINT', shutdown);
