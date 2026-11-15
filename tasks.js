@@ -169,12 +169,17 @@ exports.create = function create(ctx) {
   // 伺服器重開時，還在跑的任務已經沒有對應的程式了
   for (const t of store.tasks) if (t.status === 'running') { t.checking = null; t.status = 'waiting_user'; t.note = '伺服器重新啟動，任務暫停，請回覆讓它繼續或停止任務'; }
 
-  const wf = () => ctx.CONFIG.workflow;
-  const stage = (id) => wf().stages.find((s) => s.id === id);
+  // 小組：每個小組有自己的工作流程；任務屬於某個小組（舊任務沒有 teamId → 第一個小組）
+  const teams = () => ctx.teams();
+  const teamOf = (t) => (t && ctx.teamById(t.teamId)) || teams()[0];
+  const wf = (t) => teamOf(t).workflow;
+  const stageIn = (t, id) => wf(t).stages.find((s) => s.id === id);
   const name = (id) => (ctx.agentById(id) || {}).name || '（未指定）';
   const get = (id) => store.tasks.find((t) => t.id === Number(id));
-  const active = () => store.tasks.find((t) => ACTIVE.includes(t.status));
-  const maxTurns = () => Number(ctx.CONFIG.maxRelayHops) || 12;
+  const activeOf = (teamId) => store.tasks.find((t) => ACTIVE.includes(t.status) && teamOf(t).id === teamId);
+  const actives = () => store.tasks.filter((t) => ACTIVE.includes(t.status));
+  const maxTurns = (t) => Number(teamOf(t).maxRelayHops) || Number(ctx.CONFIG.maxRelayHops) || 12;
+  const teamMembers = (teamId) => ctx.AGENTS.filter((a) => !a.standalone && a.team === teamId);
 
   function changed(task, event, message) {
     task.updatedAt = Date.now();
@@ -186,13 +191,13 @@ exports.create = function create(ctx) {
 
   // ---------- 每一輪送給成員的說明（身分、流程、目前階段、交接方式）----------
   function promptHeader(agent, opts) {
-    const task = get(opts.taskId), w = wf(), st = stage(opts.stageId);
+    const task = get(opts.taskId), w = wf(task), st = stageIn(task, opts.stageId), stage = (id) => stageIn(task, id), team = teamOf(task);
     const lines = [];
     lines.push('【你的身分】你是「' + agent.name + '」' + (agent.role ? '，職責：' + agent.role : ''));
     if (agent.persona) lines.push(agent.persona);
     if (ctx.accessText) lines.push('', ctx.accessText(agent));
-    lines.push('', '【團隊成員】');
-    for (const a of ctx.AGENTS) lines.push('- ' + a.name + '：' + (a.role || a.engine) + (a.id === agent.id ? '（就是你）' : ''));
+    lines.push('', '【團隊成員（' + team.name + '）】');
+    for (const a of teamMembers(team.id)) lines.push('- ' + a.name + '：' + (a.role || a.engine) + (a.id === agent.id ? '（就是你）' : ''));
     if (task) lines.push('', '【目前任務 #' + task.id + '】', task.goal);
     if (task && task.notes && task.notes.length) {
       lines.push('', '【使用者在任務進行中的補充指示（一定要遵守；和前面的內容衝突時，以越新的為準）】');
@@ -238,6 +243,7 @@ exports.create = function create(ctx) {
     const changes = before ? diffSnapshots(before, snapshot(rootsFor(agent))) : [];
     const text = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n');
     const errors = run.segments.filter((s) => s.type === 'error');
+    const stage = (id) => stageIn(task, id);
     const st = stage(opts.stageId);
     task.turns = (task.turns || 0) + 1;
     task.stageChanges = mergeChanges(task.stageChanges, changes);
@@ -273,10 +279,10 @@ exports.create = function create(ctx) {
     const nexts = st.next.map(stage).filter(Boolean);
     const target = nexts.find((s) => ho.to.includes(s.name)) ||
       nexts.find((s) => s.owner && ho.to.includes(name(s.owner))) || (nexts.length === 1 && !ho.to ? nexts[0] : null);
-    if (task.turns >= maxTurns()) {
+    if (task.turns >= maxTurns(task)) {
       task.status = 'waiting_user'; task.waitingFor = agent.id;
       log(task, { type: 'limit' });
-      return changed(task, 'waiting_user', '已達每件任務的交接上限（' + maxTurns() + ' 次），請你決定下一步。');
+      return changed(task, 'waiting_user', '已達每件任務的交接上限（' + maxTurns(task) + ' 次），請你決定下一步。');
     }
     if (!target || !target.owner || !ctx.agentById(target.owner)) {
       const allowed = nexts.map((s) => name(s.owner) + '（' + s.name + '）').join('、') || '（無）';
@@ -292,7 +298,8 @@ exports.create = function create(ctx) {
       const writableNext = nextAgent && (nextAgent.sandbox === 'workspace-write' ||
         nextAgent.permissionMode === 'acceptEdits' || nextAgent.permissionMode === 'auto');
       // 團隊設定「交給可寫入的成員一律要核准」打開時，才對每次寫入型交接要求核准（預設只在 🔒 階段核准）
-      if (st.approval || (ctx.CONFIG.approveWritableHandoffs === true && writableNext)) {
+      const strict = typeof teamOf(task).approveWritableHandoffs === 'boolean' ? teamOf(task).approveWritableHandoffs : ctx.CONFIG.approveWritableHandoffs === true;
+      if (st.approval || (strict && writableNext)) {
         task.status = 'awaiting_approval'; task.pending = pend;
         log(task, { type: 'awaiting', from: agent.id, to: target.owner, stage: target.id });
         return changed(task, 'awaiting_approval', agent.name + ' 完成「' + st.name + '」，要交給 ' + name(target.owner) +
@@ -340,6 +347,7 @@ exports.create = function create(ctx) {
   }
 
   function transition(task, pend, note) {
+    const stage = (id) => stageIn(task, id);
     const to = stage(pend.toStage), from = ctx.agentById(pend.from), owner = ctx.agentById(to.owner);
     // 預算：同一個階段被退回重做的次數
     task.visits = task.visits || {};
@@ -382,23 +390,25 @@ exports.create = function create(ctx) {
   }
 
   // ---------- 使用者操作 ----------
-  function start(goal, via) {
+  function start(goal, via, teamId) {
     goal = String(goal || '').trim();
     if (!goal) throw new Error('請輸入任務目標');
-    const cur = active();
-    if (cur) throw new Error('已經有進行中的任務 #' + cur.id + '，請先完成或停止');
-    const first = wf().stages[0];
-    if (!first) throw new Error('還沒有定義工作流程，請到「全員 → 團隊設定」新增階段');
+    const team = (teamId && ctx.teamById(teamId)) || teams()[0];
+    if (teamId && team.id !== teamId) throw new Error('找不到這個小組');
+    const cur = activeOf(team.id);
+    if (cur) throw new Error(team.name + ' 已經有進行中的任務 #' + cur.id + '，請先完成或停止（不同小組可以同時進行）');
+    const first = team.workflow.stages[0];
+    if (!first) throw new Error('「' + team.name + '」還沒有定義工作流程，請到「⚙️ 工作流程」新增階段');
     const owner = ctx.agentById(first.owner);
     if (!owner) throw new Error('「' + first.name + '」階段還沒有指定負責成員');
     const task = {
-      id: ++store.seq, title: short(goal.split('\n')[0], 40), goal, status: 'running', stageId: first.id,
+      id: ++store.seq, title: short(goal.split('\n')[0], 40), goal, status: 'running', stageId: first.id, teamId: team.id,
       workspace: owner.cwd, createdAt: Date.now(), turns: 0, log: [{ ts: Date.now(), type: 'start', via }],
       visits: { [first.id]: 1 },
     };
     store.tasks.push(task);
     writeWorkflowDocs();
-    changed(task, 'started', '任務 #' + task.id + ' 開始：' + task.title + '\n交給 ' + owner.name + '（' + first.name + '）');
+    changed(task, 'started', '任務 #' + task.id + '（' + team.name + '）開始：' + task.title + '\n交給 ' + owner.name + '（' + first.name + '）');
     ctx.dispatch(owner, goal, { taskId: task.id, stageId: first.id, via });
     return task;
   }
@@ -428,7 +438,7 @@ exports.create = function create(ctx) {
   }
   function reply(id, text, via) {
     const t = need(id, ['waiting_user', 'error']);
-    const who = ctx.agentById(t.waitingFor) || ctx.agentById((stage(t.stageId) || {}).owner);
+    const who = ctx.agentById(t.waitingFor) || ctx.agentById((stageIn(t, t.stageId) || {}).owner);
     if (!who) throw new Error('找不到要回覆的成員');
     if (t.budgetHold) { t.budgetHold = false; t.extraBudget = (t.extraBudget || 0) + 1; }
     t.status = 'running'; t.waitingFor = null; t.note = null;
@@ -449,11 +459,11 @@ exports.create = function create(ctx) {
 
   // ---------- 文件：TASK.md（任務狀態）與 WORKFLOW.md（流程定義）----------
   function taskMarkdown(t) {
-    const w = wf(), cur = stage(t.stageId);
+    const w = wf(t), stage = (id) => stageIn(t, id), cur = stage(t.stageId);
     const doneStages = new Set(t.log.filter((e) => e.type === 'handoff').map((e) => e.fromStage));
     const L = ['# 任務 #' + t.id + '：' + t.title, '',
       '- 狀態：' + STATUS_TEXT[t.status] + (cur && ACTIVE.includes(t.status) ? '｜目前階段：' + cur.name + '（' + name(cur.owner) + '）' : ''),
-      '- 建立：' + fmt(t.createdAt) + '｜交接次數：' + (t.turns || 0), '', '## 目標', '', t.goal, '', '## 流程進度（' + w.name + '）', ''];
+      '- 小組：' + teamOf(t).name + '｜建立：' + fmt(t.createdAt) + '｜交接次數：' + (t.turns || 0), '', '## 目標', '', t.goal, '', '## 流程進度（' + w.name + '）', ''];
     for (const s of w.stages) {
       const mark = t.status === 'done' ? '✅' : s.id === t.stageId ? '▶' : doneStages.has(s.id) ? '✅' : '○';
       L.push('- ' + mark + ' ' + s.name + '（' + name(s.owner) + '）');
@@ -483,10 +493,10 @@ exports.create = function create(ctx) {
     try { fs.writeFileSync(path.join(t.workspace, 'TASK.md'), taskMarkdown(t)); } catch {}
     try { fs.mkdirSync(path.join(ctx.DATA_DIR, 'tasks'), { recursive: true }); fs.writeFileSync(path.join(ctx.DATA_DIR, 'tasks', 'task-' + t.id + '.md'), taskMarkdown(t)); } catch {}
   }
-  function workflowMarkdown() {
-    const w = wf();
-    const L = ['# 工作流程：' + w.name, '', '> 由 Agent Chat 的「團隊設定」產生，請在網頁上修改。', '', '## 成員', ''];
-    for (const a of ctx.AGENTS) L.push('- ' + a.name + '：' + (a.role || '') + '（' + [a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ') + '）');
+  function workflowMarkdown(team) {
+    const w = team.workflow, stage = (id) => w.stages.find((s) => s.id === id);
+    const L = ['# 工作流程：' + w.name + '（' + team.name + '）', '', '> 由 Agent Chat 的「⚙️ 工作流程」產生，請在網頁上修改。', '', '## 成員', ''];
+    for (const a of teamMembers(team.id)) L.push('- ' + a.name + '：' + (a.role || '') + '（' + [a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ') + '）');
     L.push('', '## 階段', '');
     w.stages.forEach((s, i) => {
       L.push('### ' + (i + 1) + '. ' + s.name + '（負責：' + name(s.owner) + '）', '');
@@ -502,21 +512,30 @@ exports.create = function create(ctx) {
     return L.join('\n');
   }
   function writeWorkflowDocs() {
-    const md = workflowMarkdown();
-    for (const dir of new Set(ctx.AGENTS.map((a) => a.cwd))) { try { fs.writeFileSync(path.join(dir, 'WORKFLOW.md'), md); } catch {} }
+    // 每個小組寫進自己成員的工作資料夾；不同小組共用同一個資料夾時，由第一個小組的流程為準
+    const written = new Set();
+    for (const team of teams()) {
+      const md = workflowMarkdown(team);
+      for (const dir of new Set(teamMembers(team.id).map((a) => a.cwd))) {
+        if (written.has(dir)) continue; written.add(dir);
+        try { fs.writeFileSync(path.join(dir, 'WORKFLOW.md'), md); } catch {}
+      }
+    }
   }
-  function workflowSaved() {
+  function workflowSaved(teamId) {
     try {
       fs.mkdirSync(HIST, { recursive: true });
       const d = new Date();
       const stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
-      fs.writeFileSync(path.join(HIST, 'workflow-' + stamp + '.json'), JSON.stringify(wf(), null, 2));
+      const team = ctx.teamById(teamId) || teams()[0];
+      fs.writeFileSync(path.join(HIST, 'workflow-' + team.id + '-' + stamp + '.json'), JSON.stringify(team.workflow, null, 2));
     } catch {}
     writeWorkflowDocs();
   }
 
   const summary = (t) => t && ({
     id: t.id, title: t.title, goal: t.goal, status: t.status, statusText: STATUS_TEXT[t.status], stageId: t.stageId,
+    teamId: teamOf(t).id, teamName: teamOf(t).name,
     waitingFor: t.waitingFor || null, pending: t.pending || null, turns: t.turns || 0, note: t.note || null,
     createdAt: t.createdAt, updatedAt: t.updatedAt, notes: t.notes || [], checking: t.checking || null,
     visits: t.visits || {}, checkFails: t.checkFails || {}, extraBudget: t.extraBudget || 0,
@@ -525,7 +544,10 @@ exports.create = function create(ctx) {
 
   return {
     promptHeader, snapshotFor, onTurnDone, noteInterrupt, addNote, start, approve, reject, reply, stop, workflowSaved, writeWorkflowDocs,
-    active: () => summary(active()),
+    // 相容舊介面：active() 是最近更新的一件；actives() 是所有小組進行中的任務
+    active: () => summary(actives().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0]),
+    actives: () => actives().map(summary),
+    activeOf: (teamId) => summary(activeOf(teamId)),
     list: () => store.tasks.slice(-20).reverse().map(summary),
     detail: (id) => { const t = get(id); return t ? { task: summary(t), markdown: taskMarkdown(t) } : null; },
     STATUS_TEXT,

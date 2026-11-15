@@ -10,13 +10,14 @@ const { inside } = require('./security');
 const HELP =
   '🤖 Agent Chat 遙控\n\n' +
   '📋 任務（依照工作流程交接）\n' +
-  '/task 目標　開始新任務\n' +
+  '/task 目標　開始新任務（交給目前對象的小組；/task 小組名 目標 指定小組）\n' +
   '/status　目前任務的進度\n' +
   '/approve [補充]　核准交接\n' +
   '/reject 意見　退回修改\n' +
   '/cancel　停止目前任務\n' +
   '/note 指示　加入任務指示（不中斷，之後每一輪都會看到）\n' +
-  '任務在等你回覆時，直接打字就會回給那位成員\n\n' +
+  '任務在等你回覆時，直接打字就會回給那位成員\n' +
+  '同時有好幾件任務時，在訊息或指令後面加 #編號 指定任務，例如 /approve #12、#12 改用 CSV\n\n' +
   '⚡ 插話\n' +
   '成員正在工作時直接打字，會中斷它這一輪，帶著你的指示接著做\n' +
   '/later 訊息　不中斷，等它這輪做完再給\n\n' +
@@ -354,18 +355,33 @@ exports.start = function start(ctx) {
     return '📊 用量額度\n\n' + block('Claude', u.claude) + '\n\n' + block('Codex', u.codex);
   }
 
+  const teamOfTask = (t) => (ctx.config.teams || []).find((x) => x.id === t.teamId) || (ctx.config.teams || [])[0];
   function taskStatusText() {
-    const t = ctx.tasks.active();
-    if (!t) {
+    const list = ctx.tasks.actives();
+    if (!list.length) {
       const last = ctx.tasks.list()[0];
       return '目前沒有進行中的任務。' + (last ? '\n最近一件：#' + last.id + ' ' + last.title + '（' + last.statusText + '）' : '') + '\n用 /task 目標 開始新任務';
     }
-    const stages = ctx.config.workflow.stages;
-    const line = stages.map((s) => (s.id === t.stageId ? '▶' : t.done.includes(s.id) ? '✅' : '○') + s.name).join(' → ');
-    let msg = '📋 任務 #' + t.id + '：' + t.title + '\n狀態：' + t.statusText + '｜交接 ' + t.turns + ' 次\n' + line;
-    if (t.status === 'awaiting_approval') msg += '\n\n等你核准：/approve 或 /reject 意見';
-    if (t.status === 'waiting_user') msg += '\n\n等你回覆：直接打字即可';
-    return msg;
+    return list.map((t) => {
+      const team = teamOfTask(t);
+      const line = team.workflow.stages.map((s) => (s.id === t.stageId ? '▶' : t.done.includes(s.id) ? '✅' : '○') + s.name).join(' → ');
+      let msg = '📋 ' + (team.icon || '') + team.name + '｜任務 #' + t.id + '：' + t.title + '\n狀態：' + t.statusText + '｜交接 ' + t.turns + ' 次\n' + line;
+      if (t.status === 'awaiting_approval') msg += '\n等你核准：/approve' + (list.length > 1 ? ' #' + t.id : '') + ' 或 /reject' + (list.length > 1 ? ' #' + t.id : '') + ' 意見';
+      if (t.status === 'waiting_user') msg += '\n等你回覆：' + (list.length > 1 ? '#' + t.id + ' 加上回覆內容' : '直接打字即可');
+      return msg;
+    }).join('\n\n');
+  }
+  // 從指令參數找出要操作的任務：可以寫 #編號；沒寫時，符合狀態的只有一件就用那件
+  function pickTask(arg, statuses, what) {
+    const m = String(arg || '').match(/^\s*#(\d+)\s*([\s\S]*)$/);
+    const list = ctx.tasks.actives().filter((t) => !statuses || statuses.includes(t.status));
+    if (m) {
+      const t = list.find((x) => x.id === Number(m[1]));
+      return t ? { t, rest: m[2].trim() } : { err: '任務 #' + m[1] + ' 目前沒有' + what + '。' };
+    }
+    if (!list.length) return { err: '目前沒有' + what + '的任務。' };
+    if (list.length > 1) return { err: '有 ' + list.length + ' 件任務' + what + '，請加上 #編號：\n' + list.map((t) => '#' + t.id + ' ' + (teamOfTask(t).name) + '：' + t.title).join('\n') };
+    return { t: list[0], rest: String(arg || '').trim() };
   }
 
   // 任務事件推送（開始、等核准、等回覆、完成、停止、出錯）
@@ -374,9 +390,11 @@ exports.start = function start(ctx) {
     const chats = pushRecipients();
     const head = { started: '📋', awaiting_approval: '🔔 需要你核准', waiting_user: '⏳ 等你回覆', done: '🎉 任務完成',
       stopped: '⏹', error: '⚠️ 任務暫停', rejected: '↩️', budget: '⏸ 超出預算', checks_failed: '🧪 自動檢查沒通過' }[event] || '📋';
-    let body = head + '（任務 #' + task.id + '）\n' + (message || '');
-    if (event === 'awaiting_approval') body += '\n\n👉 /approve 核准，或 /reject 意見 退回';
-    if (event === 'waiting_user' || event === 'error' || event === 'budget') body += '\n\n👉 直接打字回覆，或 /cancel 停止任務';
+    const team = teamOfTask(task);
+    let body = head + '（' + (team ? team.name + '・' : '') + '任務 #' + task.id + '）\n' + (message || '');
+    const many = ctx.tasks.actives().length > 1, tag = many ? ' #' + task.id : '';
+    if (event === 'awaiting_approval') body += '\n\n👉 /approve' + tag + ' 核准，或 /reject' + tag + ' 意見 退回';
+    if (event === 'waiting_user' || event === 'error' || event === 'budget') body += '\n\n👉 ' + (many ? '#' + task.id + ' 加上回覆內容' : '直接打字回覆') + '，或 /cancel' + tag + ' 停止任務';
     for (const id of chats) await say(id, body);
   });
 
@@ -401,10 +419,12 @@ exports.start = function start(ctx) {
   }
 
   function listText(c) {
-    return '成員：\n' + ctx.agents.map((a) =>
-      (a.id === targetOf(c).id ? '👉 ' : '　 ') + label(a) + (ctx.runs.has(a.id) ? ' ⏳工作中' : '') +
-      '\n　　' + [a.role, [a.model || a.engine, a.effort].filter(Boolean).join(' · ')].filter(Boolean).join('｜')
-    ).join('\n') + '\n\n目前對象：' + label(targetOf(c)) + '\n用 /to 名字 切換';
+    const line = (a) => (a.id === targetOf(c).id ? '👉 ' : '　 ') + label(a) + (ctx.runs.has(a.id) ? ' ⏳工作中' : '') +
+      '\n　　' + [a.role, [a.model || a.engine, a.effort].filter(Boolean).join(' · ')].filter(Boolean).join('｜');
+    const groups = (ctx.config.teams || []).map((tm) => ({ title: (tm.icon || '') + ' ' + tm.name, list: ctx.agents.filter((a) => !a.standalone && a.team === tm.id) }));
+    groups.push({ title: '🧍 獨立成員', list: ctx.agents.filter((a) => a.standalone) });
+    return groups.filter((g) => g.list.length).map((g) => g.title + '\n' + g.list.map(line).join('\n')).join('\n\n') +
+      '\n\n目前對象：' + label(targetOf(c)) + '\n用 /to 名字 切換';
   }
 
   async function handle(msg) {
@@ -467,30 +487,37 @@ exports.start = function start(ctx) {
         }
         case 'usage': return say(chatId, usageText());
         case 'task': {
-          if (!arg.trim()) return say(chatId, '用法：/task 任務目標\n例如：/task 做一個讀 CSV 算平均值的 Python 小工具');
-          try { ctx.tasks.start(arg, 'telegram'); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+          if (!arg.trim()) return say(chatId, '用法：/task 任務目標\n例如：/task 做一個讀 CSV 算平均值的 Python 小工具\n指定小組：/task 小組名 目標');
+          // 第一個詞是小組名稱 → 交給那個小組；否則交給目前對象所在的小組
+          const teams = ctx.config.teams || [];
+          const first = arg.trim().split(/\s+/)[0];
+          let team = teams.find((x) => x.name === first || (x.icon || '') + x.name === first);
+          let goal = team ? arg.trim().slice(first.length).trim() : arg;
+          if (!team) team = teams.find((x) => x.id === targetOf(c).team) || teams[0];
+          if (!goal) return say(chatId, '請在小組名稱後面寫任務目標');
+          try { ctx.tasks.start(goal, 'telegram', team && team.id); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
           return;
         }
         case 'status': case 'tasks': return say(chatId, taskStatusText());
         case 'approve': {
-          const t = ctx.tasks.active();
-          if (!t || t.status !== 'awaiting_approval') return say(chatId, '目前沒有等待核准的交接。');
-          try { ctx.tasks.approve(t.id, arg.trim()); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
-          return say(chatId, '✅ 已核准');
+          const r = pickTask(arg, ['awaiting_approval'], '在等核准');
+          if (r.err) return say(chatId, r.err);
+          try { ctx.tasks.approve(r.t.id, r.rest); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+          return say(chatId, '✅ 已核准任務 #' + r.t.id);
         }
         case 'reject': {
-          const t = ctx.tasks.active();
-          if (!t || t.status !== 'awaiting_approval') return say(chatId, '目前沒有等待核准的交接。');
-          if (!arg.trim()) return say(chatId, '請附上意見，例如：/reject 驗收標準要寫清楚輸出格式');
-          try { ctx.tasks.reject(t.id, arg.trim()); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+          const r = pickTask(arg, ['awaiting_approval'], '在等核准');
+          if (r.err) return say(chatId, r.err);
+          if (!r.rest) return say(chatId, '請附上意見，例如：/reject 驗收標準要寫清楚輸出格式');
+          try { ctx.tasks.reject(r.t.id, r.rest); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
           return;
         }
         case 'note': {
-          const t = ctx.tasks.active();
-          if (!t) return say(chatId, '目前沒有進行中的任務。');
-          if (!arg.trim()) return say(chatId, '用法：/note 指示內容');
-          try { ctx.tasks.addNote(t.id, arg.trim(), 'telegram'); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
-          return say(chatId, '📌 已加入任務指示，之後每一輪都會看到');
+          const r = pickTask(arg, null, '在進行');
+          if (r.err) return say(chatId, r.err);
+          if (!r.rest) return say(chatId, '用法：/note 指示內容（多件任務時：/note #編號 指示內容）');
+          try { ctx.tasks.addNote(r.t.id, r.rest, 'telegram'); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+          return say(chatId, '📌 已加入任務 #' + r.t.id + ' 的指示，之後每一輪都會看到');
         }
         case 'later': {
           if (!arg.trim()) return say(chatId, '用法：/later 訊息');
@@ -499,9 +526,9 @@ exports.start = function start(ctx) {
           return say(chatId, '🕒 已排隊，' + label(a) + ' 做完這輪就會收到');
         }
         case 'cancel': {
-          const t = ctx.tasks.active();
-          if (!t) return say(chatId, '目前沒有進行中的任務。');
-          try { ctx.tasks.stop(t.id); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+          const r = pickTask(arg, null, '在進行');
+          if (r.err) return say(chatId, r.err);
+          try { ctx.tasks.stop(r.t.id); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
           return;
         }
         case 'mute': c.muted = true; ctx.saveState(); return say(chatId, '🔕 已暫停推送，/unmute 恢復');
@@ -517,24 +544,36 @@ exports.start = function start(ctx) {
     if (!atAgent && targetOf(c).standalone) return toStandalone(ctx, cl, targetOf(c), text, msg, 'main');
 
     try {
-    // 任務正在等使用者回覆 → 這則訊息就是回覆
-    const t = ctx.tasks.active();
-    if (t && (t.status === 'waiting_user' || t.status === 'error') && !/^@/.test(text)) {
-      try { ctx.tasks.reply(t.id, await prep(ctx.agentById(t.waitingFor) || targetOf(c), text), 'telegram'); return say(chatId, '✅ 已回覆，任務繼續'); }
+    // 開頭寫 #編號 → 指定那件任務（等回覆就回覆，進行中就插話給正在做的成員）
+    const all = ctx.tasks.actives();
+    const hash = text.match(/^#(\d+)\s+([\s\S]+)$/);
+    let t = null, body = text;
+    if (hash) {
+      t = all.find((x) => x.id === Number(hash[1]));
+      if (!t) return say(chatId, '任務 #' + hash[1] + ' 不是進行中的任務。\n\n' + taskStatusText());
+      body = hash[2].trim();
+    }
+    // 任務正在等使用者回覆 → 這則訊息就是回覆（同時有好幾件在等時，要寫 #編號）
+    const waiting = all.filter((x) => x.status === 'waiting_user' || x.status === 'error');
+    if (!t && !at && waiting.length === 1) t = waiting[0];
+    else if (!t && !at && waiting.length > 1) return say(chatId, '有 ' + waiting.length + ' 件任務在等你回覆，請在開頭加 #編號：\n' + waiting.map((x) => '#' + x.id + ' ' + teamOfTask(x).name + '：' + x.title).join('\n'));
+    if (t && (t.status === 'waiting_user' || t.status === 'error')) {
+      try { ctx.tasks.reply(t.id, await prep(ctx.agentById(t.waitingFor) || targetOf(c), body), 'telegram'); return say(chatId, '✅ 已回覆任務 #' + t.id + '，任務繼續'); }
       catch (e) { return say(chatId, '⚠️ ' + e.message); }
     }
 
     // 開頭寫 @名字 → 直接交給那位，不切換對象
     let agent = targetOf(c);
     if (atAgent) agent = atAgent;
-    // 任務進行中、沒有指定對象：插話給正在工作的成員
-    if (t && t.status === 'running' && !at) {
-      const st = ctx.config.workflow.stages.find((x) => x.id === t.stageId);
-      const w = (st && ctx.runs.has(st.owner) && ctx.agentById(st.owner)) || ctx.agents.find((a) => ctx.runs.has(a.id));
+    // 任務進行中、沒有指定對象：插話給正在工作的成員（只看目前對象所在小組的任務，或 #編號 指定的任務）
+    const rt = t && t.status === 'running' ? t : !at ? all.find((x) => x.status === 'running' && x.teamId === targetOf(c).team) : null;
+    if (rt) {
+      const st = teamOfTask(rt).workflow.stages.find((x) => x.id === rt.stageId);
+      const w = (st && ctx.runs.has(st.owner) && ctx.agentById(st.owner)) || ctx.agents.find((a) => ctx.runs.has(a.id) && a.team === teamOfTask(rt).id);
       if (w) agent = w;
     }
     // 對象正在工作 → 插話（中斷這一輪，帶著指示繼續）
-    const full = await prep(agent, text);
+    const full = await prep(agent, body);
     if (ctx.runs.has(agent.id)) {
       ctx.interject(agent, full, 'telegram');
       return say(chatId, '⚡ 已插話給 ' + label(agent) + '，它會帶著你的指示接著做（不想中斷請用 /later）');

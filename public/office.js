@@ -1,417 +1,437 @@
-// 🏢 卡通虛擬辦公室：把每位成員畫成辦公室裡的角色，依照工作狀態移動與動作
-// 全部用 Canvas 程式繪製（原創造型，不使用外部美術素材）
+// 🏢 等角像素辦公室：每個小組一間辦公室，獨立成員有自己的小隔間，大家共用茶水間・會議室
+// 全部用 Canvas 程式繪製（原創造型，不使用外部美術素材）；低解析度畫好再放大，保持像素感
 'use strict';
 (function () {
-  const W = 1000, H = 640;           // 場景的邏輯尺寸，畫布會等比例縮放
-  const DESK_COLS = 4, DESK_W = 118, DESK_H = 46, ROW0 = 205, ROW_STEP = 150, COL0 = 50, COL_STEP = 152;
-  const CORRIDORS = [150, 285, 435, 590];
-  const PANTRY = { x: 690, y: 110, w: 290, h: 220 };
-  const LOUNGE = { x: 690, y: 360, w: 290, h: 255 };
-  const DOOR = { x: 340, y: 628 };
-  const SHIRTS = ['#e07a5f', '#3d85c6', '#81b29a', '#f2cc8f', '#9b5de5', '#f28482', '#4ea8de', '#e9c46a', '#2a9d8f', '#b5838d'];
-  const HAIRS = ['#3b2a20', '#1f1f1f', '#7a4b2a', '#c98b3c', '#5b3a6e', '#8a3324'];
+  const TWP = 16, THP = 8;            // 一格在低解析度畫布上的大小（等角菱形）
+  const WALL = 34;                     // 外牆高度（像素）
+  const SPEED = { work: 4.2, queue: 3, idle: 1.6, hand: 4 }; // 格/秒
+  const SHIRTS = ['#c8553d', '#3f8f5f', '#3d6fb6', '#e0b43a', '#7a5bb5', '#2f8c8c', '#d4775c', '#5a8fd0', '#9b6b3d', '#b5838d'];
+  const HAIRS = ['#3b2a20', '#1d1d1f', '#6b4226', '#b8572a', '#5b3a29', '#2a2a2a'];
+  const SKINS = ['#f2c9a0', '#e8b58c', '#f5d0b0', '#f0c49b', '#e9be96'];
+  const FLOORS = [['#c49a6c', '#b98f62'], ['#9fb7c9', '#94acbe'], ['#b9c99f', '#aebf94'], ['#c9a9b9', '#bf9eaf'], ['#c9bc9f', '#bfb294'], ['#a9b9c9', '#9eaebf']];
 
-  let canvas, ctx, api = null, running = false, lastT = 0, scale = 1, offX = 0, offY = 0;
-  const chars = new Map();   // agentId -> 角色狀態
-  const effects = [];        // 飛行文件、彩帶、愛心、閃電
-  const imgCache = new Map();
-  let hover = null;
-  const cat = { x: 760, y: 560, tx: 760, ty: 560, wait: 2, sleep: 0, hearts: 0, face: 1 };
+  let host, canvas, ctx, off, g, api = null, running = false, lastT = 0, tip;
+  let L = null, layoutKey = '';
+  const chars = new Map(), effects = [];
+  const cam = { k: 1, x: 0, y: 0, tk: 1, tx: 0, ty: 0, focus: null };
+  let hover = null, pickables = [];
 
   const hash = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.codePointAt(0)) >>> 0; return h; };
   const rand = (a, b) => a + Math.random() * (b - a);
+  const shade = (hex, k) => {
+    const n = parseInt(hex.slice(1), 16); const f = (c) => Math.max(0, Math.min(255, Math.round(k >= 0 ? c + (255 - c) * k : c * (1 + k))));
+    return 'rgb(' + f(n >> 16) + ',' + f((n >> 8) & 255) + ',' + f(n & 255) + ')';
+  };
 
-  // ---------- 位置 ----------
-  function deskPos(i) {
-    const c = i % DESK_COLS, r = Math.floor(i / DESK_COLS);
-    const x = COL0 + c * COL_STEP, y = ROW0 + r * ROW_STEP;
-    return { x, y, seat: { x: x + DESK_W / 2, y: y + 22 } };
-  }
-  const IDLE_SPOTS = [
-    { x: 745, y: 300, label: 'coffee' }, { x: 800, y: 300, label: 'coffee' }, { x: 880, y: 255, label: 'table' },
-    { x: 930, y: 255, label: 'table' }, { x: 905, y: 300, label: 'table' }, { x: 760, y: 470, label: 'sofa' },
-    { x: 815, y: 470, label: 'sofa' }, { x: 610, y: 585, label: 'plant' }, { x: 300, y: 585, label: 'window' },
-    { x: 520, y: 150, label: 'board' },
-  ];
-  const BENCH = (i) => ({ x: 735 + (i % 5) * 50, y: 588 - Math.floor(i / 5) * 18 });
-
-  // 走路路線：辦公區裡先走到「這一排桌子上方的走道」，要換排時走右側的通道（不穿過桌子）；茶水間與休息區可以直接走
-  const HALL = 652;
-  const inDesk = (p) => p.x < 645;
-  function rowCorr(p) {
-    if (p.y < ROW0 - 40) return p.y;
-    const r = Math.max(0, Math.round((p.y - ROW0) / ROW_STEP));
-    return Math.min(H - 30, ROW0 + r * ROW_STEP - 55);
-  }
-  function corridorPath(from, to) {
-    if (!inDesk(from) && !inDesk(to)) return [{ x: to.x, y: to.y }];
-    const pts = [];
-    let cur = { x: from.x, y: from.y };
-    if (inDesk(cur)) { const cy = rowCorr(cur); if (Math.abs(cy - cur.y) > 2) { cur = { x: cur.x, y: cy }; pts.push(cur); } }
-    const ty = inDesk(to) ? rowCorr(to) : to.y;
-    if (!(inDesk(to) && inDesk(cur) && Math.abs(cur.y - ty) < 2)) {
-      pts.push({ x: HALL, y: cur.y }, { x: HALL, y: ty });
+  // ---------- 版面：依小組與成員自動排出辦公室 ----------
+  // 每一排（band）放幾間小組辦公室，排與排之間是走廊；最右邊有一條直向走廊把各排連起來；最下面一排是記帳亭等獨立成員的小隔間與茶水間
+  function buildLayout(st) {
+    const teams = st.teams.length ? st.teams : [{ id: '_', name: '辦公室', icon: '🏢' }];
+    const members = (tid) => st.agents.filter((a) => !a.standalone && (a.team === tid || (tid === teams[0].id && !teams.some((t) => t.id === a.team))));
+    const solos = st.agents.filter((a) => a.standalone);
+    const MAXW = 30, HALL = 2;
+    const rooms = [], desks = new Map(), bands = [];
+    let y = 0, row = [], rowW = 0;
+    const flush = () => {
+      if (!row.length) return;
+      const h = Math.max(...row.map((r) => r.h));
+      let x = 0;
+      for (const r of row) { r.x = x; r.y = y; r.h = h; x += r.w; rooms.push(r); }
+      bands.push({ y, h, hallY: y + h + HALL / 2, w: x });
+      y += h + HALL; row = []; rowW = 0;
+    };
+    teams.forEach((t, i) => {
+      const m = members(t.id), cols = Math.min(3, Math.max(2, m.length)), rows = Math.max(1, Math.ceil(m.length / 3));
+      const r = { kind: 'team', id: t.id, team: t, name: (t.icon || '🏢') + ' ' + t.name, w: 1 + cols * 4, h: 3 * rows + 3, rows, floor: FLOORS[i % FLOORS.length], members: m };
+      if (rowW + r.w > MAXW && row.length) flush();
+      row.push(r); rowW += r.w;
+    });
+    flush();
+    const teamW = Math.max(...bands.map((b) => b.w));
+    // 最下面一排：獨立成員的小隔間＋茶水間
+    const bottomY = y, bh = 8;
+    let x = 0;
+    for (const a of solos) { rooms.push({ kind: 'booth', id: 'booth-' + a.id, name: (a.avatar && !String(a.avatar).startsWith('img:') ? a.avatar : '🧍') + ' ' + a.name, x, y: bottomY, w: 6, h: bh, floor: ['#d8c58f', '#cdb984'], members: [a] }); x += 6; }
+    const loungeW = Math.max(12, teamW - x);
+    rooms.push({ kind: 'lounge', id: 'lounge', name: '☕ 茶水間・會議室', x, y: bottomY, w: loungeW, h: bh, floor: ['#b9b2c9', '#aea6bf'], members: [] });
+    const W = Math.max(teamW, x + loungeW) + 2, H = bottomY + bh;
+    const eastX = W - 1;
+    // 每間辦公室：門、桌子、座位、走道
+    for (const r of rooms) {
+      if (r.kind === 'team') {
+        const band = bands.find((b) => b.y === r.y);
+        r.door = { x: r.x + Math.floor(r.w / 2) + 0.5, side: 'S' }; r.hallY = band.hallY;
+        r.corrY = r.y + r.h - 0.9; r.aisleX = r.x + 0.6;
+        r.members.forEach((a, i) => {
+          const c = i % 3, rr = Math.floor(i / 3);
+          const d = { x: r.x + 1.5 + c * 4, y: r.y + 1.2 + rr * 3, room: r };
+          d.seat = { x: d.x + 1, y: d.y + 1.3 }; d.aisle = d.y + 2.2;
+          desks.set(a.id, d);
+        });
+      } else {
+        r.door = { x: r.x + Math.floor(r.w / 2) + 0.5, side: 'N' }; r.hallY = bands.length ? bands[bands.length - 1].hallY : r.y - 1;
+        r.corrY = r.y + 1.0;
+        if (r.kind === 'booth') { const a = r.members[0]; const d = { x: r.x + 2, y: r.y + 3, room: r }; d.seat = { x: d.x + 1, y: d.y + 1.3 }; d.aisle = d.y + 2.3; desks.set(a.id, d); }
+      }
     }
-    pts.push({ x: to.x, y: ty });
-    if (Math.abs(ty - to.y) > 2) pts.push({ x: to.x, y: to.y });
+    const lounge = rooms.find((r) => r.kind === 'lounge');
+    const lx = lounge.x, ly = lounge.y;
+    lounge.spots = [
+      { x: lx + 2.2, y: ly + 2.6, label: 'coffee' }, { x: lx + 3.4, y: ly + 2.6, label: 'coffee' },
+      { x: lx + 2.6, y: ly + 6.4, label: 'sofa' }, { x: lx + 3.8, y: ly + 6.4, label: 'sofa' }, { x: lx + 5, y: ly + 6.4, label: 'sofa' },
+      ...[0, 1, 2].map((i) => ({ x: lx + 7.7 + i * 1.3, y: ly + 2.9, label: 'meet' })), ...[0, 1, 2].map((i) => ({ x: lx + 7.7 + i * 1.3, y: ly + 6.0, label: 'meet' })),
+    ].filter((s) => s.x < lx + lounge.w - 0.8);
+    lounge.bench = (i) => ({ x: lx + lounge.w - 1.4 - (i % 6) * 0.9, y: ly + 1.6 + Math.floor(i / 6) * 0.9 });
+    return { rooms, desks, bands, W, H, eastX, lounge };
+  }
+  const roomAt = (p) => L.rooms.find((r) => p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h);
+  // 走路路線（曼哈頓）：房間裡先走到走道 → 門 → 走廊（必要時經過東側直向走廊）→ 目的地房間的門 → 走道 → 目的地
+  function route(from, to) {
+    const ra = roomAt(from), rb = roomAt(to), pts = [];
+    const exitRoom = (p, r) => {
+      if (!r) return p;
+      if (r.kind === 'team') {
+        const d = [...L.desks.values()].find((k) => k.room === r && Math.abs(k.seat.x - p.x) < 0.01 && Math.abs(k.seat.y - p.y) < 0.01);
+        if (d) { pts.push({ x: p.x, y: d.aisle }); p = { x: p.x, y: d.aisle }; if (Math.abs(d.aisle - r.corrY) > 0.3) { pts.push({ x: r.aisleX, y: d.aisle }, { x: r.aisleX, y: r.corrY }); p = { x: r.aisleX, y: r.corrY }; } }
+        pts.push({ x: p.x, y: r.corrY }, { x: r.door.x, y: r.corrY }, { x: r.door.x, y: r.hallY });
+      } else { pts.push({ x: p.x, y: r.corrY }, { x: r.door.x, y: r.corrY }, { x: r.door.x, y: r.hallY }); }
+      return { x: r.door.x, y: r.hallY };
+    };
+    const enterRoom = (r, p) => {
+      if (r.kind === 'team') {
+        const d = [...L.desks.values()].find((k) => k.room === r && Math.abs(k.seat.x - p.x) < 0.01 && Math.abs(k.seat.y - p.y) < 0.01);
+        pts.push({ x: r.door.x, y: r.corrY });
+        if (d && Math.abs(d.aisle - r.corrY) > 0.3) pts.push({ x: r.aisleX, y: r.corrY }, { x: r.aisleX, y: d.aisle }, { x: p.x, y: d.aisle });
+        else pts.push({ x: p.x, y: d ? d.aisle : r.corrY });
+        pts.push(p);
+      } else { pts.push({ x: r.door.x, y: r.corrY }, { x: p.x, y: r.corrY }, p); }
+    };
+    if (ra && ra === rb) {
+      if (ra.kind === 'team') {
+        const da = [...L.desks.values()].find((k) => k.room === ra && k.seat.x === from.x && k.seat.y === from.y);
+        const db = [...L.desks.values()].find((k) => k.room === rb && k.seat.x === to.x && k.seat.y === to.y);
+        const ya = da ? da.aisle : from.y, yb = db ? db.aisle : to.y;
+        pts.push({ x: from.x, y: ya });
+        if (Math.abs(ya - yb) > 0.3) pts.push({ x: ra.aisleX, y: ya }, { x: ra.aisleX, y: yb });
+        pts.push({ x: to.x, y: yb }, to);
+      } else pts.push({ x: from.x, y: to.y }, to);
+      return pts;
+    }
+    let p = exitRoom(from, ra);
+    const hy = rb ? rb.hallY : p.y;
+    if (Math.abs(p.y - hy) > 0.3) { pts.push({ x: L.eastX, y: p.y }, { x: L.eastX, y: hy }); p = { x: L.eastX, y: hy }; }
+    if (rb) { pts.push({ x: rb.door.x, y: hy }); enterRoom(rb, to); } else pts.push(to);
     return pts;
   }
 
   // ---------- 角色 ----------
-  function ensureChar(a, i) {
+  function ensureChar(a) {
     let c = chars.get(a.id);
+    const desk = L.desks.get(a.id);
     if (!c) {
-      const h = hash(a.id);
-      const start = { x: DOOR.x + rand(-20, 20), y: DOOR.y };
-      c = { id: a.id, x: start.x, y: start.y, path: [], mode: 'idle', spot: null, dwell: rand(1, 4), phase: rand(0, 6),
-        shirt: SHIRTS[h % SHIRTS.length], hair: HAIRS[(h >> 3) % HAIRS.length], bubble: null, face: 1, sitting: false };
+      const h = hash(a.id), av = String(a.avatar || '');
+      c = { id: a.id, x: desk ? desk.seat.x : L.lounge.x + 2, y: desk ? desk.seat.y : L.lounge.y + 3, path: [], mode: 'idle', dwell: rand(2, 8), phase: rand(0, 6),
+        shirt: SHIRTS[h % SHIRTS.length], hair: HAIRS[(h >> 3) % HAIRS.length], skin: SKINS[(h >> 6) % SKINS.length],
+        hat: /🎩|🤠|👒/.test(av), glasses: /🤓|👓|📜|🔍/.test(av), bun: (h >> 9) % 4 === 0, bubble: null, dir: 'up', spot: null };
       chars.set(a.id, c);
     }
-    c.agent = a; c.index = i; c.desk = deskPos(i);
+    c.agent = a; c.desk = desk;
     return c;
   }
-  function goTo(c, target) {
+  function goTo(c, target, mode) {
     const last = c.path.length ? c.path[c.path.length - 1] : { x: c.x, y: c.y };
-    if (Math.hypot(last.x - target.x, last.y - target.y) < 4) return;
-    c.path = corridorPath({ x: c.x, y: c.y }, target);
-    c.sitting = false;
+    if (Math.abs(last.x - target.x) + Math.abs(last.y - target.y) < 0.05) return;
+    c.path = route({ x: c.x, y: c.y }, target); c.walkMode = mode || c.mode;
   }
   function say(c, text, secs, kind) { c.bubble = { text: String(text || ''), until: performance.now() + (secs || 5) * 1000, kind: kind || 'talk' }; }
+  const atSeat = (c) => c.desk && Math.abs(c.x - c.desk.seat.x) < 0.05 && Math.abs(c.y - c.desk.seat.y) < 0.05;
 
-  function updateChar(c, dt, queueIndex) {
+  function updateChar(c, dt, qi) {
     const a = c.agent;
-    let mode = a.busy ? 'work' : a.queued ? 'queue' : 'idle';
+    const mode = c.handoff ? 'hand' : a.busy ? 'work' : a.queued ? 'queue' : 'idle';
     if (mode !== c.mode) {
-      c.mode = mode; c.spot = null; c.dwell = 0;
-      if (mode === 'work') goTo(c, c.desk.seat);
-      if (mode === 'queue') goTo(c, BENCH(queueIndex));
+      c.mode = mode; c.spot = null; c.dwell = rand(4, 10);
+      if (mode === 'work' && c.desk) goTo(c, c.desk.seat, 'work');
+      if (mode === 'queue') goTo(c, L.lounge.bench(qi), 'queue');
+      if (mode === 'idle' && c.desk && !atSeat(c)) goTo(c, c.desk.seat, 'idle');
     }
-    if (mode === 'queue' && !c.path.length) { const b = BENCH(queueIndex); if (Math.hypot(b.x - c.x, b.y - c.y) > 4) goTo(c, b); }
-    if (mode === 'idle') {
+    if (mode === 'hand' && !c.path.length) {
+      c.handoff.wait -= dt;
+      if (c.handoff.wait <= 0) { c.handoff = null; c.mode = 'idle'; if (c.desk) goTo(c, c.desk.seat, 'idle'); }
+    }
+    if (mode === 'idle' && !c.path.length) {
       c.dwell -= dt;
-      if (!c.path.length && c.dwell <= 0) {
-        const spots = IDLE_SPOTS.filter((s) => ![...chars.values()].some((o) => o !== c && o.spot === s));
-        c.spot = spots[Math.floor(Math.random() * spots.length)] || IDLE_SPOTS[0];
-        goTo(c, c.spot); c.dwell = rand(6, 14);
-        if (c.spot.label === 'coffee' && Math.random() < 0.5) say(c, '☕', 3, 'icon');
+      if (c.dwell <= 0) { // 沒事時偶爾去茶水間，大部分時間待在位子上
+        c.dwell = rand(10, 22);
+        if (c.spot || !c.desk || Math.random() < 0.45) {
+          const taken = new Set([...chars.values()].filter((o) => o !== c && o.spot).map((o) => o.spot));
+          const free = L.lounge.spots.filter((s) => !taken.has(s));
+          if (!c.spot && free.length && Math.random() < 0.8) { c.spot = free[Math.floor(Math.random() * free.length)]; goTo(c, c.spot, 'idle'); if (c.spot.label === 'coffee') say(c, '☕', 3, 'icon'); }
+          else if (c.desk) { c.spot = null; goTo(c, c.desk.seat, 'idle'); }
+        }
       }
     }
-    // 走路
     if (c.path.length) {
-      const p = c.path[0], dx = p.x - c.x, dy = p.y - c.y, d = Math.hypot(dx, dy), step = (c.mode === 'work' ? 420 : c.mode === 'queue' ? 220 : 110) * dt;
-      if (Math.abs(dx) > 1) c.face = dx > 0 ? 1 : -1;
-      if (d <= step) { c.x = p.x; c.y = p.y; c.path.shift(); } else { c.x += (dx / d) * step; c.y += (dy / d) * step; }
+      const p = c.path[0], dx = p.x - c.x, dy = p.y - c.y, d = Math.abs(dx) + Math.abs(dy), step = (SPEED[c.walkMode] || SPEED.idle) * dt;
+      c.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
+      if (d <= step) { c.x = p.x; c.y = p.y; c.path.shift(); }
+      else if (Math.abs(dx) > 0.001) c.x += Math.sign(dx) * Math.min(step, Math.abs(dx));
+      else c.y += Math.sign(dy) * Math.min(step, Math.abs(dy));
       c.walking = true;
     } else c.walking = false;
-    c.sitting = mode === 'work' && !c.path.length;
+    c.sitting = !c.walking && atSeat(c);
+    if (c.sitting) c.dir = 'up';
+    else if (!c.walking && c.spot && c.spot.label === 'sofa') c.dir = 'down';
     c.phase += dt;
   }
 
-  // ---------- 繪圖小工具 ----------
-  function rr(x, y, w, h, r, fill, stroke) {
-    ctx.beginPath(); ctx.roundRect(x, y, w, h, r);
-    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
-    if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke(); }
+  // ---------- 繪圖（低解析度畫布）----------
+  let iso = null;
+  const P = (x, y, z = 0) => ({ x: iso.ox + (x - y) * TWP / 2, y: iso.oy + (x + y) * THP / 2 - z });
+  function quad(pts, fill) { g.beginPath(); pts.forEach((p, i) => (i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y))); g.closePath(); g.fillStyle = fill; g.fill(); }
+  function box(x, y, w, d, h, z, col) {
+    const a = P(x, y, z + h), b = P(x + w, y, z + h), c = P(x + w, y + d, z + h), e = P(x, y + d, z + h);
+    const b0 = P(x + w, y, z), c0 = P(x + w, y + d, z), e0 = P(x, y + d, z);
+    quad([e, c, c0, e0], shade(col, -0.15)); quad([c, b, b0, c0], shade(col, -0.35)); quad([a, b, c, e], shade(col, 0.15));
   }
-  function circle(x, y, r, fill, stroke) {
-    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
-    if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke(); }
+  function person(c, t) {
+    const q = P(c.x, c.y, 0); const step = c.walking ? Math.floor(t * 8) % 2 : 0;
+    const x = Math.round(q.x), y = Math.round(q.y);
+    const R = (dx, dy, w, h, col) => { g.fillStyle = col; g.fillRect(x + dx, y + dy, w, h); };
+    R(-4, -1, 8, 2, 'rgba(0,0,0,.28)');
+    const sit = c.sitting || (!c.walking && c.spot && c.spot.label !== 'coffee'), lift = sit ? 3 : 0;
+    const typing = c.sitting && c.agent.busy ? (Math.floor(t * 6) % 2) : 0;
+    if (!sit) { R(-3, -4, 2, 4 - step, '#2d3047'); R(1, -4, 2, 3 + step, '#2d3047'); }
+    R(-4, -10 + lift, 8, 6, c.shirt); R(-5, -9 + lift - typing, 1, 4, c.skin); R(4, -9 + lift - (1 - typing) * (c.sitting && c.agent.busy ? 1 : 0), 1, 4, c.skin);
+    R(-3, -16 + lift, 6, 6, c.skin); R(-3, -17 + lift, 6, c.dir === 'up' ? 6 : 3, c.hair);
+    if (c.dir !== 'up') { R(-2, -13 + lift, 1, 1, '#222'); R(1, -13 + lift, 1, 1, '#222'); if (c.glasses) R(-3, -14 + lift, 6, 1, '#333'); }
+    if (c.hat) { R(-4, -18 + lift, 8, 1, '#1b1b22'); R(-2, -22 + lift, 4, 4, '#1b1b22'); R(-2, -19 + lift, 4, 1, '#a33'); }
+    else if (c.bun) R(-1, -19 + lift, 2, 2, c.hair);
+    if (c.handoff || c.carrying) R(4, -9, 3, 4, '#f4f1e6');
+    return { x, y: y - 22 + lift };
   }
-  function text(t, x, y, size, color, align, weight) {
-    ctx.font = (weight || '600') + ' ' + size + 'px "Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif';
-    ctx.fillStyle = color; ctx.textAlign = align || 'center'; ctx.textBaseline = 'middle'; ctx.fillText(t, x, y);
-  }
-  function emoji(e, x, y, size) {
-    ctx.font = size + 'px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(e, x, y + 1);
-  }
-  const INK = '#3a2f2a';
+  function plant(x, y) { box(x, y, 0.6, 0.6, 5, 0, '#b5651d'); const q = P(x + 0.3, y + 0.3, 12); g.fillStyle = '#3e8e41'; g.beginPath(); g.ellipse(q.x, q.y, 6, 7, 0, 0, 7); g.fill(); g.fillStyle = '#58b05c'; g.fillRect(Math.round(q.x - 2), Math.round(q.y - 5), 3, 3); }
 
-  // ---------- 場景 ----------
-  function skyColor() {
-    const h = new Date().getHours() + new Date().getMinutes() / 60;
-    if (h < 5 || h >= 20) return ['#1d2b53', '#2c3e70'];
-    if (h < 7) return ['#f6b38e', '#9ec5e8'];
-    if (h < 17) return ['#8fd3ff', '#cdeeff'];
-    if (h < 19) return ['#ffb36b', '#ffd9a0'];
-    return ['#5b4b8a', '#c58db0'];
-  }
-  function drawRoom() {
-    // 地板
-    ctx.fillStyle = '#e9d7b9'; ctx.fillRect(0, 0, W, H);
-    for (let y = 95; y < H; y += 32) for (let x = 0; x < 670; x += 64) {
-      ctx.fillStyle = ((x / 64 + y / 32) % 2 < 1) ? '#e4cfae' : '#ead9bd'; ctx.fillRect(x + ((y / 32) % 2 ? 32 : 0), y, 64, 32);
+  function render(t, night) {
+    const W = L.W, H = L.H;
+    const pad = 12;
+    off.width = (W + H) * TWP / 2 + pad * 2; off.height = (W + H) * THP / 2 + WALL + pad * 2 + 6;
+    iso = { ox: pad + H * TWP / 2, oy: pad + WALL };
+    g.clearRect(0, 0, off.width, off.height);
+    // 地板：辦公室各自的顏色，走廊灰色
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const r = L.rooms.find((k) => x >= k.x && x < k.x + k.w && y >= k.y && y < k.y + k.h);
+      quad([P(x, y), P(x + 1, y), P(x + 1, y + 1), P(x, y + 1)], r ? r.floor[(x + y) % 2] : ((x + y) % 2 ? '#8a8a92' : '#838390'));
     }
-    // 茶水間與休息區地板
-    ctx.fillStyle = '#d7e8e0'; ctx.fillRect(670, 95, 330, H - 95);
-    for (let y = 95; y < H; y += 28) for (let x = 670; x < W; x += 28) { if ((x + y) % 56 === 0) { ctx.fillStyle = '#cbe0d6'; ctx.fillRect(x, y, 28, 28); } }
-    // 牆
-    rr(0, 0, W, 95, 0, '#f7efe2'); ctx.fillStyle = '#d9c7ab'; ctx.fillRect(0, 88, W, 7);
-    ctx.fillStyle = '#c9b490'; ctx.fillRect(668, 95, 4, H - 95);
-    // 窗戶
-    const [s1, s2] = skyColor();
-    for (const wx of [40, 200, 820]) {
-      const g = ctx.createLinearGradient(0, 14, 0, 70); g.addColorStop(0, s1); g.addColorStop(1, s2);
-      rr(wx, 14, 120, 58, 6, g, INK); ctx.fillStyle = INK; ctx.fillRect(wx + 59, 14, 2, 58); ctx.fillRect(wx, 42, 120, 2);
-      const night = s1 === '#1d2b53';
-      if (night) { ctx.fillStyle = '#fff6c2'; circle(wx + 95, 28, 6, '#fff6c2'); } else { circle(wx + 25, 30, 7, '#fff7d6'); }
+    // 外牆（後方兩面）與窗戶
+    quad([P(0, 0), P(W, 0), P(W, 0, WALL), P(0, 0, WALL)], night ? '#5c5870' : '#e8dcc6');
+    quad([P(0, 0), P(0, H), P(0, H, WALL), P(0, 0, WALL)], night ? '#4e4a62' : '#d6c6ab');
+    for (let wx = 2; wx + 2.4 < W - 2; wx += 6.5) {
+      const q = [P(wx, 0, 10), P(wx + 2.4, 0, 10), P(wx + 2.4, 0, 28), P(wx, 0, 28)];
+      g.beginPath(); q.forEach((p, i) => (i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y))); g.closePath();
+      const gr = g.createLinearGradient(0, q[3].y, 0, q[0].y); gr.addColorStop(0, night ? '#1a2250' : '#7cc6f2'); gr.addColorStop(1, night ? '#2c3a78' : '#cdeefe');
+      g.fillStyle = gr; g.fill(); g.strokeStyle = '#7a5a3e'; g.lineWidth = 2; g.stroke();
     }
-    drawBoard(); drawClock(700, 40);
-    // 茶水間
-    rr(PANTRY.x + 10, PANTRY.y + 12, 200, 40, 6, '#b08968', INK);            // 流理台
-    rr(PANTRY.x + 25, PANTRY.y - 2, 38, 44, 6, '#5c6b73', INK);              // 咖啡機
-    circle(PANTRY.x + 44, PANTRY.y + 14, 6, '#2b2d42'); ctx.fillStyle = '#e63946'; ctx.fillRect(PANTRY.x + 54, PANTRY.y + 4, 4, 4);
-    rr(PANTRY.x + 90, PANTRY.y + 24, 18, 16, 3, '#ffffff', INK); emoji('☕', PANTRY.x + 140, PANTRY.y + 30, 18);
-    rr(PANTRY.x + 225, PANTRY.y - 15, 50, 85, 6, '#e9f1f7', INK);              // 冰箱
-    ctx.fillStyle = INK; ctx.fillRect(PANTRY.x + 228, PANTRY.y + 18, 44, 2); ctx.fillRect(PANTRY.x + 265, PANTRY.y, 3, 12);
-    circle(PANTRY.x + 210, PANTRY.y + 140, 34, '#f4e1c1', INK);              // 圓桌
-    text('茶水間', PANTRY.x + 60, PANTRY.y + 70, 13, '#6b5b4b');
-    // 休息區
-    rr(LOUNGE.x + 30, LOUNGE.y + 70, 150, 40, 12, '#8ecae6', INK); rr(LOUNGE.x + 30, LOUNGE.y + 55, 150, 22, 10, '#6fb3d6', INK); // 沙發
-    rr(LOUNGE.x + 210, LOUNGE.y + 65, 50, 34, 6, '#c9a27e', INK);             // 茶几
-    rr(LOUNGE.x + 25, LOUNGE.y + 215, 260, 16, 6, '#a47551', INK);            // 等候長椅
-    text('等候區', LOUNGE.x + 150, LOUNGE.y + 196, 12, '#6b5b4b');
-    plant(LOUNGE.x + 265, LOUNGE.y + 30); plant(640, 600); plant(25, 600); plant(980, 120);
-    // 門口與信箱
-    rr(DOOR.x - 40, H - 10, 80, 10, 2, '#a47551'); emoji('📮', DOOR.x + 60, H - 22, 20);
-  }
-  function plant(x, y) {
-    rr(x - 12, y - 4, 24, 20, 4, '#c97b4a', INK);
-    for (const [dx, dy, r] of [[0, -16, 12], [-10, -8, 9], [10, -9, 9]]) circle(x + dx, y + dy, r, '#5aa36b', INK);
-  }
-  function drawClock(x, y) {
-    circle(x, y, 20, '#fffdf7', INK);
-    const d = new Date(), h = (d.getHours() % 12) + d.getMinutes() / 60, m = d.getMinutes();
-    ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x, y);
-    ctx.lineTo(x + Math.sin(h / 12 * Math.PI * 2) * 10, y - Math.cos(h / 12 * Math.PI * 2) * 10); ctx.stroke();
-    ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x, y);
-    ctx.lineTo(x + Math.sin(m / 60 * Math.PI * 2) * 15, y - Math.cos(m / 60 * Math.PI * 2) * 15); ctx.stroke();
-  }
-  function drawBoard() {
-    const x = 360, y = 10, w = 290, h = 74;
-    rr(x, y, w, h, 6, '#ffffff', INK); ctx.fillStyle = '#a3a3a3'; ctx.fillRect(x + 10, y + h - 4, w - 20, 4);
-    const st = api.state(), t = st.task, stages = (st.workflow && st.workflow.stages) || [];
-    if (!t) { text('📋 目前沒有任務', x + w / 2, y + 26, 14, '#555'); text('在下方輸入目標就能開始', x + w / 2, y + 50, 11, '#888', 'center', '400'); return; }
-    text('📋 #' + t.id + ' ' + (t.title.length > 16 ? t.title.slice(0, 16) + '…' : t.title), x + 10, y + 18, 13, INK, 'left');
-    const n = Math.max(1, stages.length), cw = (w - 20) / n;
-    stages.forEach((s, i) => {
-      const cx = x + 10 + i * cw, cur = s.id === t.stageId && t.status !== 'done', done = t.status === 'done' || (t.done || []).includes(s.id);
-      rr(cx + 2, y + 34, cw - 4, 22, 6, cur ? '#ffd166' : done ? '#b7e4c7' : '#eeeeee', INK);
-      text((done && !cur ? '✓' : '') + s.name, cx + cw / 2, y + 45, 11, INK);
-    });
-    const label = { running: '進行中', awaiting_approval: '等你核准', waiting_user: '等你回覆', done: '完成 🎉', error: '暫停', stopped: '已停止' }[t.status] || '';
-    text(label, x + w - 10, y + 18, 11, t.status === 'awaiting_approval' || t.status === 'waiting_user' ? '#c1121f' : '#555', 'right');
-  }
-  function drawDesk(c) {
-    const { x, y } = c.desk, a = c.agent, working = c.sitting;
-    rr(x, y, DESK_W, DESK_H, 6, '#c8a27a', INK);                               // 桌面
-    ctx.fillStyle = '#a98461'; ctx.fillRect(x + 4, y + DESK_H - 8, DESK_W - 8, 6);
-    // 螢幕
-    rr(x + 12, y + 4, 44, 28, 4, '#2b2d42', INK);
-    if (working) {
-      ctx.fillStyle = a.stalled ? '#ffb4a2' : '#9ef0c2';
-      for (let i = 0; i < 4; i++) { const w = 10 + ((Math.sin(c.phase * 6 + i) + 1) * 12); ctx.fillRect(x + 16, y + 8 + i * 6, w, 3); }
-    } else { ctx.fillStyle = '#4a4e69'; ctx.fillRect(x + 15, y + 7, 38, 22); }
-    rr(x + 30, y + 32, 8, 6, 1, '#555');
-    rr(x + 64, y + 14, 34, 14, 3, '#f1f1f1', INK);                             // 鍵盤
-    emoji(a.engine === 'codex' ? '📘' : '📙', x + 104, y + 30, 14);
-    // 名牌
-    rr(x + 24, y + DESK_H + 4, DESK_W - 48, 16, 8, '#fffdf7', INK);
-    text(a.name.length > 8 ? a.name.slice(0, 8) + '…' : a.name, x + DESK_W / 2, y + DESK_H + 12, 11, INK);
-  }
-
-  function headImage(src) {
-    if (!imgCache.has(src)) { const im = new Image(); im.src = src; imgCache.set(src, im); }
-    return imgCache.get(src);
-  }
-  function drawChar(c) {
-    const a = c.agent, x = c.x, bob = c.walking ? Math.abs(Math.sin(c.phase * 10)) * 3 : 0;
-    const baseY = c.y - (c.sitting ? 6 : 0);
-    // 影子
-    ctx.fillStyle = 'rgba(0,0,0,.15)'; ctx.beginPath(); ctx.ellipse(x, c.y + 2, 16, 5, 0, 0, Math.PI * 2); ctx.fill();
-    // 腳
-    if (!c.sitting) {
-      const sw = c.walking ? Math.sin(c.phase * 10) * 5 : 0;
-      rr(x - 9 + sw, baseY - 12, 7, 12, 3, '#3d405b'); rr(x + 2 - sw, baseY - 12, 7, 12, 3, '#3d405b');
-    }
-    const by = baseY - 12 - bob;
-    // 身體
-    rr(x - 14, by - 26, 28, 28, 10, c.shirt, INK);
-    // 手（工作時打字）
-    const typing = c.sitting ? Math.sin(c.phase * 14) * 2 : 0;
-    circle(x - 15, by - 10 + typing, 5, '#f1c9a5', INK); circle(x + 15, by - 10 - typing, 5, '#f1c9a5', INK);
-    // 頭（就是成員的頭像）
-    const hy = by - 42;
-    circle(x, hy, 19, '#fffdf7', INK);
-    const av = a.avatar || '🤖';
-    if (av.startsWith('img:')) {
-      const im = headImage(api.avatarUrl(av));
-      if (im.complete && im.naturalWidth) { ctx.save(); ctx.beginPath(); ctx.arc(x, hy, 17, 0, Math.PI * 2); ctx.clip(); ctx.drawImage(im, x - 17, hy - 17, 34, 34); ctx.restore(); }
-    } else emoji(av, x, hy, 24);
-    // 狀態小圖示
-    if (a.stalled) { emoji('💦', x + 18, hy - 14, 14); text('!', x - 20, hy - 18, 20, '#c1121f', 'center', '900'); }
-    // 名字（不在座位上時顯示）
-    if (!c.sitting) { rr(x - 30, c.y + 6, 60, 15, 7, 'rgba(255,253,247,.9)'); text(a.name.length > 7 ? a.name.slice(0, 7) + '…' : a.name, x, c.y + 13, 10, INK); }
-    // 泡泡
-    const now = performance.now();
-    let b = c.bubble && c.bubble.until > now ? c.bubble : null;
-    if (!b && c.mode === 'queue') b = { text: '🕒', kind: 'icon' };
-    if (!b && a.stalled) b = { text: '😰 好像卡住了…', kind: 'warn' };
-    if (b) bubble(x, hy - 26, b);
-    if (hover === c) { ctx.strokeStyle = '#e07a5f'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, hy, 23, 0, Math.PI * 2); ctx.stroke(); }
-  }
-  function bubble(x, y, b) {
-    const t = b.text.length > 22 ? b.text.slice(0, 22) + '…' : b.text;
-    ctx.font = '600 12px "Noto Sans TC","Microsoft JhengHei",sans-serif';
-    const w = Math.min(220, ctx.measureText(t).width + 18), bx = Math.max(4, Math.min(W - w - 4, x - w / 2));
-    rr(bx, y - 26, w, 24, 10, b.kind === 'warn' ? '#ffe5e0' : '#ffffff', INK);
-    ctx.beginPath(); ctx.moveTo(x - 5, y - 3); ctx.lineTo(x + 5, y - 3); ctx.lineTo(x, y + 4); ctx.closePath(); ctx.fillStyle = b.kind === 'warn' ? '#ffe5e0' : '#ffffff'; ctx.fill();
-    text(t, bx + w / 2, y - 14, 12, INK);
-  }
-
-  function drawCat(dt) {
-    cat.wait -= dt;
-    const d = Math.hypot(cat.tx - cat.x, cat.ty - cat.y);
-    if (d > 2) { const s = 40 * dt; cat.face = cat.tx > cat.x ? 1 : -1; cat.x += (cat.tx - cat.x) / d * Math.min(s, d); cat.y += (cat.ty - cat.y) / d * Math.min(s, d); }
-    else if (cat.wait <= 0) {
-      const idle = [...chars.values()].filter((c) => c.mode === 'idle' && !c.walking);
-      if (idle.length && Math.random() < 0.5) { const o = idle[Math.floor(Math.random() * idle.length)]; cat.tx = o.x + 25; cat.ty = o.y + 8; }
-      else { cat.tx = rand(700, 970); cat.ty = rand(380, 600); }
-      cat.wait = rand(5, 12);
-    }
-    const sleeping = d <= 2 && cat.wait > 3;
-    ctx.save(); ctx.translate(cat.x, cat.y); ctx.scale(cat.face, 1);
-    ctx.fillStyle = 'rgba(0,0,0,.12)'; ctx.beginPath(); ctx.ellipse(0, 3, 14, 4, 0, 0, Math.PI * 2); ctx.fill();
-    rr(-12, -12, 22, 13, 7, '#f4a261', INK);                                    // 身體
-    circle(10, -14, 8, '#f4a261', INK);                                         // 頭
-    ctx.fillStyle = '#f4a261'; ctx.strokeStyle = INK; ctx.lineWidth = 2;
-    for (const ex of [6, 13]) { ctx.beginPath(); ctx.moveTo(ex - 3, -19); ctx.lineTo(ex, -26); ctx.lineTo(ex + 3, -19); ctx.closePath(); ctx.fill(); ctx.stroke(); }
-    ctx.beginPath(); ctx.moveTo(-12, -8); ctx.quadraticCurveTo(-22, -16 + Math.sin(performance.now() / 300) * 3, -18, -22); ctx.stroke();
-    if (sleeping) { ctx.restore(); emoji('💤', cat.x + 10, cat.y - 30, 12); } else ctx.restore();
-  }
-
-  // ---------- 特效 ----------
-  function addPaper(from, to) { effects.push({ type: 'paper', from: { ...from }, to: { ...to }, t: 0, dur: 1.3 }); }
-  function addConfetti(x, y) { for (let i = 0; i < 40; i++) effects.push({ type: 'confetti', x, y, vx: rand(-120, 120), vy: rand(-260, -80), t: 0, dur: rand(1.2, 2), color: SHIRTS[i % SHIRTS.length] }); }
-  function drawEffects(dt) {
-    for (let i = effects.length - 1; i >= 0; i--) {
-      const e = effects[i]; e.t += dt;
-      if (e.t >= e.dur) { effects.splice(i, 1); continue; }
-      const k = e.t / e.dur;
-      if (e.type === 'paper') {
-        const x = e.from.x + (e.to.x - e.from.x) * k, y = e.from.y + (e.to.y - e.from.y) * k - Math.sin(k * Math.PI) * 90;
-        ctx.save(); ctx.translate(x, y); ctx.rotate(Math.sin(k * 12) * 0.3); emoji('📄', 0, 0, 22); ctx.restore();
-      } else if (e.type === 'confetti') {
-        e.vy += 380 * dt; e.x += e.vx * dt; e.y += e.vy * dt;
-        ctx.fillStyle = e.color; ctx.fillRect(e.x, e.y, 6, 4);
-      } else if (e.type === 'float') {
-        emoji(e.icon, e.x, e.y - k * 40, 18);
+    for (const r of L.rooms) if (r.x === 0 && r.kind === 'team') quad([P(0, r.y + 1, 10), P(0, r.y + Math.min(r.h - 1, 4), 10), P(0, r.y + Math.min(r.h - 1, 4), 26), P(0, r.y + 1, 26)], '#fbfbf6'); // 白板
+    const items = [];
+    // 矮隔間（門口留空）：每段一格，方便前後排序
+    for (const r of L.rooms) {
+      const door = (i) => Math.abs(i + 0.5 - r.door.x) < 1.01;
+      for (let i = r.x; i < r.x + r.w; i++) {
+        if (!(r.door.side === 'S' && door(i)) && r.y + r.h < H) items.push({ k: i + r.y + r.h, f: ((i) => () => box(i, r.y + r.h - 0.2, 1, 0.2, 8, 0, '#e2d5bd'))(i) });
+        if (r.y > 0 && !(r.door.side === 'N' && door(i))) items.push({ k: i + r.y + 0.2, f: ((i) => () => box(i, r.y, 1, 0.2, 8, 0, '#e2d5bd'))(i) });
       }
+      if (r.x + r.w < W) for (let j = r.y; j < r.y + r.h; j++) items.push({ k: r.x + r.w + j + 1, f: ((j) => () => box(r.x + r.w - 0.2, j, 0.2, 1, 8, 0, '#e2d5bd'))(j) });
     }
+    // 桌子
+    for (const [id, d] of L.desks) {
+      const c = chars.get(id), on = c && c.sitting && c.agent.busy;
+      items.push({ k: d.x + d.y + 1.2, f: () => {
+        box(d.x, d.y, 2, 1, 7, 0, '#c79a6b');
+        box(d.x + 0.7, d.y + 0.15, 0.7, 0.15, 8, 7, '#2a2d36');
+        const s1 = P(d.x + 0.75, d.y + 0.3, 14), s2 = P(d.x + 1.35, d.y + 0.3, 14);
+        g.fillStyle = on ? '#7fe3a0' : c && c.agent.blocked ? '#e5484d' : '#3a4256'; g.fillRect(Math.round(s1.x), Math.round(s1.y) - 1, Math.round(s2.x - s1.x), 4);
+        if (d.room.kind === 'booth') box(d.x + 1.5, d.y + 0.4, 0.3, 0.4, 1, 7, '#f4f1e6');
+        box(d.x + 0.8, d.y + 1.15, 0.6, 0.5, 4, 0, '#2f3542');
+      } });
+    }
+    // 茶水間：咖啡機、沙發、會議桌；房間角落放植物
+    const lo = L.lounge;
+    items.push({ k: lo.x + 1.6 + lo.y + 1.4, f: () => { box(lo.x + 1.6, lo.y + 1.2, 0.8, 0.6, 14, 0, '#3a3d46'); box(lo.x + 2.6, lo.y + 1.2, 1.6, 0.6, 7, 0, '#d8cbb5'); } });
+    items.push({ k: lo.x + 2 + lo.y + 7.6, f: () => { box(lo.x + 2, lo.y + 6.8, 3.6, 1, 5, 0, '#a64848'); box(lo.x + 2, lo.y + 7.5, 3.6, 0.3, 9, 0, '#8c3b3b'); } });
+    if (lo.w >= 12) items.push({ k: lo.x + 7.3 + lo.y + 5, f: () => box(lo.x + 7.3, lo.y + 3.5, Math.min(4, lo.w - 8), 2, 7, 0, '#e9e1d2') });
+    for (const r of L.rooms) { plant(r.x + r.w - 0.9, r.y + 0.3); items.push({ k: r.x + 0.2 + r.y + r.h - 0.2, f: () => plant(r.x + 0.2, r.y + r.h - 0.9) }); }
+    // 人物
+    const tags = [];
+    for (const c of chars.values()) items.push({ k: c.x + c.y + 0.1, f: () => tags.push({ c, at: person(c, t) }) });
+    items.sort((a, b) => a.k - b.k).forEach((it) => it.f());
+    // 特效：飛行文件、彩帶
+    for (let i = effects.length - 1; i >= 0; i--) {
+      const e = effects[i]; e.t += e.dt || 0;
+      if (e.t >= e.dur) { effects.splice(i, 1); continue; }
+      if (e.type === 'confetti') { e.vy += 60 * (e.dt || 0); e.x += e.vx * (e.dt || 0); e.y += e.vy * (e.dt || 0); g.fillStyle = e.color; g.fillRect(Math.round(e.x), Math.round(e.y), 2, 2); }
+    }
+    if (night) {
+      g.fillStyle = 'rgba(12,16,48,.45)'; g.fillRect(0, 0, off.width, off.height);
+      g.globalCompositeOperation = 'lighter';
+      for (const [id, d] of L.desks) { const c = chars.get(id); if (c && c.sitting && c.agent.busy) { const q = P(d.x + 1, d.y + 0.3, 14); const gr = g.createRadialGradient(q.x, q.y, 1, q.x, q.y, 22); gr.addColorStop(0, 'rgba(120,255,180,.4)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(q.x - 22, q.y - 22, 44, 44); } }
+      g.globalCompositeOperation = 'source-over';
+    }
+    return tags;
   }
 
-  // ---------- 主迴圈 ----------
-  function frame(t) {
+  // ---------- 畫到畫面（放大、文字用高解析度）----------
+  function label(x, y, text, o = {}) {
+    ctx.font = o.font || '700 12px "Noto Sans TC", "Microsoft JhengHei", monospace';
+    const w = ctx.measureText(text).width + 12, h = o.h || 20;
+    ctx.fillStyle = o.bg || 'rgba(10,12,20,.8)'; ctx.fillRect(Math.round(x - w / 2), Math.round(y - h), Math.round(w), h);
+    if (o.border) { ctx.strokeStyle = o.border; ctx.lineWidth = 2; ctx.strokeRect(Math.round(x - w / 2), Math.round(y - h), Math.round(w), h); }
+    ctx.fillStyle = o.color || '#ffe9b0'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, x, y - h / 2 + 1);
+    return { x: x - w / 2, y: y - h, w, h };
+  }
+  function bubble(x, y, text, kind) {
+    ctx.font = '700 12px "Noto Sans TC", "Microsoft JhengHei", monospace';
+    const s = text.length > 24 ? text.slice(0, 23) + '…' : text;
+    const w = ctx.measureText(s).width + 16, h = 24, bx = Math.round(x - w / 2), by = Math.round(y - h - 8);
+    ctx.fillStyle = kind === 'warn' ? '#ffe3e0' : '#fffbe9'; ctx.fillRect(bx, by, Math.round(w), h);
+    ctx.fillRect(Math.round(x - 4), by + h, 8, 4); ctx.fillRect(Math.round(x - 2), by + h + 4, 4, 3);
+    ctx.strokeStyle = kind === 'warn' ? '#b33' : '#2b2b2b'; ctx.lineWidth = 2; ctx.strokeRect(bx, by, Math.round(w), h);
+    ctx.fillStyle = '#2b2b2b'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(s, x, by + h / 2 + 1);
+  }
+  function fitCamera(instant) {
+    const cw = canvas.width, ch = canvas.height;
+    let bx = 0, by = 0, bw = off.width, bh = off.height;
+    if (cam.focus) {
+      const r = L.rooms.find((x) => x.id === cam.focus);
+      if (r) { const a = P(r.x, r.y, WALL), b = P(r.x + r.w, r.y), c = P(r.x + r.w, r.y + r.h), d = P(r.x, r.y + r.h);
+        bx = d.x - 10; bw = b.x - d.x + 20; by = a.y - 10; bh = c.y - a.y + 30; } else cam.focus = null;
+    }
+    cam.tk = Math.min(cw / bw, ch / bh) * (cam.focus ? 0.95 : 1);
+    cam.tx = (cw - bw * cam.tk) / 2 - bx * cam.tk; cam.ty = (ch - bh * cam.tk) / 2 - by * cam.tk;
+    if (instant) { cam.k = cam.tk; cam.x = cam.tx; cam.y = cam.ty; }
+  }
+  const toScreen = (p) => ({ x: cam.x + p.x * cam.k, y: cam.y + p.y * cam.k });
+
+  function frame(now) {
     if (!running) return;
-    const dt = Math.min(0.05, (t - lastT) / 1000 || 0); lastT = t;
+    const dt = Math.min(0.05, (now - lastT) / 1000 || 0); lastT = now;
+    const t = now / 1000;
     resize();
-    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.setTransform(scale, 0, 0, scale, offX, offY);
-    const agents = api.state().agents;
-    // 同步成員（新增、刪除）
-    const ids = new Set(agents.map((a) => a.id));
+    const st = api.state();
+    const key = JSON.stringify([st.teams.map((x) => [x.id, x.name, x.icon]), st.agents.map((a) => [a.id, a.team, !!a.standalone, a.name, a.avatar])]);
+    if (key !== layoutKey) { L = buildLayout(st); layoutKey = key; for (const c of chars.values()) { c.path = []; c.spot = null; c.mode = ''; } }
+    const ids = new Set(st.agents.map((a) => a.id));
     for (const id of chars.keys()) if (!ids.has(id)) chars.delete(id);
     let q = 0;
-    agents.forEach((a, i) => { const c = ensureChar(a, i); updateChar(c, dt, a.queued && !a.busy ? q++ : 0); });
-    drawRoom();
-    for (const c of chars.values()) drawDesk(c);
-    // 依 y 排序，前面的蓋住後面的；坐著的人要被桌子擋住下半身
-    const list = [...chars.values()].sort((a, b) => a.y - b.y);
-    for (const c of list) {
-      drawChar(c);
-      if (c.sitting) { ctx.save(); ctx.beginPath(); ctx.rect(c.desk.x - 4, c.desk.y + 2, DESK_W + 8, DESK_H + 26); ctx.clip(); drawDesk(c); ctx.restore(); }
+    for (const a of st.agents) { const c = ensureChar(a); updateChar(c, dt, a.queued && !a.busy ? q++ : 0); }
+    for (const e of effects) e.dt = dt;
+    const hour = new Date().getHours(), night = hour >= 19 || hour < 6;
+    const tags = render(t, night);
+    const first = !cam.init; cam.init = true;
+    fitCamera(first);
+    const ease = 1 - Math.pow(0.001, dt);
+    cam.k += (cam.tk - cam.k) * ease; cam.x += (cam.tx - cam.x) * ease; cam.y += (cam.ty - cam.y) * ease;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = night ? '#0c0f1e' : '#283048'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(off, cam.x, cam.y, off.width * cam.k, off.height * cam.k);
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    pickables = [];
+    // 房間名牌：小組名稱＋目前任務狀態；點一下放大這一間
+    const STATUS = { running: '▶', awaiting_approval: '🔔 等你核准', waiting_user: '⏳ 等你回覆', error: '⚠️' };
+    for (const r of L.rooms) {
+      const s = toScreen(P(r.x + r.w / 2, r.y + r.h - 0.5, 0)); const sx = s.x / dpr, sy = s.y / dpr;
+      let sub = '';
+      if (r.kind === 'team') { const tk = st.tasks.find((x) => x.teamId === r.id); const stg = tk && r.team.workflow && r.team.workflow.stages.find((x) => x.id === tk.stageId);
+        sub = tk ? (STATUS[tk.status] || '') + ' #' + tk.id + (stg ? ' ' + stg.name : '') : '沒有進行中的任務'; }
+      else if (r.kind === 'booth') sub = '獨立成員'; else sub = '大家共用';
+      const b1 = label(sx, sy + 4, r.name, { bg: 'rgba(20,16,12,.85)', color: '#fff2c4', font: '700 13px "Noto Sans TC", monospace', border: cam.focus === r.id ? '#f0a35e' : null });
+      label(sx, sy + 22, sub, { bg: 'rgba(20,16,12,.6)', color: '#e6e0d0', font: '500 11px "Noto Sans TC", monospace', h: 17 });
+      pickables.push({ kind: 'room', id: r.id, ...b1 });
     }
-    drawCat(dt);
-    drawEffects(dt);
+    for (const { c, at } of tags) {
+      const s = toScreen(at), sx = s.x / dpr, sy = s.y / dpr, a = c.agent;
+      const lb = label(sx, sy + 31 * cam.k / dpr + 4, a.name, { bg: hover === c.id ? 'rgba(240,163,94,.95)' : 'rgba(10,12,20,.8)', color: hover === c.id ? '#1b1206' : '#ffe9b0', font: '700 11px "Noto Sans TC", monospace', h: 17 });
+      pickables.push({ kind: 'agent', id: c.id, x: Math.min(lb.x, sx - 6 * cam.k / dpr), y: sy, w: Math.max(lb.w, 12 * cam.k / dpr), h: lb.y + lb.h - sy });
+      let b = c.bubble && c.bubble.until > performance.now() ? c.bubble : null;
+      if (!b) b = a.blocked ? { text: '⛔ 設定需修正', kind: 'warn' } : a.stalled ? { text: '❓ 可能卡住了', kind: 'warn' } : a.queued && !a.busy ? { text: '🕒 排隊中', kind: 'talk' } : c.handoff && !c.path.length ? { text: '📄 交給你了！' } : null;
+      if (b) bubble(sx, sy, b.text, b.kind);
+    }
     requestAnimationFrame(frame);
   }
   function resize() {
-    const r = canvas.parentElement.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    const r = host.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
     const cw = Math.max(200, r.width), ch = Math.max(200, r.height);
     if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
       canvas.width = Math.round(cw * dpr); canvas.height = Math.round(ch * dpr);
       canvas.style.width = cw + 'px'; canvas.style.height = ch + 'px';
+      cam.init = false;
     }
-    scale = Math.min(canvas.width / W, canvas.height / H);
-    offX = (canvas.width - W * scale) / 2; offY = (canvas.height - H * scale) / 2;
   }
-  function toWorld(ev) {
-    const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-    return { x: ((ev.clientX - r.left) * dpr - offX) / scale, y: ((ev.clientY - r.top) * dpr - offY) / scale };
-  }
-  function pick(p) {
-    let best = null, bd = 30;
-    for (const c of chars.values()) {
-      const hy = c.y - (c.sitting ? 6 : 0) - 54, d = Math.min(Math.hypot(p.x - c.x, p.y - hy), Math.hypot(p.x - c.x, p.y - (c.y - 25)));
-      if (d < bd) { bd = d; best = c; }
-    }
-    return best;
-  }
+  const hit = (ev) => { const r = canvas.getBoundingClientRect(), x = ev.clientX - r.left, y = ev.clientY - r.top;
+    return pickables.slice().reverse().find((p) => x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) || null; };
 
-  // ---------- 對外介面 ----------
   window.Office = {
     init(el, hooks) {
-      api = hooks;
+      api = hooks; host = el;
       canvas = document.createElement('canvas'); canvas.className = 'office-canvas'; el.appendChild(canvas);
       ctx = canvas.getContext('2d');
-      const tip = document.createElement('div'); tip.className = 'office-tip'; el.appendChild(tip);
+      off = document.createElement('canvas'); g = off.getContext('2d');
+      tip = document.createElement('div'); tip.className = 'office-tip'; el.appendChild(tip);
+      const btn = document.createElement('button'); btn.className = 'office-zoom'; btn.textContent = '🗺 全景'; btn.style.display = 'none'; el.appendChild(btn);
+      btn.onclick = () => { cam.focus = null; btn.style.display = 'none'; };
       canvas.addEventListener('mousemove', (ev) => {
-        const p = toWorld(ev), c = pick(p);
-        hover = c; canvas.style.cursor = c || Math.hypot(p.x - cat.x, p.y - cat.y) < 22 ? 'pointer' : 'default';
-        if (c) {
-          const a = c.agent;
+        const p = hit(ev);
+        hover = p && p.kind === 'agent' ? p.id : null;
+        canvas.style.cursor = p ? 'pointer' : 'default';
+        if (p && p.kind === 'agent') {
+          const a = (chars.get(p.id) || {}).agent; if (!a) return;
           tip.innerHTML = '<b>' + api.esc(a.name) + '</b><br>' + api.esc(a.role || '') + '<br><small>' + api.esc([a.model || '預設模型', a.effort].filter(Boolean).join(' · ')) +
-            '</small><br>' + (a.stalled ? '⚠️ 可能卡住' : a.busy ? '⌨️ 工作中' : a.queued ? '🕒 排隊中' : '☕ 休息中') + '<br><small>點一下開啟對話</small>';
+            '</small><br>' + (a.blocked ? '⛔ 設定需修正' : a.stalled ? '⚠️ 可能卡住' : a.busy ? '⌨️ 工作中' : a.queued ? '🕒 排隊中' : '☕ 休息中') + '<br><small>點一下開啟對話</small>';
           tip.style.display = 'block'; tip.style.left = (ev.offsetX + 14) + 'px'; tip.style.top = (ev.offsetY + 10) + 'px';
+        } else if (p && p.kind === 'room') {
+          tip.innerHTML = cam.focus === p.id ? '點一下回到全景' : '點一下放大這一間'; tip.style.display = 'block'; tip.style.left = (ev.offsetX + 14) + 'px'; tip.style.top = (ev.offsetY + 10) + 'px';
         } else tip.style.display = 'none';
       });
       canvas.addEventListener('mouseleave', () => { hover = null; tip.style.display = 'none'; });
       canvas.addEventListener('click', (ev) => {
-        const p = toWorld(ev), c = pick(p);
-        if (c) { api.open(c.id); return; }
-        if (Math.hypot(p.x - cat.x, p.y - (cat.y - 10)) < 24) { for (let i = 0; i < 3; i++) effects.push({ type: 'float', icon: '💖', x: cat.x + rand(-10, 10), y: cat.y - 25, t: -i * 0.15, dur: 1.2 }); cat.wait = 6; }
+        const p = hit(ev); if (!p) return;
+        if (p.kind === 'agent') return api.open(p.id);
+        cam.focus = cam.focus === p.id ? null : p.id; btn.style.display = cam.focus ? '' : 'none';
       });
     },
-    _debug: () => [...chars.values()].map((c) => ({ id: c.id, x: Math.round(c.x), y: Math.round(c.y), mode: c.mode, sitting: c.sitting, path: c.path.map((p) => [Math.round(p.x), Math.round(p.y)]), desk: [c.desk.x, c.desk.y] })),
-    start() { if (running) return; running = true; lastT = performance.now(); requestAnimationFrame(frame); },
+    _debug: () => ({ layout: L && { W: L.W, H: L.H, rooms: L.rooms.map((r) => ({ id: r.id, kind: r.kind, x: r.x, y: r.y, w: r.w, h: r.h })) },
+      chars: [...chars.values()].map((c) => ({ id: c.id, x: +c.x.toFixed(2), y: +c.y.toFixed(2), mode: c.mode, sitting: c.sitting, path: c.path.length })) }),
+    focus(id) { cam.focus = id; },
+    start() { if (running) return; running = true; lastT = performance.now(); cam.init = false; requestAnimationFrame(frame); },
     stop() { running = false; },
     // 從伺服器的即時事件更新角色
     event(ev) {
       const c = chars.get(ev.agentId);
       if (ev.kind === 'segment' && c) {
         const s = ev.segment;
-        if (s.type === 'tool') say(c, s.text, 8, 'talk');
+        if (s.type === 'tool') say(c, s.text, 7, 'talk');
         else if (s.type === 'error') say(c, '⚠️ ' + s.text, 8, 'warn');
         else if (s.type === 'text') say(c, '💬 ' + s.text.replace(/\s+/g, ' '), 6, 'talk');
       }
       if (ev.kind === 'user' && c) {
-        if (ev.from && chars.get(ev.from)) {
-          const f = chars.get(ev.from);
-          addPaper({ x: f.x, y: f.y - 50 }, { x: c.desk.seat.x, y: c.desk.seat.y - 50 });
-          say(f, '📨 交給 ' + c.agent.name, 3, 'talk');
-        } else if (ev.interject) {
-          effects.push({ type: 'float', icon: '⚡', x: c.x, y: c.y - 70, t: 0, dur: 1 });
-        } else addPaper({ x: DOOR.x + 60, y: H - 30 }, { x: c.desk.seat.x, y: c.desk.seat.y - 50 });
+        const f = ev.from && chars.get(ev.from);
+        if (f && f !== c && c.desk && L) { // 交接：上一位拿著文件走到下一位的座位旁邊，交完再走回去
+          const spot = { x: c.desk.seat.x + 1.1, y: c.desk.aisle };
+          f.handoff = { to: c.id, wait: 1.6 }; f.mode = 'hand'; f.spot = null; goTo(f, spot, 'hand');
+          say(f, '📄 交給 ' + c.agent.name, 4, 'talk');
+        } else if (ev.interject) say(c, '⚡ 收到插話', 3, 'talk');
+        else if (!f) say(c, '📨 新的訊息', 3, 'talk');
       }
       if (ev.kind === 'done' && c) { if (!c.bubble || c.bubble.until < performance.now()) say(c, '✅ 這輪做完了', 3, 'talk'); }
     },
     taskEvent(ev, task) {
-      if (task && task.status === 'done') {
-        const pm = [...chars.values()][0];
-        addConfetti(pm ? pm.x : 500, pm ? pm.y - 80 : 200);
-        for (const c of chars.values()) say(c, '🎉', 3, 'icon');
-      }
+      if (!task || task.status !== 'done' || !L) return;
+      const r = L.rooms.find((x) => x.id === task.teamId) || L.rooms[0];
+      const q = P(r.x + r.w / 2, r.y + r.h / 2, 30);
+      for (let i = 0; i < 50; i++) effects.push({ type: 'confetti', x: q.x, y: q.y, vx: rand(-40, 40), vy: rand(-60, -15), t: 0, dur: rand(1.5, 2.5), color: SHIRTS[i % SHIRTS.length] });
+      for (const c of chars.values()) if (c.agent.team === task.teamId) say(c, '🎉 任務完成', 4, 'talk');
     },
   };
 })();

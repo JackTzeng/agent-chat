@@ -198,4 +198,24 @@ test('standalone ledger member: no tasks, telegram routing, photos, continuity, 
   assert.deepEqual(ag.canHandoffTo, []);
   const tgs = await api('/api/telegram');
   assert.equal(tgs.agentBots[0].state, 'connected');
+
+  // 小組＋Telegram：/task 小組名、兩件任務都在等回覆時要用 #編號
+  const { id: emTeam } = await api('/api/teams', 'POST', { name: '報表組', icon: '📊' });
+  const { id: rep } = await api('/api/agents', 'POST', { name: '阿資', engine: 'claude', permissionMode: 'auto', cwd: './workspace', team: emTeam });
+  await api('/api/team', 'PUT', { teamId: emTeam, workflow: { name: '報表', stages: [{ id: 'c', name: '整理', owner: rep, next: ['d'] }, { id: 'd', name: '覆核', owner: rep, next: [] }] } });
+  const cfg2 = await api('/api/config'); const plan = cfg2.teams[0].workflow;
+  plan.stages[0].owner = cfg2.agents.find((a) => !a.standalone && a.team === cfg2.teams[0].id).id; plan.stages[0].approval = true;
+  await api('/api/team', 'PUT', { workflow: plan });
+  tg.push(MAIN, 111, { text: '/task 報表組 整理十月報表' });
+  tg.push(MAIN, 111, { text: '/task 做一個小工具' });
+  let acts = [];
+  for (let i = 0; i < 200; i++) { acts = (await api('/api/tasks')).actives; if (acts.length === 2 && acts.every((x) => x.status === 'waiting_user')) break; await sleep(50); }
+  assert.deepEqual(acts.map((x) => x.teamName).sort(), ['報表組', '開發組'].sort(), stdout + stderr);
+  tg.push(MAIN, 111, { text: '好的繼續' });
+  await waitFor(() => tg.sent.find((s) => s.token === MAIN && /有 2 件任務在等你回覆/.test(s.text)), 'ask for #id');
+  const emTask = acts.find((x) => x.teamName === '報表組');
+  tg.push(MAIN, 111, { text: '#' + emTask.id + ' 用 A4 格式' });
+  await waitFor(() => tg.sent.find((s) => s.token === MAIN && new RegExp('已回覆任務 #' + emTask.id).test(s.text)), 'reply by id');
+  tg.push(MAIN, 111, { text: '/status' });
+  await waitFor(() => tg.sent.find((s) => s.token === MAIN && /報表組｜任務/.test(s.text) && /開發組｜任務/.test(s.text)), 'status lists both');
 });

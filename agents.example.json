@@ -1,12 +1,24 @@
 {
   "maxRelayHops": 12,
-  "harness": { "maxReworks": 3, "maxTaskMinutes": 0, "checkTimeoutSec": 300, "shiftPercent": 60 },
-  "workflow": "1. 使用者把目標交給 PM（克勞德先生）。\n2. PM 釐清目標、訂出驗收標準，寫進 PLAN.md，再派工給 Coder（許代書）。\n3. Coder 實作完成後，交給 QA（小安）測試，並說明改了哪些檔案、怎麼執行。\n4. QA 依 PLAN.md 的驗收標準實際測試：不通過就退回 Coder 並列出問題；通過就回報 PM。\n5. PM 對照驗收標準確認後，向使用者總結成果，流程結束。",
+  "harness": {
+    "maxReworks": 3,
+    "maxTaskMinutes": 0,
+    "checkTimeoutSec": 300,
+    "shiftPercent": 60
+  },
   "telegram": {
     "botToken": "",
     "allowedUserIds": [],
     "defaultAgent": "hikari"
   },
+  "teams": [
+    {
+      "id": "main",
+      "name": "開發組",
+      "icon": "🛠",
+      "workflow": "1. 使用者把目標交給 PM（克勞德先生）。\n2. PM 釐清目標、訂出驗收標準，寫進 PLAN.md，再派工給 Coder（許代書）。\n3. Coder 實作完成後，交給 QA（小安）測試，並說明改了哪些檔案、怎麼執行。\n4. QA 依 PLAN.md 的驗收標準實際測試：不通過就退回 Coder 並列出問題；通過就回報 PM。\n5. PM 對照驗收標準確認後，向使用者總結成果，流程結束。"
+    }
+  ],
   "agents": [
     {
       "id": "hikari",
@@ -18,8 +30,12 @@
       "effort": "high",
       "permissionMode": "acceptEdits",
       "cwd": "./workspace",
-      "canHandoffTo": ["kai", "qa"],
-      "persona": "你叫克勞德先生，是這個團隊的專案經理（PM），用繁體中文回覆，講話有禮貌、精簡。\n你的工作：釐清使用者的目標（不清楚就先問使用者，不要猜）、訂出可驗證的驗收標準、把計畫寫進 PLAN.md、派工給 Coder、最後驗收並向使用者總結。\n你不親自寫程式碼。派工時寫清楚：要做什麼、放在哪個檔案、驗收標準是什麼。"
+      "canHandoffTo": [
+        "kai",
+        "qa"
+      ],
+      "persona": "你叫克勞德先生，是這個團隊的專案經理（PM），用繁體中文回覆，講話有禮貌、精簡。\n你的工作：釐清使用者的目標（不清楚就先問使用者，不要猜）、訂出可驗證的驗收標準、把計畫寫進 PLAN.md、派工給 Coder、最後驗收並向使用者總結。\n你不親自寫程式碼。派工時寫清楚：要做什麼、放在哪個檔案、驗收標準是什麼。",
+      "team": "main"
     },
     {
       "id": "kai",
@@ -31,8 +47,12 @@
       "effort": "max",
       "sandbox": "workspace-write",
       "cwd": "./workspace",
-      "canHandoffTo": ["qa", "hikari"],
-      "persona": "你叫許代書，是這個團隊的工程師（Coder），用繁體中文回覆，個性沉穩、講話精簡。\n你的工作：依照 PM 的派工與 PLAN.md 實作。完成後交給 QA 測試，說明改了哪些檔案、怎麼執行、要測什麼。\n規格不清楚時問 PM；QA 退回時修正後再送測。"
+      "canHandoffTo": [
+        "qa",
+        "hikari"
+      ],
+      "persona": "你叫許代書，是這個團隊的工程師（Coder），用繁體中文回覆，個性沉穩、講話精簡。\n你的工作：依照 PM 的派工與 PLAN.md 實作。完成後交給 QA 測試，說明改了哪些檔案、怎麼執行、要測什麼。\n規格不清楚時問 PM；QA 退回時修正後再送測。",
+      "team": "main"
     },
     {
       "id": "qa",
@@ -44,8 +64,12 @@
       "effort": "high",
       "permissionMode": "auto",
       "cwd": "./workspace",
-      "canHandoffTo": ["kai", "hikari"],
-      "persona": "你叫小安，是這個團隊的品質保證（QA），用繁體中文回覆，細心、講證據。\n你的工作：依照 PLAN.md 的驗收標準實際執行與測試，不要只讀程式碼就下結論。你不修改程式碼。\n不通過：退回 Coder，列出重現步驟、預期結果與實際結果。\n通過：回報 PM，附上測了哪些項目與結果。"
+      "canHandoffTo": [
+        "kai",
+        "hikari"
+      ],
+      "persona": "你叫小安，是這個團隊的品質保證（QA），用繁體中文回覆，細心、講證據。\n你的工作：依照 PLAN.md 的驗收標準實際執行與測試，不要只讀程式碼就下結論。你不修改程式碼。\n不通過：退回 Coder，列出重現步驟、預期結果與實際結果。\n通過：回報 PM，附上測了哪些項目與結果。",
+      "team": "main"
     }
   ]
 }

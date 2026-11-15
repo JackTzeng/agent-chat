@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.3.0';
+const VERSION = '3.4.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -107,12 +107,32 @@ function saveConfig() {
 }
 const agentById = (id) => AGENTS.find((a) => a.id === id);
 
-// 工作流程：舊版是一段文字，自動轉成有階段的結構
-{
-  const wasText = !CONFIG.workflow || typeof CONFIG.workflow === 'string';
-  CONFIG.workflow = taskLib.normalizeWorkflow(CONFIG.workflow, CONFIG.agents);
-  if (wasText) saveConfig();
+// ---------- 小組：每個小組有自己的成員與工作流程，不同小組的任務可以同時進行 ----------
+// 舊設定（只有一個 workflow）會自動變成第一個小組「開發組」，原本的成員都放進去
+const teamById = (id) => CONFIG.teams.find((t) => t.id === id);
+const teamMembers = (teamId) => CONFIG.agents.filter((a) => !a.standalone && a.team === teamId);
+function normalizeTeams() {
+  let changed = false;
+  if (!Array.isArray(CONFIG.teams) || !CONFIG.teams.length) {
+    CONFIG.teams = [{ id: 'main', name: '開發組', icon: '🛠', workflow: CONFIG.workflow }];
+    if (typeof CONFIG.approveWritableHandoffs === 'boolean') CONFIG.teams[0].approveWritableHandoffs = CONFIG.approveWritableHandoffs;
+    changed = true;
+  }
+  if ('workflow' in CONFIG) { delete CONFIG.workflow; changed = true; }
+  const first = CONFIG.teams[0].id;
+  for (const a of CONFIG.agents) {
+    if (a.standalone) { if (a.team) { delete a.team; changed = true; } continue; }
+    if (!a.team || !teamById(a.team)) { a.team = first; changed = true; }
+  }
+  for (const t of CONFIG.teams) {
+    const was = JSON.stringify(t.workflow);
+    t.workflow = taskLib.normalizeWorkflow(t.workflow, teamMembers(t.id));
+    if (JSON.stringify(t.workflow) !== was) changed = true;
+  }
+  return changed;
 }
+if (normalizeTeams()) saveConfig();
+reloadAgents();
 
 let state = { sessions: {} };
 try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
@@ -148,7 +168,7 @@ const pending = [];     // 排隊中的訊息：{ agentId, text, opts }
 // 這位成員可以 @ 誰（自由聊天模式）：有設定 canHandoffTo 就照設定，沒設定就是全部同事
 function allowedTargets(agent) {
   if (agent.standalone) return [];
-  const others = AGENTS.filter((a) => a.id !== agent.id && !a.standalone); // 獨立成員不參與成員之間的轉交
+  const others = AGENTS.filter((a) => a.id !== agent.id && !a.standalone && a.team === agent.team); // 只在同一個小組內轉交；獨立成員不參與
   return Array.isArray(agent.canHandoffTo) ? others.filter((a) => agent.canHandoffTo.includes(a.id)) : others;
 }
 
@@ -187,10 +207,10 @@ function freeHeader(agent) {
   }
   L.push('（介面說明：使用者透過聊天介面或 Telegram 跟你對話，回覆會以 Markdown 顯示。若你產生了圖片或影片檔，請在回覆中用 ![說明](相對路徑) 顯示它。）');
   L.push(accessText(agent));
-  const team = AGENTS.filter((a) => !a.standalone);
+  const team = AGENTS.filter((a) => !a.standalone && a.team === agent.team);
   const others = team.filter((a) => a.id !== agent.id);
   if (others.length) {
-    L.push('', '【團隊成員】');
+    L.push('', '【團隊成員（' + ((teamById(agent.team) || {}).name || '') + '）】');
     for (const m of team) L.push('- ' + m.name + '：' + (m.role || m.engine) + (m.id === agent.id ? '（就是你）' : ''));
     const can = allowedTargets(agent);
     L.push('', can.length
@@ -298,7 +318,7 @@ function userSend(agent, text, via) {
 
 // 排程規則：同一位成員一次只跑一輪；勾了「輪流工作」的成員之間，同一時間只有一位在動手。
 // 沒勾的成員不受限制，隨時都能和任何人同時工作。
-const turnBlocker = (agent) => (agent.takeTurns ? [...runs.entries()].find(([id, r]) => id !== agent.id && r.takeTurns) : null);
+const turnBlocker = (agent) => (agent.takeTurns ? [...runs.entries()].find(([id, r]) => id !== agent.id && r.takeTurns && r.team === agent.team) : null);
 const mustWait = (agent) => runs.has(agent.id) || !!turnBlocker(agent);
 function dispatch(agent, text, opts = {}) {
   if (mustWait(agent)) {
@@ -484,7 +504,7 @@ function startRun(agent, userText, opts = {}) {
   broadcast({ agentId: agent.id, kind: 'user', text: shownText, ...meta });
   hooks.emit('user', { agent, text: userText, from: opts.from, via: opts.via });
 
-  const run = { segments: [], calls: [], meta: '', finished: false, stderr: Buffer.alloc(0), cwd: agent.cwd, opts, takeTurns: !!agent.takeTurns && !agent.standalone,
+  const run = { segments: [], calls: [], meta: '', finished: false, stderr: Buffer.alloc(0), cwd: agent.cwd, opts, takeTurns: !!agent.takeTurns && !agent.standalone, team: agent.team || null,
     startedAt: Date.now(), lastActivity: Date.now(), stdoutTail: [], cmdline: '' };
   runs.set(agent.id, run);
   broadcast({ agentId: agent.id, kind: 'busy', busy: true });
@@ -724,6 +744,7 @@ const harness = harnessLib.create({
 // ---------- 任務與工作流程（tasks.js）----------
 const tasks = taskLib.create({
   CONFIG, AGENTS, agentById, DATA_DIR, hooks, broadcast, dispatch, cancelTask, accessText, harness,
+  teams: () => CONFIG.teams, teamById,
 });
 tasks.writeWorkflowDocs();
 
@@ -939,6 +960,11 @@ function cleanAgent(input, existingId) {
   if (!a.model) delete a.model;
   if (!a.effort) delete a.effort;
   cleanStandalone(a, input, existingId);
+  if (!a.standalone) {
+    const tid = String(input.team || '').trim();
+    a.team = teamById(tid) ? tid : (CONFIG.agents.find((x) => x.id === existingId) || {}).team || CONFIG.teams[0].id;
+    if (!teamById(a.team)) a.team = CONFIG.teams[0].id;
+  }
   security.checkAgent(a);
   return a;
 }
@@ -1064,6 +1090,7 @@ function readBody(req) {
 const publicAgent = (a) => ({
   id: a.id, name: a.name, avatar: a.avatar, engine: a.engine, model: a.model || '', effort: a.effort || '', role: a.role || '',
   extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns, blocked: a.blocked || null,
+  team: a.standalone ? null : a.team || null,
   standalone: !!a.standalone, tgPrefix: (a.telegram && a.telegram.prefix) || '', tgBot: !!(a.telegram && a.telegram.botToken),
   canHandoffTo: allowedTargets(a).map((t) => t.id),
   busy: runs.has(a.id), hasSession: !!state.sessions[a.id],
@@ -1153,10 +1180,10 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true, result: interject(agent, String(text), 'web') });
     }
     // ---- 任務 ----
-    if (p === '/api/tasks' && req.method === 'GET') return send(res, 200, { active: tasks.active() || null, tasks: tasks.list() });
+    if (p === '/api/tasks' && req.method === 'GET') return send(res, 200, { active: tasks.active() || null, actives: tasks.actives(), tasks: tasks.list() });
     if (p === '/api/tasks' && req.method === 'POST') {
-      const { goal } = await readBody(req);
-      try { const t = tasks.start(goal, 'web'); return send(res, 200, { ok: true, id: t.id }); }
+      const { goal, teamId } = await readBody(req);
+      try { const t = tasks.start(goal, 'web', teamId); return send(res, 200, { ok: true, id: t.id }); }
       catch (e) { return send(res, 400, { error: e.message }); }
     }
     if ((m0 = p.match(/^\/api\/tasks\/(\d+)$/)) && req.method === 'GET') {
@@ -1203,7 +1230,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/usage/refresh' && req.method === 'POST') { probeUsage(); return send(res, 200, { ok: true }); }
     if (p === '/api/config' && req.method === 'GET') {
       return send(res, 200, {
-        agents: CONFIG.agents.map(maskAgent), workflow: CONFIG.workflow, maxRelayHops: maxHops(), approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
+        agents: CONFIG.agents.map(maskAgent), teams: CONFIG.teams, workflow: CONFIG.teams[0].workflow, maxRelayHops: maxHops(), approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
         harness: harness.cfg(),
         options: { engines: ENGINES, efforts: EFFORTS, permissionModes: PERMISSION_MODES, sandboxes: SANDBOXES },
       });
@@ -1226,14 +1253,18 @@ const server = http.createServer(async (req, res) => {
         for (const x of CONFIG.agents) if (Array.isArray(x.canHandoffTo)) x.canHandoffTo = x.canHandoffTo.filter((id) => id !== m0[1]);
         if (CONFIG.telegram && CONFIG.telegram.defaultAgent === m0[1]) CONFIG.telegram.defaultAgent = CONFIG.agents[0].id;
         for (let i = pending.length - 1; i >= 0; i--) if (pending[i].agentId === m0[1]) pending.splice(i, 1);
-        CONFIG.workflow = taskLib.cleanWorkflow(CONFIG.workflow, CONFIG.agents);
+        normalizeTeams();
       } else {
         const body = await readBody(req);
         let a;
         try { a = cleanAgent(body, m0[1]); } catch (e) { return send(res, 400, { error: e.message }); }
-        const owned = a.standalone && (CONFIG.workflow.stages || []).filter((st) => st.owner === a.id);
-        if (owned && owned.length) return send(res, 400, { error: '「' + a.name + '」是工作流程「' + owned.map((x) => x.name).join('、') + '」的負責人，請先到「⚙️ 工作流程」換人，再改成獨立成員' });
+        const old = CONFIG.agents[idx];
+        if (old.team && (a.standalone || a.team !== old.team)) {
+          const t = teamById(old.team), owned = t ? t.workflow.stages.filter((st) => st.owner === a.id) : [];
+          if (owned.length) return send(res, 400, { error: '「' + a.name + '」是「' + t.name + '」工作流程「' + owned.map((x) => x.name).join('、') + '」的負責人，請先到「⚙️ 工作流程」換人，再' + (a.standalone ? '改成獨立成員' : '換小組') });
+        }
         CONFIG.agents[idx] = a;
+        normalizeTeams();
       }
       saveConfig(); reloadAgents(); tasks.writeWorkflowDocs(); harness.docs(); agentsChanged(); pump();
       return send(res, 200, { ok: true });
@@ -1274,12 +1305,41 @@ const server = http.createServer(async (req, res) => {
       res.setHeader('Cache-Control', 'max-age=31536000, immutable');
       return sendFile(res, path.join(AVATAR_DIR, m0[1]));
     }
+    // ---- 小組 ----
+    if (p === '/api/teams' && req.method === 'POST') {
+      const body = await readBody(req);
+      const name = String(body.name || '').trim().slice(0, 20);
+      if (!name) return send(res, 400, { error: '請輸入小組名稱' });
+      if (CONFIG.teams.some((t) => t.name === name)) return send(res, 400, { error: '已經有叫「' + name + '」的小組' });
+      if (CONFIG.teams.length >= 12) return send(res, 400, { error: '小組最多 12 個' });
+      let id; do { id = 't' + Date.now().toString(36).slice(-5) + Math.random().toString(36).slice(2, 4); } while (teamById(id));
+      CONFIG.teams.push({ id, name, icon: [...String(body.icon || '🏢')].slice(0, 2).join('') || '🏢', workflow: taskLib.normalizeWorkflow(null, []) });
+      saveConfig(); agentsChanged();
+      return send(res, 200, { ok: true, id });
+    }
+    if ((m0 = p.match(/^\/api\/teams\/([\w-]+)$/)) && req.method === 'DELETE') {
+      const t = teamById(m0[1]); if (!t) return send(res, 404, { error: '找不到這個小組' });
+      if (CONFIG.teams.length <= 1) return send(res, 400, { error: '至少要留一個小組' });
+      if (teamMembers(t.id).length) return send(res, 400, { error: '小組裡還有成員，請先把成員移到其他小組或刪除' });
+      if (tasks.activeOf(t.id)) return send(res, 400, { error: '這個小組還有進行中的任務' });
+      CONFIG.teams = CONFIG.teams.filter((x) => x.id !== t.id);
+      saveConfig(); agentsChanged();
+      return send(res, 200, { ok: true });
+    }
     if (p === '/api/team' && req.method === 'PUT') {
       const body = await readBody(req);
-      if (body.workflow && typeof body.workflow === 'object') CONFIG.workflow = taskLib.cleanWorkflow(body.workflow, CONFIG.agents);
+      const team = teamById(body.teamId) || CONFIG.teams[0];
+      if (body.teamId && team.id !== body.teamId) return send(res, 404, { error: '找不到這個小組' });
+      if (typeof body.name === 'string' && body.name.trim()) {
+        const n = body.name.trim().slice(0, 20);
+        if (CONFIG.teams.some((t) => t !== team && t.name === n)) return send(res, 400, { error: '已經有叫「' + n + '」的小組' });
+        team.name = n;
+      }
+      if (typeof body.icon === 'string' && body.icon.trim()) team.icon = [...body.icon.trim()].slice(0, 2).join('');
+      if (body.workflow && typeof body.workflow === 'object') team.workflow = taskLib.cleanWorkflow(body.workflow, teamMembers(team.id));
       const h = Math.round(Number(body.maxRelayHops));
       if (h >= 1 && h <= 50) CONFIG.maxRelayHops = h;
-      if (typeof body.approveWritableHandoffs === 'boolean') CONFIG.approveWritableHandoffs = body.approveWritableHandoffs;
+      if (typeof body.approveWritableHandoffs === 'boolean') team.approveWritableHandoffs = body.approveWritableHandoffs;
       if (body.harness && typeof body.harness === 'object') {
         const hc = CONFIG.harness = CONFIG.harness || {};
         const num = (v, lo, hi) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; };
@@ -1289,10 +1349,10 @@ const server = http.createServer(async (req, res) => {
         const sp = num(body.harness.shiftPercent, 0, 95); if (sp != null) hc.shiftPercent = sp;
       }
       if (Array.isArray(body.takeTurns)) {
-        for (const x of CONFIG.agents) { if (body.takeTurns.includes(x.id)) x.takeTurns = true; else delete x.takeTurns; }
+        for (const x of teamMembers(team.id)) { if (body.takeTurns.includes(x.id)) x.takeTurns = true; else delete x.takeTurns; }
         reloadAgents();
       }
-      saveConfig(); tasks.workflowSaved(); agentsChanged(); pump();
+      saveConfig(); tasks.workflowSaved(team.id); agentsChanged(); pump();
       return send(res, 200, { ok: true });
     }
     if (p === '/api/resetall' && req.method === 'POST') {
@@ -1330,7 +1390,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true, queued, cc: cc.map((a) => a.name) });
     }
     if (p === '/api/stopall' && req.method === 'POST') {
-      const t = tasks.active(); if (t) tasks.stop(t.id);
+      for (const t of tasks.actives()) { try { tasks.stop(t.id); } catch {} }
       pending.length = 0;
       for (const a of AGENTS) stopRun(a.id);
       return send(res, 200, { ok: true });

@@ -126,6 +126,13 @@
   .av-drop.over { border-color: var(--accent); color: var(--accent); }
   .ver { font-size: 11px; font-weight: 400; color: var(--muted); margin-left: 4px; }
   .side .sep { height: 1px; background: var(--line); margin: 4px 6px; }
+  .team-h { display: flex; align-items: center; gap: 6px; margin: 10px 8px 2px; font-size: 12px; font-weight: 700; color: var(--muted); cursor: pointer; letter-spacing: .02em; }
+  .team-h:hover { color: var(--text); }
+  .team-h .team-st { margin-left: auto; font-weight: 600; }
+  .team-h.solo { cursor: default; }
+  .team-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .team-tabs button { border-radius: 999px; padding: 4px 12px; font-size: 13px; }
+  .team-tabs button.on { background: var(--accent); color: #fff; border-color: transparent; }
   textarea:disabled { opacity: .6; }
 
   /* 新增 / 設定 */
@@ -256,9 +263,10 @@
   .diag dt { color: var(--muted); } .diag dd { margin: 0; word-break: break-all; }
   .stall { color: var(--err); font-weight: 600; }
   /* 🏢 辦公室 */
-  .office { flex: 1; min-height: 0; position: relative; display: none; background: #f7efe2; overflow: hidden; }
+  .office { flex: 1; min-height: 0; position: relative; display: none; background: #283048; overflow: hidden; }
   .office.show { display: block; }
-  .office-canvas { display: block; }
+  .office-canvas { display: block; image-rendering: pixelated; }
+  .office-zoom { position: absolute; right: 12px; top: 12px; background: rgba(20,22,28,.8); color: #fff; border: 1px solid rgba(255,255,255,.2); border-radius: 10px; padding: 6px 10px; cursor: pointer; }
   .office-tip { position: absolute; display: none; pointer-events: none; background: rgba(255,253,247,.97); color: #3a2f2a; border: 2px solid #3a2f2a;
     border-radius: 10px; padding: 6px 10px; font-size: 12.5px; line-height: 1.5; box-shadow: 0 4px 12px rgba(0,0,0,.15); z-index: 3; max-width: 220px; }
   .agent.office-card .avatar { background: #f6e4da; }
@@ -328,7 +336,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.3.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.4.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -419,12 +427,22 @@ function agentCard(a, extraClass = '') {
     </div>`;
 }
 function renderAgents() {
-  const at = TASKS && TASKS.active;
+  const acts = (TASKS && TASKS.actives) || [];
   const allCard = { id: ALL, name: '全員', avatar: '👥', busy: agents.some((a) => a.busy),
-    role: at ? (STATUS_ICON[at.status] || '') + ' 任務 #' + at.id + '：' + at.statusText : '任務、交接與大家的對話' };
+    role: acts.length ? acts.map((t) => (STATUS_ICON[t.status] || '') + ' #' + t.id).join('　') + (acts.length > 1 ? '（' + acts.length + ' 件進行中）' : '：' + acts[0].statusText) : '任務、交接與大家的對話' };
   const officeCard = { id: OFFICE, name: '辦公室', avatar: '🏢', role: '看大家在做什麼', busy: allCard.busy };
-  $('agents').innerHTML = agentCard(allCard, 'all') + agentCard(officeCard, 'all office-card') + '<div class="sep"></div>' + agents.map((a) => agentCard(a)).join('') +
+  // 依小組分區；獨立成員放最後
+  const groups = TEAMS.map((tm) => ({ tm, list: agents.filter((a) => !a.standalone && a.team === tm.id) }));
+  const loose = agents.filter((a) => !a.standalone && !TEAMS.some((tm) => tm.id === a.team));
+  if (loose.length && groups[0]) groups[0].list.push(...loose);
+  const solo = agents.filter((a) => a.standalone);
+  const teamHead = (tm) => { const t = teamTask(tm.id);
+    return `<div class="team-h" data-team="${esc(tm.id)}" title="切換到這個小組的任務與流程"><span>${esc((tm.icon || '🏢') + ' ' + tm.name)}</span>${t ? `<span class="team-st">${STATUS_ICON[t.status] || ''} #${t.id}</span>` : ''}</div>`; };
+  $('agents').innerHTML = agentCard(allCard, 'all') + agentCard(officeCard, 'all office-card') + '<div class="sep"></div>' +
+    groups.map((g) => (TEAMS.length > 1 || solo.length ? teamHead(g.tm) : '') + g.list.map((a) => agentCard(a)).join('')).join('') +
+    (solo.length ? '<div class="team-h solo"><span>🧍 獨立成員</span></div>' + solo.map((a) => agentCard(a)).join('') : '') +
     '<div class="agent add-card" id="addAgent">＋ 新增成員</div>';
+  document.querySelectorAll('.team-h[data-team]').forEach((el) => (el.onclick = () => { TEAM_SEL = el.dataset.team; WF = (curTeam() || {}).workflow || null; setOffice(false); selectAgent(ALL); }));
   document.querySelectorAll('.agent[data-id]').forEach((el) => (el.onclick = () => {
     const id = el.dataset.id;
     if (id === OFFICE) { setOffice(true); selectAgent(ALL); }
@@ -443,14 +461,14 @@ function renderAgents() {
 // task = 📋 開始新任務｜reply = 回覆等你的成員｜send = 一般送出
 let sendMode = null;
 function workingAgent() {
-  const t = TASKS && TASKS.active;
-  const busy = agents.filter((a) => a.busy);
+  const t = selTask();
+  const busy = agents.filter((a) => a.busy && (!TEAM_SEL || a.team === TEAM_SEL));
   if (t && t.stageId && WF) { const st = WF.stages.find((x) => x.id === t.stageId); const o = st && busy.find((a) => a.id === st.owner); if (o) return o; }
   return busy[0] || null;
 }
 function sendModes() {
   if (current === ALL) {
-    const t = TASKS && TASKS.active, w = workingAgent();
+    const t = selTask(), w = workingAgent();
     if (t && (t.status === 'waiting_user' || t.status === 'error')) return [{ id: 'reply', label: '回覆' }];
     if (t) return [...(w ? [{ id: 'now', label: '⚡ 插話給 ' + w.name }] : []), { id: 'note', label: '📌 加入任務指示' }];
     if (w) return [{ id: 'now', label: '⚡ 插話給 ' + w.name }, { id: 'task', label: '📋 開始新任務' }];
@@ -495,7 +513,7 @@ function updateTop() {
     $('auditBtn').style.display = 'none';
     $('settingsBtn').textContent = '⚙️ 團隊設定';
     renderModebar();
-    const t = TASKS && TASKS.active, w = workingAgent();
+    const t = selTask(), w = workingAgent();
     if (sendMode === 'reply') { const who = agentOf(t.waitingFor); inp.placeholder = '回覆 ' + (who ? label(who) : '成員') + '…'; }
     else if (sendMode === 'now') inp.placeholder = '給 ' + label(w) + ' 的即時指示…';
     else if (sendMode === 'note') inp.placeholder = '給團隊的補充指示，例如：檔案一律放在 workspace\\lite…';
@@ -623,11 +641,11 @@ async function send() {
   const raw = $('input').value.trim();
   const text = composeText(); if (text === null || !text) return;
   const mode = sendMode || 'send';
-  const t = TASKS && TASKS.active;
+  const t = selTask();
   const done = () => { $('input').value = ''; autoGrow(); clearAttach(); };
   try {
     if (mode === 'task') {
-      done(); await api('/api/tasks', { method: 'POST', body: JSON.stringify({ goal: text }) }); toast('✅ 任務開始');
+      done(); await api('/api/tasks', { method: 'POST', body: JSON.stringify({ goal: text, teamId: TEAM_SEL }) }); toast('✅ ' + ((curTeam() || {}).name || '') + ' 的任務開始');
     } else if (mode === 'reply') {
       done(); await api('/api/tasks/' + t.id + '/reply', { method: 'POST', body: JSON.stringify({ text }) });
     } else if (mode === 'note') {
@@ -659,7 +677,7 @@ $('sendBtn').onclick = send;
 let ATTACH = []; // { name, path, agent }
 function uploadTarget() {
   if (current !== ALL) return current;
-  const t = TASKS && TASKS.active, w = workingAgent();
+  const t = selTask(), w = workingAgent();
   if (w) return w.id;
   if (t && t.waitingFor) return t.waitingFor;
   const first = WF && WF.stages[0];
@@ -877,6 +895,11 @@ async function openAgentForm(id) {
         <span class="help">搭配權限「default」：不在允許清單的指令會直接被拒絕。這是 Claude Code 本身強制的，不是只靠提示詞。</span>
       </div>
       <div class="field full team-only">
+        <label>小組</label>
+        <select id="f_team">${(CFG.teams || []).map((tm) => `<option value="${esc(tm.id)}" ${tm.id === (a.team || TEAM_SEL) ? 'selected' : ''}>${esc((tm.icon || '') + ' ' + tm.name)}</option>`).join('')}</select>
+        <span class="help">成員只和同一小組的人交接、輪流；不同小組的任務可以同時進行</span>
+      </div>
+      <div class="field full team-only">
         <label class="opt"><input type="checkbox" id="f_turns" ${a.takeTurns ? 'checked' : ''}> 🔁 和團隊輪流工作</label>
         <span class="help">勾選的成員之間，同一時間只有一位在動手，其他的排隊（適合 PM / Coder / QA 這種會改同一批檔案的團隊）。不勾就不受限制，隨時都能和任何人同時工作。</span>
       </div>
@@ -1028,7 +1051,7 @@ async function openAgentForm(id) {
       model: $('f_model').value, effort: $('f_effort').value, cwd: $('f_cwd').value, persona: $('f_persona').value,
       canHandoffTo: $('f_unres').checked ? null : [...document.querySelectorAll('#f_handoff input:checked')].map((x) => x.value),
       extraDirs: dirs.filter((d) => d.path),
-      takeTurns: $('f_turns').checked && !$('f_standalone').checked,
+      takeTurns: $('f_turns').checked && !$('f_standalone').checked, team: $('f_team').value,
       standalone: $('f_standalone').checked, personaFile: $('f_pfile').value, env: $('f_env').value,
       tools: $('f_tools').value, allowedTools: $('f_allow').value, disallowedTools: $('f_deny').value,
       telegram: { prefix: $('f_tgprefix').value, botToken: $('f_tgtoken').value, userIds: $('f_tgusers').value, clearBotToken: !!($('f_tgclear') && $('f_tgclear').checked) },
@@ -1070,15 +1093,39 @@ const FLOW_TEMPLATE = () => ({
     { id: 'accept', name: '驗收', owner: '', approval: false, next: [], goal: '對照 PLAN.md 的驗收標準確認成果，向使用者總結：完成了什麼、怎麼使用、還有什麼限制。', deliverable: '給使用者的總結' },
   ],
 });
+function openNewTeam() {
+  openModal(`<h2>＋ 新增小組</h2>
+    <p class="lead">每個小組有自己的成員、工作流程和辦公室；不同小組的任務可以同時進行。建立後再把成員加進來（新增成員，或在成員設定換小組），然後設定流程。</p>
+    <div class="fgrid">
+      <div class="field"><label>名稱</label><input id="nt_name" maxlength="20" placeholder="例如：EM 報表組"></div>
+      <div class="field"><label>圖示（一個 emoji）</label><input id="nt_icon" maxlength="4" value="📊"></div>
+    </div>
+    <p class="help">建議每個小組用自己的工作資料夾（例如 ./workspace/em），不然兩個小組的 TASK.md、WORKFLOW.md 會寫在同一個地方。</p>
+    <div class="modal-actions"><span class="spacer"></span><button id="nt_cancel">取消</button><button class="primary" id="nt_ok">建立</button></div>`);
+  $('nt_cancel').onclick = closeModal;
+  $('nt_ok').onclick = async () => {
+    try {
+      const r = await api('/api/teams', { method: 'POST', body: JSON.stringify({ name: $('nt_name').value, icon: $('nt_icon').value }) });
+      TEAM_SEL = r.id; await loadWorkflow(); closeModal(); renderAgents(); updateTop();
+      toast('✅ 已建立小組，接著新增成員並設定流程');
+    } catch (e) { toast(e.message); }
+  };
+  setTimeout(() => $('nt_name').focus(), 50);
+}
 async function openTeamForm() {
   try { CFG = await api('/api/config'); } catch (e) { toast(e.message); return; }
-  const wf = JSON.parse(JSON.stringify(CFG.workflow || { name: '', notes: '', stages: [] }));
-  const members = CFG.agents.filter((m) => !m.standalone); // 獨立成員不進工作流程
+  const team = (CFG.teams || []).find((x) => x.id === TEAM_SEL) || (CFG.teams || [])[0];
+  const wf = JSON.parse(JSON.stringify((team && team.workflow) || CFG.workflow || { name: '', notes: '', stages: [] }));
+  const members = CFG.agents.filter((m) => !m.standalone && m.team === team.id); // 只有這個小組的成員；獨立成員不進工作流程
   const sName = (id) => (wf.stages.find((x) => x.id === id) || {}).name || '?';
+  const strict = typeof team.approveWritableHandoffs === 'boolean' ? team.approveWritableHandoffs : CFG.approveWritableHandoffs;
   openModal(`
-    <h2>⚙️ 團隊設定：工作流程</h2>
-    <p class="lead">定義團隊怎麼合作：每個階段由誰負責、要做什麼、做完交給誰、哪裡需要你核准。開始任務時，系統會依照這份流程推動交接，每一輪都會告訴成員目前的階段與規則。儲存後也會寫成工作資料夾裡的 WORKFLOW.md。</p>
+    <h2>⚙️ ${esc((team.icon || '') + ' ' + team.name)}：工作流程</h2>
+    <p class="lead">定義這個小組怎麼合作：每個階段由誰負責、要做什麼、做完交給誰、哪裡需要你核准。開始任務時，系統會依照這份流程推動交接，每一輪都會告訴成員目前的階段與規則。儲存後也會寫成小組工作資料夾裡的 WORKFLOW.md。</p>
+    ${(CFG.teams || []).length > 1 ? `<div class="team-tabs">${CFG.teams.map((x) => `<button data-tf="${esc(x.id)}" class="${x.id === team.id ? 'on' : ''}">${esc((x.icon || '🏢') + ' ' + x.name)}</button>`).join('')}</div>` : ''}
     <div class="fgrid">
+      <div class="field"><label>小組名稱</label><input id="tm_name" value="${esc(team.name)}" maxlength="20"></div>
+      <div class="field"><label>小組圖示</label><input id="tm_icon" value="${esc(team.icon || '')}" maxlength="4"></div>
       <div class="field"><label>流程名稱</label><input id="w_name" value="${esc(wf.name)}" maxlength="40"></div>
       <div class="field"><label>每件任務最多交接幾次</label><input id="t_hops" type="number" min="1" max="50" value="${CFG.maxRelayHops}"><span class="help">超過會暫停，請你決定下一步</span></div>
       <div class="field"><label>🔁 同一階段最多重做幾次</label><input id="h_rework" type="number" min="1" max="20" value="${CFG.harness.maxReworks}"><span class="help">被退回或自動檢查失敗超過這個次數，就暫停交給你決定</span></div>
@@ -1086,9 +1133,9 @@ async function openTeamForm() {
       <div class="field"><label>🧪 每個自動檢查最多跑幾秒</label><input id="h_timeout" type="number" min="10" max="3600" value="${CFG.harness.checkTimeoutSec}"></div>
       <div class="field"><label>🔄 對話用到幾 % 就換班（0 = 不自動換班）</label><input id="h_shift" type="number" min="0" max="95" value="${CFG.harness.shiftPercent}"><span class="help">成員先寫交班筆記，再換成全新的對話接手，避免被自動壓縮而忘記細節</span></div>
       <div class="field full"><label>🔁 輪流工作的成員</label>
-        <div class="checks" id="w_turns">${members.map((m) => `<label><input type="checkbox" value="${esc(m.id)}" ${m.takeTurns ? 'checked' : ''}> ${esc(label(m))}</label>`).join('')}</div>
-        <span class="help">勾選的成員同一時間只有一位在動手，其他的排隊。沒勾的成員不受限制，例如負責環境更新的成員可以隨時工作。</span></div>
-      <div class="field full"><label class="opt"><input type="checkbox" id="w_strict" ${CFG.approveWritableHandoffs ? 'checked' : ''}> 🛡️ 交給「有寫入權限」的成員時，一律要我核准</label>
+        <div class="checks" id="w_turns">${members.map((m) => `<label><input type="checkbox" value="${esc(m.id)}" ${m.takeTurns ? 'checked' : ''}> ${esc(label(m))}</label>`).join('') || '<span class="help">這個小組還沒有成員：按左邊「＋ 新增成員」，小組選這一組</span>'}</div>
+        <span class="help">勾選的成員同一時間只有一位在動手，其他的排隊（只和同一小組比）。沒勾的成員不受限制。上方的次數、時間、換班設定是所有小組共用的。</span></div>
+      <div class="field full"><label class="opt"><input type="checkbox" id="w_strict" ${strict ? 'checked' : ''}> 🛡️ 交給「有寫入權限」的成員時，一律要我核准</label>
         <span class="help">打開後，除了 🔒 階段，只要下一位成員能修改檔案，每次交接都會先等你核准（例如 QA 退回給 Coder）。比較安全，可以防止成員讀到的惡意內容自動連鎖執行，但每件任務要多按幾次核准。關閉時只在 🔒 階段核准。</span></div>
       <div class="field full"><label>流程預覽</label><div class="flow-preview" id="w_preview"></div></div>
       <div class="field full"><label>階段</label><div id="w_stages"></div>
@@ -1098,7 +1145,9 @@ async function openTeamForm() {
         <textarea id="w_notes" rows="4" placeholder="例如：所有文件用繁體中文；程式要附使用說明；不要刪除 data 資料夾">${esc(wf.notes || '')}</textarea></div>
     </div>
     <div class="modal-actions">
-      <span class="help">修改流程不影響進行中的任務已完成的部分；下一輪交接就會套用新流程。</span>
+      ${(CFG.teams || []).length > 1 ? '<button class="danger" id="tm_del">刪除小組</button>' : ''}
+      <button id="tm_new">＋ 新增小組</button>
+      <span class="help">下一輪交接就會套用新流程。</span>
       <span class="spacer"></span>
       <button id="t_cancel">取消</button>
       <button class="primary" id="t_save">儲存</button>
@@ -1187,6 +1236,13 @@ async function openTeamForm() {
     renderStages(); preview();
   };
   $('t_cancel').onclick = closeModal;
+  document.querySelectorAll('[data-tf]').forEach((b) => (b.onclick = () => { TEAM_SEL = b.dataset.tf; openTeamForm(); }));
+  $('tm_new').onclick = openNewTeam;
+  if ($('tm_del')) $('tm_del').onclick = async () => {
+    if (!confirm('刪除小組「' + team.name + '」？（小組裡不能還有成員或進行中的任務）')) return;
+    try { await api('/api/teams/' + team.id, { method: 'DELETE' }); TEAM_SEL = null; await loadWorkflow(); closeModal(); renderAgents(); updateTop(); toast('已刪除小組'); }
+    catch (e) { toast(e.message); }
+  };
   $('t_save').onclick = async () => {
     wf.name = $('w_name').value; wf.notes = $('w_notes').value;
     const missing = wf.stages.filter((x) => !x.owner).map((x) => x.name);
@@ -1194,8 +1250,8 @@ async function openTeamForm() {
     try {
       const takeTurns = [...document.querySelectorAll('#w_turns input:checked')].map((x) => x.value);
       const harness = { maxReworks: $('h_rework').value, maxTaskMinutes: $('h_minutes').value, checkTimeoutSec: $('h_timeout').value, shiftPercent: $('h_shift').value };
-      await api('/api/team', { method: 'PUT', body: JSON.stringify({ workflow: wf, maxRelayHops: $('t_hops').value, takeTurns, approveWritableHandoffs: $('w_strict').checked, harness }) });
-      closeModal(); toast('✅ 工作流程已儲存');
+      await api('/api/team', { method: 'PUT', body: JSON.stringify({ teamId: team.id, name: $('tm_name').value, icon: $('tm_icon').value, workflow: wf, maxRelayHops: $('t_hops').value, takeTurns, approveWritableHandoffs: $('w_strict').checked, harness }) });
+      await loadWorkflow(); closeModal(); renderAgents(); updateTop(); toast('✅ ' + $('tm_name').value + ' 的工作流程已儲存');
     } catch (e) { toast(e.message); }
   };
 }
@@ -1205,28 +1261,43 @@ let TASKS = null, WF = null;
 async function loadTasks() {
   try { TASKS = await api('/api/tasks'); } catch { return; }
   // 任務剛完成 → 辦公室撒彩帶
-  if (lastActiveTask && !TASKS.active && window.Office) {
-    const t = (TASKS.tasks || []).find((x) => x.id === lastActiveTask);
+  const now = (TASKS.actives || []).map((t) => t.id);
+  if (window.Office) for (const id of lastActiveTasks) if (!now.includes(id)) {
+    const t = (TASKS.tasks || []).find((x) => x.id === id);
     if (t && t.status === 'done') Office.taskEvent({}, t);
   }
-  lastActiveTask = TASKS.active ? TASKS.active.id : null;
+  lastActiveTasks = now;
   renderAgents();
   if (current === ALL) updateTop();
 }
-async function loadWorkflow() { try { const c = await api('/api/config'); WF = c.workflow; CFG_H = c.harness || null; } catch {} }
+// 小組：TEAM_SEL 是「全員」頁目前看的小組（任務列、送出、工作流程都以它為準）
+let TEAMS = [], TEAM_SEL = null;
+const curTeam = () => TEAMS.find((t) => t.id === TEAM_SEL) || TEAMS[0] || null;
+const teamTask = (tid) => ((TASKS && TASKS.actives) || []).find((t) => t.teamId === tid) || null;
+const selTask = () => (curTeam() ? teamTask(curTeam().id) : (TASKS && TASKS.active)) || null;
+async function loadWorkflow() {
+  try {
+    const c = await api('/api/config'); TEAMS = c.teams || []; CFG_H = c.harness || null;
+    if (!TEAMS.some((t) => t.id === TEAM_SEL)) TEAM_SEL = TEAMS[0] ? TEAMS[0].id : null;
+    WF = (curTeam() || {}).workflow || c.workflow;
+  } catch {}
+}
 const STATUS_ICON = { running: '▶', awaiting_approval: '🔔', waiting_user: '⏳', done: '🎉', stopped: '⏹', error: '⚠️' };
 
 function renderTaskbar() {
   const el = $('taskbar');
   if (current !== ALL) { el.classList.remove('show'); return; }
   el.classList.add('show');
-  const t = TASKS && TASKS.active, stages = (WF && WF.stages) || [];
+  const t = selTask(), stages = (WF && WF.stages) || [];
   const hp = HARNESS ? HARNESS.proposals.length : 0;
+  const tm = curTeam();
+  const tabs = `<div class="team-tabs">${TEAMS.map((x) => { const tt = teamTask(x.id);
+    return `<button data-tsel="${esc(x.id)}" class="${x.id === (tm && tm.id) ? 'on' : ''}">${esc((x.icon || '🏢') + ' ' + x.name)}${tt ? ' ' + (STATUS_ICON[tt.status] || '') : ''}</button>`; }).join('')}<button id="tbNewTeam" title="新增一個小組（自己的成員、流程與辦公室）">＋ 小組</button></div>`;
   const tools = `<button id="tbHarness" title="守則、自動檢查、預算、記憶、權限、觀測紀錄">🧭 Harness${hp ? '<span class="hn-dot">' + hp + '</span>' : ''}</button><button id="tbHistory">📜 任務紀錄</button><button id="tbFlow">⚙️ 工作流程</button><button id="tbTg">📱 Telegram</button>`;
   if (!t) {
     const last = TASKS && TASKS.tasks && TASKS.tasks[0];
-    el.innerHTML = `<div class="tb-row"><span class="tb-title">📋 目前沒有進行中的任務</span>
-      <span class="tb-hint">${stages.length ? '在下方輸入目標就會開始' : '請先按「⚙️ 工作流程」定義流程'}${last ? '｜最近：#' + last.id + ' ' + esc(last.title) + '（' + esc(last.statusText) + '）' : ''}</span>
+    el.innerHTML = tabs + `<div class="tb-row"><span class="tb-title">📋 ${esc(tm ? tm.name : '')} 目前沒有進行中的任務</span>
+      <span class="tb-hint">${stages.length && stages[0].owner ? '在下方輸入目標就會交給 ' + esc(tm ? tm.name : '') + ' 開始' : '請先按「⚙️ 工作流程」定義這個小組的流程'}${last ? '｜最近：#' + last.id + ' ' + esc(last.title) + '（' + esc(last.statusText) + '）' : ''}</span>
       <span class="spacer"></span>${tools}</div>`;
   } else {
     const pipe = stages.map((st) => {
@@ -1250,7 +1321,7 @@ function renderTaskbar() {
       card = `<div class="tb-card"><b>${t.status === 'error' ? '⚠️ 執行出錯，任務暫停' : '⏳ ' + esc(who ? label(who) : '成員') + ' 在等你回覆'}</b>
         <div class="tb-hint">${esc(t.note || '在下方輸入框回覆，任務就會繼續；或停止任務。')}</div></div>`;
     }
-    el.innerHTML = `<div class="tb-row"><span class="tb-title">📋 任務 #${t.id}：${esc(t.title)}</span>
+    el.innerHTML = tabs + `<div class="tb-row"><span class="tb-title">📋 任務 #${t.id}：${esc(t.title)}</span>
       <span class="tb-badge ${t.status}">${STATUS_ICON[t.status] || ''} ${esc(t.statusText)}</span><span class="tb-hint">交接 ${t.turns} 次</span>
       <span class="spacer"></span><button class="danger" id="tbStop">⏹ 停止任務</button>${tools}</div>
       <div class="pipe">${pipe}</div>${card}`;
@@ -1263,6 +1334,8 @@ function renderTaskbar() {
     $('tbStop').onclick = () => { if (confirm('停止任務 #' + t.id + '？')) taskAction(t.id, 'stop', {}); };
   }
   $('tbHistory').onclick = openTaskHistory;
+  el.querySelectorAll('[data-tsel]').forEach((b) => (b.onclick = () => { TEAM_SEL = b.dataset.tsel; WF = (curTeam() || {}).workflow || null; updateTop(); renderAgents(); }));
+  $('tbNewTeam').onclick = openNewTeam;
   $('tbHarness').onclick = () => openHarness();
   $('tbFlow').onclick = openTeamForm;
   $('tbTg').onclick = openTelegramForm;
@@ -1423,6 +1496,7 @@ async function refreshAgents() {
   try { list = await api('/api/agents'); } catch { return; }
   if (seq !== agentsSeq) return;
   agents = list;
+  await loadWorkflow();
   if (current !== ALL && !agentOf(current)) { selectAgent(ALL); return; }
   renderAgents(); updateTop();
 }
@@ -1644,13 +1718,13 @@ function applyOfficeView() {
 }
 if (window.Office) {
   Office.init($('office'), {
-    state: () => ({ agents, task: TASKS && TASKS.active, workflow: WF }),
+    state: () => ({ agents, teams: TEAMS, tasks: (TASKS && TASKS.actives) || [], task: selTask(), workflow: WF }),
     avatarUrl: (v) => withToken('/api/avatar/' + v.slice(4)),
     esc, open: (id) => selectAgent(id),
   });
 }
 $('officeBtn').onclick = () => { setOffice(!officeMode); renderAgents(); updateTop(); if (!officeMode) selectAgent(ALL); };
-let lastActiveTask = null;
+let lastActiveTasks = [];
 
 // ---- 即時事件 ----
 function connectEvents() {
