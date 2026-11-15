@@ -12,8 +12,9 @@ const { extractTags, cleanChecks } = require('../harness');
 const source = path.resolve(__dirname, '..');
 
 test('extractTags finds lesson and decision lines only at line start', () => {
-  const t = extractTags('做完了\n【守則建議】交接前先跑測試\n- **【決策】** 用 SQLite\n文中提到【決策】不算');
-  assert.deepEqual(t.lessons, ['交接前先跑測試']);
+  const t = extractTags('做完了\n【守則建議】交接前先跑測試\n【守則建議→許代書】先讀 PLAN.md\n【守則建議（給 開發組）】用 UTF-8\n- **【決策】** 用 SQLite\n文中提到【決策】不算');
+  assert.deepEqual(t.lessons, ['交接前先跑測試', '先讀 PLAN.md', '用 UTF-8']);
+  assert.deepEqual(t.lessonTo, ['', '許代書', '開發組']);
   assert.deepEqual(t.decisions, ['用 SQLite']);
 });
 
@@ -32,7 +33,7 @@ let inp = ''; process.stdin.on('data', (d) => (inp += d)).on('end', () => {
   o({ type: 'system', subtype: 'init', session_id: 'c' + Date.now() });
   let text = '你好';
   if (inp.includes('【你現在負責的階段：規劃】')) text = '計畫完成\\n【決策】資料庫用 SQLite\\n【交接】\\n給：許代書\\n內容：請建立 ok.txt';
-  else if (inp.includes('【你現在負責的階段：測試】')) text = '測試通過\\n【守則建議】交接前先自己跑 node check.js\\n【交接】\\n給：克勞德先生（驗收）\\n內容：全部通過';
+  else if (inp.includes('【你現在負責的階段：測試】')) text = '測試通過\\n【守則建議→許代書】交接前先自己跑 node check.js\\n【交接】\\n給：克勞德先生（驗收）\\n內容：全部通過';
   else if (inp.includes('【你現在負責的階段：驗收】')) text = '全部完成，可以使用了。';
   o({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
   o({ type: 'result', subtype: 'success', session_id: 'c1', total_cost_usd: 0.02, duration_ms: 50, num_turns: 1, usage: { input_tokens: 100, output_tokens: 20 } });
@@ -121,6 +122,7 @@ test('task flow with sensors, lessons, memory, budget and observability', { time
   let h = await api('/api/harness');
   assert.equal(h.proposals.length, 1);
   assert.equal(h.proposals[0].text, '交接前先自己跑 node check.js');
+  assert.equal(h.proposals[0].scope, 'kai', '預設只給被點名的許代書');
   assert.ok(h.memory.some((m) => m.kind === 'decision' && m.text === '資料庫用 SQLite'));
   assert.ok(h.memory.some((m) => m.kind === 'result' && /任務 #1/.test(m.text)));
   assert.ok(h.stats.agents.length >= 3);
@@ -130,16 +132,21 @@ test('task flow with sensors, lessons, memory, budget and observability', { time
   assert.ok(claudeStats.costUsd > 0 && claudeStats.inTok > 0);
   assert.ok(fs.existsSync(path.join(dir, 'workspace', 'MEMORY.md')));
 
-  // 核准守則建議 → 之後每一輪都會看到
-  await api('/api/harness/proposals/' + h.proposals[0].id + '/accept', 'POST', { scope: 'all' });
+  // 核准守則建議（沒改範圍 → 只給許代書）→ 許代書每一輪都會看到，其他人看不到
+  await api('/api/harness/proposals/' + h.proposals[0].id + '/accept', 'POST', {});
   h = await api('/api/harness');
   assert.equal(h.proposals.length, 0);
   assert.equal(h.guides[0].text, '交接前先自己跑 node check.js');
-  assert.match(fs.readFileSync(path.join(dir, 'workspace', 'GUIDES.md'), 'utf8'), /交接前先自己跑/);
+  assert.equal(h.guides[0].scope, 'kai');
+  assert.match(fs.readFileSync(path.join(dir, 'workspace', 'GUIDES.md'), 'utf8'), /## 成員：許代書\n\n- 交接前先自己跑/);
   fs.writeFileSync(log, '');
   await api('/api/chat/hikari', 'POST', { text: '嗨' });
-  for (let i = 0; i < 100 && !fs.readFileSync(log, 'utf8').includes('CLAUDE'); i++) await sleep(50);
-  assert.match(fs.readFileSync(log, 'utf8'), /【團隊守則[^\n]*\n- 交接前先自己跑 node check\.js/);
+  await api('/api/chat/kai', 'POST', { text: '嗨' });
+  for (let i = 0; i < 100 && !(fs.readFileSync(log, 'utf8').includes('CLAUDE') && fs.readFileSync(log, 'utf8').includes('CODEX')); i++) await sleep(50);
+  const sections = fs.readFileSync(log, 'utf8').split('=====').filter(Boolean);
+  const claudePart = sections.filter((x) => x.startsWith('CLAUDE')).join(''), codexPart = sections.filter((x) => x.startsWith('CODEX')).join('');
+  assert.match(codexPart, /【守則[^\n]*\n- 交接前先自己跑 node check\.js/);
+  assert.doesNotMatch(claudePart, /交接前先自己跑/, '克勞德先生不會收到只給許代書的守則');
 
   // 任務 2：Coder 一直修不好 → 超過預算，暫停交給使用者
   fs.rmSync(path.join(dir, 'workspace', 'ok.txt'));

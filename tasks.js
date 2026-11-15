@@ -222,7 +222,7 @@ exports.create = function create(ctx) {
         (s.approval ? '｜交出前需要使用者核准' : ''));
     });
     if (w.notes) lines.push('其他規則：' + w.notes);
-    if (ctx.harness) { const hb = ctx.harness.promptBlock(agent); if (hb) lines.push('', hb); }
+    if (ctx.harness) { const hb = ctx.harness.promptBlock(agent, { stageId: st ? st.id : null }); if (hb) lines.push('', hb); }
     if (st) {
       lines.push('', '【你現在負責的階段：' + st.name + '】');
       if (st.goal) lines.push('要做什麼：' + st.goal);
@@ -273,7 +273,7 @@ exports.create = function create(ctx) {
       return withChecks(task, agent, st, () => {
         task.status = 'done'; task.summary = text;
         log(task, { type: 'done', agent: agent.id });
-        if (ctx.harness) { try { ctx.harness.addMemory('result', '任務 #' + task.id + '「' + task.title + '」完成：' + short(text, 400), agent.id, task.id); } catch {} }
+        if (ctx.harness) { try { ctx.harness.addMemory('result', '任務 #' + task.id + '「' + task.title + '」完成：' + short(text, 400), agent.id, task.id, teamOf(task).id); } catch {} }
         changed(task, 'done', text);
       });
     }
@@ -442,7 +442,7 @@ exports.create = function create(ctx) {
     t.status = 'running'; t.pending = null; t.stageId = p.fromStage;
     log(t, { type: 'rejected', text: feedback });
     // 使用者的退回意見是「失敗經驗」：放進守則建議，由使用者決定要不要變成永久守則
-    if (ctx.harness && feedback !== '請修改後重新交接。') ctx.harness.propose(feedback, null, t.id, '使用者退回 ' + back.name + ' 的交接');
+    if (ctx.harness && feedback !== '請修改後重新交接。') ctx.harness.propose(feedback, null, t.id, '使用者退回 ' + back.name + ' 的交接', back.id); // 預設只給被退回的成員
     changed(t, 'rejected', '已退回給 ' + back.name);
     ctx.dispatch(back, '【使用者退回你的交接】\n' + feedback + '\n\n請依照意見修改，完成後重新寫交接區塊。', { taskId: t.id, stageId: p.fromStage });
     return t;

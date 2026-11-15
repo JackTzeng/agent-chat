@@ -172,4 +172,32 @@ test('teams: migration, parallel tasks across teams, per-team turn taking', { ti
   conf = await api('/api/config');
   assert.equal(conf.agents.find((a) => a.id === q2).cwd, path.join(dir, 'workspace', 'qc'));
   assert.deepEqual(conf.teams.find((x) => x.id === qc).sharedWith, []);
+
+  // 守則依小組：只給品管組的守則只寫進品管組的 GUIDES.md，開發組的資料夾讀不到
+  await api('/api/harness/guides', 'POST', { text: '品管報告用 A4 直式', scope: 'team:' + qc });
+  await api('/api/harness/guides', 'POST', { text: '開發組改程式前先讀 PLAN.md', scope: 'team:' + dev });
+  await api('/api/harness/guides', 'POST', { text: '審核階段要附簽核欄', scope: 'stage:' + qc + ':r' });
+  const qcGuides = fs.readFileSync(path.join(dir, 'workspace', 'qc', 'GUIDES.md'), 'utf8');
+  const devGuides = fs.readFileSync(path.join(dir, 'workspace', 'GUIDES.md'), 'utf8');
+  assert.match(qcGuides, /品管報告用 A4/); assert.match(qcGuides, /審核階段要附簽核欄/);
+  assert.doesNotMatch(qcGuides, /PLAN\.md/);
+  assert.match(devGuides, /PLAN\.md/); assert.doesNotMatch(devGuides, /品管|簽核/);
+  // 一般對話只看到小組守則；階段守則只在那個階段
+  let h = await api('/api/harness');
+  const loadQ1 = h.load.find((x) => x.id === q1);
+  assert.equal(loadQ1.total, 1, '一般對話：品管一只會收到小組守則（階段守則只在審核階段）');
+  // 字數上限：放不下的不放進提示詞
+  for (let i = 0; i < 6; i++) await api('/api/harness/guides', 'POST', { text: '品管規則 ' + i + ' ' + '很長的說明'.repeat(12), scope: 'team:' + qc });
+  await api('/api/team', 'PUT', { teamId: qc, harness: { guideChars: 300 } });
+  h = await api('/api/harness');
+  const l2 = h.load.find((x) => x.id === q1);
+  assert.equal(l2.total, 7);
+  assert.ok(l2.shown < l2.total && l2.chars < 450, JSON.stringify(l2));
+  // 📌 必讀優先、⏸ 停用就不算
+  const first = h.guides.find((g) => g.text === '品管報告用 A4 直式');
+  await api('/api/harness/guides/' + first.id, 'PUT', { pinned: true });
+  await api('/api/harness/guides/' + h.guides.find((g) => /品管規則 0/.test(g.text)).id, 'PUT', { off: true });
+  h = await api('/api/harness');
+  assert.equal(h.load.find((x) => x.id === q1).total, 6);
+  assert.ok(h.guides.find((g) => g.id === first.id).pinned);
 });

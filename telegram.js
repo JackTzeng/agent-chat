@@ -399,8 +399,8 @@ exports.start = function start(ctx) {
   });
 
   // 新的守則建議（要到網頁的 🧭 Harness 核准）
-  listen('proposal', async ({ proposal, fromName }) => {
-    for (const id of pushRecipients()) await say(id, '💡 新的守則建議（' + fromName + (proposal.taskId ? '，任務 #' + proposal.taskId : '') + '）：\n' + proposal.text + '\n\n請到網頁的「🧭 Harness」核准或略過。');
+  listen('proposal', async ({ proposal, fromName, scopeLabel }) => {
+    for (const id of pushRecipients()) await say(id, '💡 新的守則建議（' + fromName + (proposal.taskId ? '，任務 #' + proposal.taskId : '') + '）：\n' + proposal.text + (scopeLabel ? '\n（預設只給 ' + scopeLabel + ' 遵守）' : '') + '\n\n請到網頁的「🧭 Harness」核准或略過。');
   });
 
   function chat(chatId, userId) {

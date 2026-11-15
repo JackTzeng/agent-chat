@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.4.1';
+const VERSION = '3.5.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -221,7 +221,7 @@ function freeHeader(agent) {
     L.push(accessText(agent));
     if (agent.engine === 'claude' && (agent.tools || (agent.allowedTools || []).length))
       L.push('【權限】你只能使用系統允許的工具與指令；被擋下時直接告訴使用者，不要嘗試繞過。');
-    const g = harness.guidesText(agent, true);
+    const g = harness.guidesText(agent, {});
     if (g) L.push('', g);
     return L.join('\n');
   }
@@ -756,7 +756,7 @@ function resetAgent(id) {
 
 // ---------- Harness（守則、自動檢查、預算、記憶、觀測）----------
 const harness = harnessLib.create({
-  CONFIG, AGENTS, agentById, DATA_DIR, hooks, broadcast, IS_WIN, decode: decodeOutput,
+  CONFIG, AGENTS, agentById, teamById, DATA_DIR, hooks, broadcast, IS_WIN, decode: decodeOutput,
   safeEnv: () => security.safeEnvironment(),
   redact: (s) => security.redact(s, [CONFIG.telegram && CONFIG.telegram.botToken]),
 });
@@ -1229,12 +1229,12 @@ const server = http.createServer(async (req, res) => {
       try {
         if (p === '/api/harness/guides' && req.method === 'POST') return send(res, 200, harness.addGuide(body.text, body.scope, 'user'));
         if ((m0 = p.match(/^\/api\/harness\/guides\/(\d+)$/))) {
-          if (req.method === 'PUT') return send(res, 200, harness.updateGuide(m0[1], body.text, body.scope));
+          if (req.method === 'PUT') return send(res, 200, harness.updateGuide(m0[1], { text: body.text, scope: body.scope, pinned: body.pinned, off: body.off }));
           if (req.method === 'DELETE') { harness.deleteGuide(m0[1]); return send(res, 200, { ok: true }); }
         }
         if ((m0 = p.match(/^\/api\/harness\/proposals\/(\d+)\/accept$/)) && req.method === 'POST') return send(res, 200, harness.acceptProposal(m0[1], body.text, body.scope));
         if ((m0 = p.match(/^\/api\/harness\/proposals\/(\d+)$/)) && req.method === 'DELETE') { harness.dismissProposal(m0[1]); return send(res, 200, { ok: true }); }
-        if (p === '/api/harness/memory' && req.method === 'POST') return send(res, 200, harness.addMemory('note', body.text, null, null));
+        if (p === '/api/harness/memory' && req.method === 'POST') return send(res, 200, harness.addMemory('note', body.text, null, null, body.team || ''));
         if ((m0 = p.match(/^\/api\/harness\/memory\/(\d+)$/)) && req.method === 'DELETE') { harness.deleteMemory(m0[1]); return send(res, 200, { ok: true }); }
       } catch (e) { return send(res, 400, { error: e.message }); }
       return send(res, 404, { error: '找不到' });
@@ -1388,12 +1388,13 @@ const server = http.createServer(async (req, res) => {
         const mm = num(body.harness.maxTaskMinutes, 0, 1440); if (mm != null) hc.maxTaskMinutes = mm;
         const ct = num(body.harness.checkTimeoutSec, 10, 3600); if (ct != null) hc.checkTimeoutSec = ct;
         const sp = num(body.harness.shiftPercent, 0, 95); if (sp != null) hc.shiftPercent = sp;
+        const gc = num(body.harness.guideChars, 200, 8000); if (gc != null) hc.guideChars = gc;
       }
       if (Array.isArray(body.takeTurns)) {
         for (const x of teamMembers(team.id)) { if (body.takeTurns.includes(x.id)) x.takeTurns = true; else delete x.takeTurns; }
         reloadAgents();
       }
-      saveConfig(); tasks.workflowSaved(team.id); agentsChanged(); pump();
+      saveConfig(); tasks.workflowSaved(team.id); harness.docs(); agentsChanged(); pump();
       return send(res, 200, { ok: true });
     }
     if (p === '/api/resetall' && req.method === 'POST') {
