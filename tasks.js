@@ -25,6 +25,7 @@ const STATUS_TEXT = {
 };
 const SKIP_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.cache', '.agentchat']);
 const SKIP_FILES = new Set(['TASK.md', 'WORKFLOW.md', 'GUIDES.md', 'MEMORY.md']);
+const SKIP_DOC = /^(TASK|WORKFLOW)-.+\.md$/; // 共用資料夾時各小組自己的 TASK-小組.md、WORKFLOW-小組.md
 
 const short = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) + '…' : s; };
 const pad = (n) => String(n).padStart(2, '0');
@@ -77,7 +78,7 @@ function snapshot(roots) {
       if (count > 3000) return;
       const p = path.join(d, e.name), r = rel ? rel + '/' + e.name : e.name;
       if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(p, r); continue; }
-      if (!e.isFile() || (rel === '' && SKIP_FILES.has(e.name))) continue;
+      if (!e.isFile() || (rel === '' && (SKIP_FILES.has(e.name) || SKIP_DOC.test(e.name)))) continue;
       let st; try { st = fs.statSync(p); } catch { continue; }
       count++;
       const entry = { size: st.size, mtime: st.mtimeMs };
@@ -180,6 +181,16 @@ exports.create = function create(ctx) {
   const actives = () => store.tasks.filter((t) => ACTIVE.includes(t.status));
   const maxTurns = (t) => Number(teamOf(t).maxRelayHops) || Number(ctx.CONFIG.maxRelayHops) || 12;
   const teamMembers = (teamId) => ctx.AGENTS.filter((a) => !a.standalone && a.team === teamId);
+  // 同一個資料夾有好幾個小組在用時：排第一的小組用 TASK.md／WORKFLOW.md，其他小組用 TASK-小組名.md，不會互相覆蓋
+  const sameDir = (a, b) => path.resolve(a || '').toLowerCase() === path.resolve(b || '').toLowerCase();
+  const teamsInDir = (dir) => teams().filter((t) => teamMembers(t.id).some((a) => sameDir(a.cwd, dir)) || (t.cwd && sameDir(t.cwd, dir)));
+  function docName(dir, team, base) {
+    const users = teamsInDir(dir);
+    if (!team || users.length < 2 || users[0].id === team.id) return base;
+    const tag = String(team.name || team.id).replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 20) || team.id;
+    return base.replace(/\.md$/, '-' + tag + '.md');
+  }
+  const taskDocName = (task) => docName(task.workspace, teamOf(task), 'TASK.md');
 
   function changed(task, event, message) {
     task.updatedAt = Date.now();
@@ -229,7 +240,7 @@ exports.create = function create(ctx) {
         lines.push('', '這是最後一個階段：完成後寫給使用者的總結，不要寫交接區塊。需要問使用者時直接提問。');
       }
       lines.push('- 改了哪些檔案，系統會自動附給下一位，不用逐一列出。',
-        '- 任務狀態與交接紀錄在 TASK.md（系統維護，可以讀，不要修改）。');
+        '- 任務狀態與交接紀錄在 ' + taskDocName(task) + '（系統維護，可以讀，不要修改）。');
     }
     return lines.join('\n');
   }
@@ -490,7 +501,7 @@ exports.create = function create(ctx) {
     return L.join('\n') + '\n';
   }
   function writeTaskFile(t) {
-    try { fs.writeFileSync(path.join(t.workspace, 'TASK.md'), taskMarkdown(t)); } catch {}
+    try { fs.writeFileSync(path.join(t.workspace, taskDocName(t)), taskMarkdown(t)); } catch {}
     try { fs.mkdirSync(path.join(ctx.DATA_DIR, 'tasks'), { recursive: true }); fs.writeFileSync(path.join(ctx.DATA_DIR, 'tasks', 'task-' + t.id + '.md'), taskMarkdown(t)); } catch {}
   }
   function workflowMarkdown(team) {
@@ -512,13 +523,11 @@ exports.create = function create(ctx) {
     return L.join('\n');
   }
   function writeWorkflowDocs() {
-    // 每個小組寫進自己成員的工作資料夾；不同小組共用同一個資料夾時，由第一個小組的流程為準
-    const written = new Set();
+    // 每個小組寫進自己成員的工作資料夾；共用資料夾時第二個以後的小組寫 WORKFLOW-小組名.md
     for (const team of teams()) {
       const md = workflowMarkdown(team);
       for (const dir of new Set(teamMembers(team.id).map((a) => a.cwd))) {
-        if (written.has(dir)) continue; written.add(dir);
-        try { fs.writeFileSync(path.join(dir, 'WORKFLOW.md'), md); } catch {}
+        try { fs.writeFileSync(path.join(dir, docName(dir, team, 'WORKFLOW.md')), md); } catch {}
       }
     }
   }
@@ -543,7 +552,8 @@ exports.create = function create(ctx) {
   });
 
   return {
-    promptHeader, snapshotFor, onTurnDone, noteInterrupt, addNote, start, approve, reject, reply, stop, workflowSaved, writeWorkflowDocs,
+    promptHeader, snapshotFor, onTurnDone, docName,
+    taskDocName: (id) => { const t = get(id); return t ? taskDocName(t) : 'TASK.md'; }, noteInterrupt, addNote, start, approve, reject, reply, stop, workflowSaved, writeWorkflowDocs,
     // 相容舊介面：active() 是最近更新的一件；actives() 是所有小組進行中的任務
     active: () => summary(actives().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0]),
     actives: () => actives().map(summary),

@@ -142,4 +142,34 @@ test('teams: migration, parallel tasks across teams, per-team turn taking', { ti
   await api('/api/agents/' + revId, 'DELETE');
   await api('/api/teams/' + em, 'DELETE');
   await assert.rejects(api('/api/teams/' + dev, 'DELETE'), /至少要留一個/);
+
+  // 小組工作資料夾：新小組自動建立資料夾，新成員沒填資料夾就用小組的
+  const { id: qc } = await api('/api/teams', 'POST', { name: '品管組', icon: '🧪', cwd: './workspace/qc' });
+  assert.ok(fs.statSync(path.join(dir, 'workspace', 'qc')).isDirectory());
+  const { id: q1 } = await api('/api/agents', 'POST', { name: '品管一', engine: 'claude', permissionMode: 'auto', team: qc });
+  const { id: q2 } = await api('/api/agents', 'POST', { name: '品管二', engine: 'claude', permissionMode: 'auto', team: qc, cwd: './workspace' });
+  conf = await api('/api/config');
+  assert.equal(conf.agents.find((a) => a.id === q1).cwd, path.join(dir, 'workspace', 'qc'));
+  assert.deepEqual(conf.teams.find((x) => x.id === qc).sharedWith, ['開發組'], 'q2 shares ./workspace with 開發組');
+  // 不填資料夾的小組，預設是 ./workspace/<id>
+  const { id: tmp } = await api('/api/teams', 'POST', { name: '暫時組' });
+  assert.equal((await api('/api/config')).teams.find((x) => x.id === tmp).cwd, path.join(dir, 'workspace', tmp));
+  await api('/api/teams/' + tmp, 'DELETE');
+
+  // 共用資料夾時：開發組（排第一）照用 TASK.md，品管組改用 TASK-品管組.md、WORKFLOW-品管組.md
+  await api('/api/team', 'PUT', { teamId: qc, workflow: { name: '品管流程', stages: [{ id: 'c', name: '整理', owner: q2, next: ['r'] }, { id: 'r', name: '審核', owner: q1, next: [] }] } });
+  const devTask = JSON.stringify(fs.readFileSync(path.join(dir, 'workspace', 'TASK.md'), 'utf8'));
+  assert.match(fs.readFileSync(path.join(dir, 'workspace', 'WORKFLOW-品管組.md'), 'utf8'), /品管流程（品管組）/);
+  assert.match(fs.readFileSync(path.join(dir, 'workspace', 'WORKFLOW.md'), 'utf8'), /舊流程（開發組）/);
+  const t3 = await api('/api/tasks', 'POST', { goal: '品管組的任務', teamId: qc });
+  for (let i = 0; i < 200; i++) { if ((await api('/api/tasks')).tasks.find((x) => x.id === t3.id).status === 'done') break; await sleep(100); }
+  assert.match(fs.readFileSync(path.join(dir, 'workspace', 'TASK-品管組.md'), 'utf8'), /品管組的任務/);
+  assert.equal(JSON.stringify(fs.readFileSync(path.join(dir, 'workspace', 'TASK.md'), 'utf8')), devTask, '開發組的 TASK.md 沒被蓋掉');
+  const qcRun = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).find((x) => /品管組的任務/.test(x.prompt) && /負責的階段：整理/.test(x.prompt));
+  assert.match(qcRun.prompt, /TASK-品管組\.md/);
+  // 把組員搬到小組資料夾：之後不再共用
+  await api('/api/team', 'PUT', { teamId: qc, cwd: './workspace/qc', moveMembers: true });
+  conf = await api('/api/config');
+  assert.equal(conf.agents.find((a) => a.id === q2).cwd, path.join(dir, 'workspace', 'qc'));
+  assert.deepEqual(conf.teams.find((x) => x.id === qc).sharedWith, []);
 });

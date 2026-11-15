@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.4.0';
+const VERSION = '3.4.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -111,6 +111,26 @@ const agentById = (id) => AGENTS.find((a) => a.id === id);
 // 舊設定（只有一個 workflow）會自動變成第一個小組「開發組」，原本的成員都放進去
 const teamById = (id) => CONFIG.teams.find((t) => t.id === id);
 const teamMembers = (teamId) => CONFIG.agents.filter((a) => !a.standalone && a.team === teamId);
+// 小組的工作資料夾：新成員預設放這裡；不同小組最好分開，共用時任務檔會自動分開命名
+const sameDir = (a, b) => path.resolve(ROOT, a || '').toLowerCase() === path.resolve(ROOT, b || '').toLowerCase();
+function cleanTeamCwd(raw) {
+  const v = String(raw || '').trim().replace(/^"|"$/g, '').slice(0, 300);
+  if (!v) return '';
+  const dir = security.assertAllowedDir(v);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+function teamDirs(t) {
+  const dirs = teamMembers(t.id).map((a) => a.cwd || './workspace');
+  if (t.cwd) dirs.push(t.cwd);
+  return dirs;
+}
+const sharedWith = (t) => CONFIG.teams.filter((o) => o !== t && teamDirs(o).some((d) => teamDirs(t).some((e) => sameDir(d, e)))).map((o) => o.name);
+// 換了工作資料夾：舊的 CLI 對話是在原本的資料夾開的，接不上，下一輪改開新對話
+function dropSessions(id) {
+  for (const k of Object.keys(state.sessions)) if (k === id || k.endsWith(':' + id)) { delete state.sessions[k]; delete state.ctx[k]; }
+  saveState();
+}
 function normalizeTeams() {
   let changed = false;
   if (!Array.isArray(CONFIG.teams) || !CONFIG.teams.length) {
@@ -230,7 +250,7 @@ function buildPrompt(agent, text, opts = {}) {
   const key = sessionKey(agent, opts), sh = state.shifts[key];
   const handover = sh && sh.pendingNote && !state.sessions[key]
     ? '\n\n【換班：你是接手的第 ' + sh.n + ' 班】前一班的對話太長，換成你接手；你看不到前一班的對話。以下是前一班留下的交班筆記，先讀完，再處理下面的訊息' +
-      (opts.taskId ? '（也可以看工作資料夾的 TASK.md）' : '') + '：\n' + (sh.note || '（前一班沒有留下筆記，請從工作資料夾的檔案判斷進度）') + '\n【交班筆記結束】'
+      (opts.taskId ? '（也可以看工作資料夾的 ' + tasks.taskDocName(opts.taskId) + '）' : '') + '：\n' + (sh.note || '（前一班沒有留下筆記，請從工作資料夾的檔案判斷進度）') + '\n【交班筆記結束】'
     : '';
   if (opts.interject) {
     body = '【使用者插話：你剛才的工作被暫停了】\n' + text +
@@ -914,7 +934,9 @@ function cleanAgent(input, existingId) {
     engine: str(input.engine),
     model: str(input.model, 80),
     effort: str(input.effort),
-    cwd: security.assertAllowedDir(str(input.cwd, 300) || './workspace'),
+    // 沒填工作資料夾：用所屬小組的資料夾，沒有就用 ./workspace
+    cwd: security.assertAllowedDir(str(input.cwd, 300) || (!input.standalone && (teamById(String(input.team || '')) ||
+      teamById((CONFIG.agents.find((x) => x.id === existingId) || {}).team) || CONFIG.teams[0] || {}).cwd) || './workspace'),
     persona: str(input.persona, 8000),
   };
   if (!a.name) throw new Error('請填名稱');
@@ -1230,7 +1252,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/usage/refresh' && req.method === 'POST') { probeUsage(); return send(res, 200, { ok: true }); }
     if (p === '/api/config' && req.method === 'GET') {
       return send(res, 200, {
-        agents: CONFIG.agents.map(maskAgent), teams: CONFIG.teams, workflow: CONFIG.teams[0].workflow, maxRelayHops: maxHops(), approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
+        agents: CONFIG.agents.map(maskAgent), teams: CONFIG.teams.map((t) => ({ ...t, sharedWith: sharedWith(t) })), workflow: CONFIG.teams[0].workflow, maxRelayHops: maxHops(), approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
         harness: harness.cfg(),
         options: { engines: ENGINES, efforts: EFFORTS, permissionModes: PERMISSION_MODES, sandboxes: SANDBOXES },
       });
@@ -1262,6 +1284,10 @@ const server = http.createServer(async (req, res) => {
         if (old.team && (a.standalone || a.team !== old.team)) {
           const t = teamById(old.team), owned = t ? t.workflow.stages.filter((st) => st.owner === a.id) : [];
           if (owned.length) return send(res, 400, { error: '「' + a.name + '」是「' + t.name + '」工作流程「' + owned.map((x) => x.name).join('、') + '」的負責人，請先到「⚙️ 工作流程」換人，再' + (a.standalone ? '改成獨立成員' : '換小組') });
+        }
+        if (!sameDir(old.cwd || './workspace', a.cwd)) {
+          if (runs.has(a.id)) return send(res, 409, { error: '這位成員還在工作，先停止再換工作資料夾' });
+          dropSessions(a.id);
         }
         CONFIG.agents[idx] = a;
         normalizeTeams();
@@ -1313,7 +1339,9 @@ const server = http.createServer(async (req, res) => {
       if (CONFIG.teams.some((t) => t.name === name)) return send(res, 400, { error: '已經有叫「' + name + '」的小組' });
       if (CONFIG.teams.length >= 12) return send(res, 400, { error: '小組最多 12 個' });
       let id; do { id = 't' + Date.now().toString(36).slice(-5) + Math.random().toString(36).slice(2, 4); } while (teamById(id));
-      CONFIG.teams.push({ id, name, icon: [...String(body.icon || '🏢')].slice(0, 2).join('') || '🏢', workflow: taskLib.normalizeWorkflow(null, []) });
+      let cwd;
+      try { cwd = cleanTeamCwd(body.cwd || './workspace/' + id); } catch (e) { return send(res, 400, { error: e.message }); }
+      CONFIG.teams.push({ id, name, icon: [...String(body.icon || '🏢')].slice(0, 2).join('') || '🏢', cwd, workflow: taskLib.normalizeWorkflow(null, []) });
       saveConfig(); agentsChanged();
       return send(res, 200, { ok: true, id });
     }
@@ -1336,6 +1364,19 @@ const server = http.createServer(async (req, res) => {
         team.name = n;
       }
       if (typeof body.icon === 'string' && body.icon.trim()) team.icon = [...body.icon.trim()].slice(0, 2).join('');
+      if (typeof body.cwd === 'string') {
+        let cwd;
+        try { cwd = cleanTeamCwd(body.cwd); } catch (e) { return send(res, 400, { error: e.message }); }
+        const moving = body.moveMembers === true && cwd ? teamMembers(team.id).filter((a) => !sameDir(a.cwd || './workspace', cwd)) : [];
+        if (moving.length) {
+          const busy = moving.filter((a) => runs.has(a.id)).map((a) => a.name);
+          if (busy.length) return send(res, 409, { error: busy.join('、') + ' 還在工作，先停止再搬資料夾' });
+          if (tasks.activeOf(team.id)) return send(res, 409, { error: '這個小組還有進行中的任務，任務結束後再搬資料夾' });
+        }
+        if (cwd) team.cwd = cwd; else delete team.cwd;
+        for (const a of moving) { a.cwd = cwd; dropSessions(a.id); }
+        if (moving.length) reloadAgents();
+      }
       if (body.workflow && typeof body.workflow === 'object') team.workflow = taskLib.cleanWorkflow(body.workflow, teamMembers(team.id));
       const h = Math.round(Number(body.maxRelayHops));
       if (h >= 1 && h <= 50) CONFIG.maxRelayHops = h;

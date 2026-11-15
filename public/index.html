@@ -283,6 +283,7 @@
     .agent .role { display: none; }
     .bubble { max-width: 90%; }
   }
+.warn-line{color:#d97706}
 </style>
 </head>
 <body>
@@ -336,7 +337,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.4.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.4.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -806,7 +807,7 @@ async function openAgentForm(id) {
   const editing = id ? CFG.agents.find((x) => x.id === id) : null;
   if (id && !editing) { toast('找不到這位成員'); return; }
   const a = editing || { name: '', avatar: '🤖', role: '', engine: 'claude', model: DEFAULT_MODEL.claude, effort: 'high',
-    permissionMode: 'auto', sandbox: 'workspace-write', cwd: './workspace', persona: '' };
+    permissionMode: 'auto', sandbox: 'workspace-write', cwd: teamCwd(TEAM_SEL) || './workspace', persona: '' };
   const others = CFG.agents.filter((x) => x.id !== id);
   const unrestricted = !Array.isArray(a.canHandoffTo);
   const live = agentOf(id);
@@ -905,8 +906,8 @@ async function openAgentForm(id) {
       </div>
       <div class="field full">
         <label>工作資料夾</label>
-        <input id="f_cwd" value="${esc(a.cwd || './workspace')}" placeholder="./workspace 或 C:/Users/你/專案">
-        <span class="help">要和同事交接檔案的話，建議用同一個資料夾</span>
+        <input id="f_cwd" value="${esc(a.cwd || teamCwd(a.team || TEAM_SEL) || './workspace')}" placeholder="./workspace 或 C:/Users/你/專案">
+        <span class="help">同一小組的成員用同一個資料夾才能交接檔案（預設是小組的資料夾）；不同小組請分開。換資料夾後會開新的對話</span>
       </div>
       <div class="field full">
         <label>額外可以存取的資料夾</label>
@@ -1017,6 +1018,13 @@ async function openAgentForm(id) {
   syncKind();
   $('f_standalone').onchange = syncKind;
   engineSel.onchange = () => { syncEngine(true); syncKind(); };
+  // 換小組時，工作資料夾還是預設值（空白、./workspace 或原本小組的資料夾）就跟著換成新小組的資料夾
+  let prevTeam = $('f_team').value;
+  $('f_team').onchange = () => {
+    const cur = $('f_cwd').value.trim(), next = teamCwd($('f_team').value) || './workspace';
+    if (!cur || cur === './workspace' || (teamCwd(prevTeam) && cur === teamCwd(prevTeam))) $('f_cwd').value = next;
+    prevTeam = $('f_team').value;
+  };
   $('f_tpl_ledger').onclick = () => {
     if (!$('f_name').value.trim()) $('f_name').value = '記帳員';
     setAvatar('📒');
@@ -1099,16 +1107,24 @@ function openNewTeam() {
     <div class="fgrid">
       <div class="field"><label>名稱</label><input id="nt_name" maxlength="20" placeholder="例如：EM 報表組"></div>
       <div class="field"><label>圖示（一個 emoji）</label><input id="nt_icon" maxlength="4" value="📊"></div>
+      <div class="field full"><label>📁 工作資料夾</label><input id="nt_cwd" value="./workspace/team${(TEAMS || []).length + 1}">
+        <span class="help">系統會自動建立這個資料夾；之後加進這個小組的成員預設都在這裡工作，和其他小組的檔案分開。可以改成好記的名字，例如 ./workspace/em</span></div>
     </div>
-    <p class="help">建議每個小組用自己的工作資料夾（例如 ./workspace/em），不然兩個小組的 TASK.md、WORKFLOW.md 會寫在同一個地方。</p>
     <div class="modal-actions"><span class="spacer"></span><button id="nt_cancel">取消</button><button class="primary" id="nt_ok">建立</button></div>`);
   $('nt_cancel').onclick = closeModal;
   $('nt_ok').onclick = async () => {
     try {
-      const r = await api('/api/teams', { method: 'POST', body: JSON.stringify({ name: $('nt_name').value, icon: $('nt_icon').value }) });
+      const r = await api('/api/teams', { method: 'POST', body: JSON.stringify({ name: $('nt_name').value, icon: $('nt_icon').value, cwd: $('nt_cwd').value }) });
       TEAM_SEL = r.id; await loadWorkflow(); closeModal(); renderAgents(); updateTop();
       toast('✅ 已建立小組，接著新增成員並設定流程');
     } catch (e) { toast(e.message); }
+  };
+  // 名稱有英文或數字時，資料夾名稱跟著變（例如「EM 報表組」→ ./workspace/em）；使用者改過資料夾就不再自動改
+  let autoCwd = $('nt_cwd').value;
+  $('nt_name').oninput = () => {
+    if ($('nt_cwd').value !== autoCwd) return;
+    const slug = ($('nt_name').value.match(/[A-Za-z0-9]+/g) || []).join('-').toLowerCase();
+    if (slug) $('nt_cwd').value = autoCwd = './workspace/' + slug;
   };
   setTimeout(() => $('nt_name').focus(), 50);
 }
@@ -1126,6 +1142,10 @@ async function openTeamForm() {
     <div class="fgrid">
       <div class="field"><label>小組名稱</label><input id="tm_name" value="${esc(team.name)}" maxlength="20"></div>
       <div class="field"><label>小組圖示</label><input id="tm_icon" value="${esc(team.icon || '')}" maxlength="4"></div>
+      <div class="field full"><label>📁 小組工作資料夾</label><input id="tm_cwd" value="${esc(team.cwd || '')}" placeholder="例如 ./workspace/em（空白 = 成員各自設定）">
+        <span class="help">新加入這個小組的成員預設用這個資料夾。</span>
+        ${members.length ? `<label class="opt"><input type="checkbox" id="tm_move"> 把組內成員的工作資料夾也改成這裡（原本資料夾裡的檔案不會搬過去，成員會開新的對話）</label>` : ''}
+        ${(team.sharedWith || []).length ? `<span class="help warn-line">⚠️ 和「${esc(team.sharedWith.join('、'))}」用同一個資料夾。系統會把任務檔分開命名（例如 TASK-${esc(team.name)}.md），不會互相覆蓋，但兩組的檔案會混在一起，建議分開。</span>` : ''}</div>
       <div class="field"><label>流程名稱</label><input id="w_name" value="${esc(wf.name)}" maxlength="40"></div>
       <div class="field"><label>每件任務最多交接幾次</label><input id="t_hops" type="number" min="1" max="50" value="${CFG.maxRelayHops}"><span class="help">超過會暫停，請你決定下一步</span></div>
       <div class="field"><label>🔁 同一階段最多重做幾次</label><input id="h_rework" type="number" min="1" max="20" value="${CFG.harness.maxReworks}"><span class="help">被退回或自動檢查失敗超過這個次數，就暫停交給你決定</span></div>
@@ -1250,7 +1270,7 @@ async function openTeamForm() {
     try {
       const takeTurns = [...document.querySelectorAll('#w_turns input:checked')].map((x) => x.value);
       const harness = { maxReworks: $('h_rework').value, maxTaskMinutes: $('h_minutes').value, checkTimeoutSec: $('h_timeout').value, shiftPercent: $('h_shift').value };
-      await api('/api/team', { method: 'PUT', body: JSON.stringify({ teamId: team.id, name: $('tm_name').value, icon: $('tm_icon').value, workflow: wf, maxRelayHops: $('t_hops').value, takeTurns, approveWritableHandoffs: $('w_strict').checked, harness }) });
+      await api('/api/team', { method: 'PUT', body: JSON.stringify({ teamId: team.id, name: $('tm_name').value, icon: $('tm_icon').value, cwd: $('tm_cwd').value, moveMembers: !!($('tm_move') && $('tm_move').checked), workflow: wf, maxRelayHops: $('t_hops').value, takeTurns, approveWritableHandoffs: $('w_strict').checked, harness }) });
       await loadWorkflow(); closeModal(); renderAgents(); updateTop(); toast('✅ ' + $('tm_name').value + ' 的工作流程已儲存');
     } catch (e) { toast(e.message); }
   };
@@ -1272,6 +1292,7 @@ async function loadTasks() {
 }
 // 小組：TEAM_SEL 是「全員」頁目前看的小組（任務列、送出、工作流程都以它為準）
 let TEAMS = [], TEAM_SEL = null;
+const teamCwd = (id) => { const t = TEAMS.find((x) => x.id === id) || ((typeof CFG !== 'undefined' && CFG && CFG.teams) || []).find((x) => x.id === id); return (t && t.cwd) || ''; };
 const curTeam = () => TEAMS.find((t) => t.id === TEAM_SEL) || TEAMS[0] || null;
 const teamTask = (tid) => ((TASKS && TASKS.actives) || []).find((t) => t.teamId === tid) || null;
 const selTask = () => (curTeam() ? teamTask(curTeam().id) : (TASKS && TASKS.active)) || null;
