@@ -113,3 +113,34 @@ test('bootstrap only persists a password hash, never plaintext', () => {
   assert.equal(message, '');
   assert.equal(two.login(req(), secret).ok, true);
 });
+
+test('remembered login survives a restart; normal login and password change do not', () => {
+  const { root, auth, env } = fixture();
+  const restart = (e = env) => createSecurity({ root, dataDir: path.join(root, 'data'), host: '0.0.0.0', port: 3939, env: e, log: () => {} });
+  const r1 = req({ host: 'localhost:3939' }), r2 = req({ host: 'localhost:3939' });
+  const remembered = auth.login(r1, 'testing-password-at-least-16', true);
+  const normal = auth.login(r2, 'testing-password-at-least-16', false);
+  assert.match(remembered.cookie, /Max-Age=2592000/);
+  assert.doesNotMatch(normal.cookie, /Max-Age/);
+  r1.headers.cookie = remembered.cookie.split(';')[0];
+  r2.headers.cookie = normal.cookie.split(';')[0];
+  const file = fs.readFileSync(path.join(root, 'data', 'remembered-logins.json'), 'utf8');
+  assert.doesNotMatch(file, new RegExp(r1.headers.cookie.split('=')[1]), 'raw session id is not stored');
+
+  let again = restart();
+  assert.equal(again.authenticated(r1), true);
+  assert.equal(again.authenticated(r2), false);
+
+  again.logout(r1);
+  assert.equal(restart().authenticated(r1), false, 'logout is persisted');
+
+  const r3 = req({ host: 'localhost:3939' });
+  r3.headers.cookie = again.login(r3, 'testing-password-at-least-16', true).cookie.split(';')[0];
+  assert.equal(restart({ ...env, ACCESS_TOKEN: 'another-password-at-least-16' }).authenticated(r3), false, 'password change invalidates');
+
+  const r4 = req({ host: 'localhost:3939' });
+  again = restart();
+  r4.headers.cookie = again.login(r4, 'testing-password-at-least-16', true).cookie.split(';')[0];
+  again.logoutAll(r4);
+  assert.equal(restart().authenticated(r4), false);
+});

@@ -6,6 +6,8 @@ const path = require('node:path');
 
 const hours = (n) => n * 60 * 60 * 1000;
 const SESSION_TTL = hours(24);
+const REMEMBER_TTL = hours(24 * 30); // 「記住這台電腦」：30 天，伺服器重開也不用重新登入
+const MAX_REMEMBERED = 20;
 const LOGIN_WINDOW = 10 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 5;
 const DANGEROUS_MODES = new Set(['danger-full-access', 'bypassPermissions']);
@@ -66,8 +68,28 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
       log('請安全保存；伺服器僅儲存雜湊，不會保存明文密碼。也可以用 ACCESS_TOKEN 設定新密碼。');
     }
   }
+  // sessions：key 是 session id 的 SHA-256（記住的登入會寫進檔案，檔案外流也不能直接拿來登入）
   const sessions = new Map();
   const failures = new Map();
+  const rememberFile = path.join(dataDir, 'remembered-logins.json');
+  const sidHash = (sid) => crypto.createHash('sha256').update(String(sid)).digest('hex');
+  // 換了密碼（重新產生或改 ACCESS_TOKEN），之前「記住」的登入全部失效
+  const pwTag = crypto.createHash('sha256').update(Buffer.concat([Buffer.from('agentchat-remember:'), passwordHash])).digest('hex').slice(0, 32);
+  function saveRemembered() {
+    const list = [...sessions.entries()].filter(([, v]) => v.remember && v.exp > Date.now())
+      .sort((a, b) => b[1].exp - a[1].exp).slice(0, MAX_REMEMBERED).map(([h, v]) => ({ h, exp: v.exp }));
+    try {
+      fs.writeFileSync(rememberFile + '.tmp', JSON.stringify({ version: 1, pw: pwTag, sessions: list }) + '\n', { mode: 0o600 });
+      fs.renameSync(rememberFile + '.tmp', rememberFile);
+    } catch {}
+  }
+  try {
+    const saved = JSON.parse(fs.readFileSync(rememberFile, 'utf8'));
+    if (saved.version === 1 && saved.pw === pwTag && Array.isArray(saved.sessions)) {
+      for (const x of saved.sessions.slice(0, MAX_REMEMBERED))
+        if (/^[0-9a-f]{64}$/.test(x.h) && Number(x.exp) > Date.now() && Number(x.exp) <= Date.now() + REMEMBER_TTL) sessions.set(x.h, { exp: Number(x.exp), remember: true });
+    } else if (fs.existsSync(rememberFile)) saveRemembered();
+  } catch {}
   const allowed = new Set(['localhost', '127.0.0.1', '::1']);
   if (host !== '0.0.0.0' && host !== '::') allowed.add(String(host).replace(/^\[|\]$/g, '').toLowerCase());
   for (const h of String(env.ALLOWED_HOSTS || '').split(',').map((x) => x.trim()).filter(Boolean)) {
@@ -97,16 +119,17 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
   }
   function authenticated(req) {
     const sid = sessionId(req);
-    const exp = sid && sessions.get(sid);
-    if (!exp) return false;
-    if (exp < Date.now()) { sessions.delete(sid); return false; }
+    if (!sid) return false;
+    const h = sidHash(sid), s = sessions.get(h);
+    if (!s) return false;
+    if (s.exp < Date.now()) { sessions.delete(h); if (s.remember) saveRemembered(); return false; }
     return true;
   }
   function cookie(req, sid, maxAge) {
     const secure = !!req.socket.encrypted || env.COOKIE_SECURE === '1';
-    return 'agentchat_session=' + sid + '; HttpOnly; SameSite=Strict; Path=/api; Max-Age=' + maxAge + (secure ? '; Secure' : '');
+    return 'agentchat_session=' + sid + '; HttpOnly; SameSite=Strict; Path=/api' + (maxAge == null ? '' : '; Max-Age=' + maxAge) + (secure ? '; Secure' : '');
   }
-  function login(req, supplied) {
+  function login(req, supplied, remember) {
     const key = req.socket.remoteAddress || 'unknown';
     const now = Date.now();
     const entry = failures.get(key);
@@ -119,15 +142,23 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     }
     failures.delete(key);
     const sid = crypto.randomBytes(32).toString('base64url');
-    sessions.set(sid, now + SESSION_TTL);
-    if (sessions.size > 64) {
-      const first = sessions.keys().next().value;
-      sessions.delete(first);
-    }
-    return { ok: true, cookie: cookie(req, sid, Math.floor(SESSION_TTL / 1000)) };
+    const ttl = remember ? REMEMBER_TTL : SESSION_TTL;
+    sessions.set(sidHash(sid), { exp: now + ttl, remember: !!remember });
+    for (const [h, v] of sessions) if (v.exp < now) sessions.delete(h);
+    while (sessions.size > 64) sessions.delete(sessions.keys().next().value);
+    if (remember) saveRemembered();
+    // 沒勾「記住」：瀏覽器關掉就失效（不設 Max-Age），伺服器重開也要重新登入
+    return { ok: true, cookie: cookie(req, sid, remember ? Math.floor(ttl / 1000) : null) };
   }
   function logout(req) {
-    sessions.delete(sessionId(req));
+    const h = sidHash(sessionId(req)), s = sessions.get(h);
+    sessions.delete(h);
+    if (s && s.remember) saveRemembered();
+    return cookie(req, '', 0);
+  }
+  // 登出所有裝置（包含記住的登入）
+  function logoutAll(req) {
+    sessions.clear(); saveRemembered();
     return cookie(req, '', 0);
   }
   function jsonRequest(req) {
@@ -186,7 +217,7 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     for (const v of [password, ...secrets]) if (typeof v === 'string' && v.length >= 8) s = s.split(v).join('[REDACTED]');
     return s;
   }
-  return { verifyHost, checkOrigin, authenticated, jsonRequest, login, logout, checkAgent,
+  return { verifyHost, checkOrigin, authenticated, jsonRequest, login, logout, logoutAll, checkAgent,
     assertAllowedDir, fileWithin, safeEnvironment, redact, allowedRoots: [...allowedRoots] };
 }
 module.exports = { createSecurity, inside };

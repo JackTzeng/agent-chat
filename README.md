@@ -337,7 +337,7 @@ workspace/       預設工作資料夾（自動產生）
 
 
 ## 安全修補（2026-11-14）
-- 所有 API（包含 localhost）均須登入。首次執行時，隨機密碼會顯示在 start.bat 的黑色視窗（只顯示一次），本機只保存 `data/admin-password-hash.json`；已有 ACCESS_TOKEN 環境變數時沿用。**忘記密碼**：刪除 `data/admin-password-hash.json` 再重開 start.bat，會產生新密碼。伺服器重開後需要重新登入。
+- 所有 API（包含 localhost）均須登入。首次執行時，隨機密碼會顯示在 start.bat 的黑色視窗（只顯示一次），本機只保存 `data/admin-password-hash.json`；已有 ACCESS_TOKEN 環境變數時沿用。**忘記密碼**：刪除 `data/admin-password-hash.json` 再重開 start.bat，會產生新密碼。登入時勾「記住這台電腦 30 天」，伺服器重開或更新後就不用重新登入（只保存 session 雜湊在 `data/remembered-logins.json`，換密碼會全部失效）；左下角「🔒 登出」可以登出所有裝置。
 - Web 會話使用 HttpOnly / SameSite=Strict Cookie，未再使用 URL token / localStorage。
 - 遠端連線請配合 Tailscale，設定 `HOST` 與 `ALLOWED_HOSTS`；勿將 3939 port 公開到網際網路。
 - Agent 工作目錄預設只能在 `workspace/` 下；若需要其他根目錄，先建立資料夾再以 `AGENT_ALLOWED_ROOTS` 白名單設定，Windows 多個目錄以分號區隔。

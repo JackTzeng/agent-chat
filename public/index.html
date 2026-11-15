@@ -327,7 +327,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.2.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.2.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1387,8 +1387,10 @@ function renderUsage() {
     return h;
   };
   el.innerHTML = `<div class="uh">用量額度<button id="usageBtn" title="送出一個極小的請求，取得最新額度">${USAGE && USAGE.probing ? '查詢中…' : '🔄 查詢'}</button></div>` +
-    block('Claude', USAGE && USAGE.claude) + block('Codex', USAGE && USAGE.codex) + tgLineHTML();
+    block('Claude', USAGE && USAGE.claude) + block('Codex', USAGE && USAGE.codex) + tgLineHTML() +
+    '<div class="tg-line" id="logoutLine" title="登出這個瀏覽器；可以選擇登出所有裝置">🔒 登出</div>';
   $('tgLine').onclick = openTelegramForm;
+  $('logoutLine').onclick = openLogout;
   $('usageBtn').onclick = async () => {
     $('usageBtn').textContent = '查詢中…';
     try { await api('/api/usage/refresh', { method: 'POST' }); } catch (e) { toast(e.message); }
@@ -1589,7 +1591,7 @@ function connectEvents() {
 
 async function init() {
   try { agents = await api('/api/agents'); }
-  catch (e) { showLogin(e.message); return; }
+  catch (e) { showLogin(e.message === '請先登入' ? '' : e.message); return; }
   let saved = null; try { saved = localStorage.getItem('agentchat_current'); } catch {}
   // 網頁檔案 git pull 後馬上是新的，但伺服器要重開才會更新；版本不一致就提醒
   api('/api/info').then((i) => {
@@ -1603,18 +1605,37 @@ async function init() {
   await Promise.all([loadWorkflow(), loadTasks()]);
   selectAgent(saved === ALL || agents.some((a) => a.id === saved) ? saved : agents[0].id);
 }
+function openLogout() {
+  openModal(`<h2>🔒 登出</h2>
+    <p class="lead">登出後要重新輸入密碼。如果手機或別台電腦曾勾「記住這台電腦」而你不再信任它，選「登出所有裝置」。</p>
+    <div class="modal-actions"><button id="lo_all">登出所有裝置</button><span class="spacer"></span><button id="lo_cancel">取消</button><button class="primary" id="lo_one">登出這個瀏覽器</button></div>`);
+  const go = async (all) => {
+    try { await api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ all }) }); } catch {}
+    location.reload();
+  };
+  $('lo_cancel').onclick = closeModal;
+  $('lo_one').onclick = () => go(false);
+  $('lo_all').onclick = () => { if (confirm('所有裝置（包含記住的電腦、手機）都要重新登入，確定嗎？')) go(true); };
+}
 function showLogin(message) {
+  let remember = true;
+  try { remember = localStorage.getItem('agentchat_remember') !== '0'; } catch {}
   openModal(`<h2>Agent Chat 安全登入</h2>
-    <p class="lead">請輸入 ACCESS_TOKEN 或首次啟動顯示的管理密碼。系統只保存密碼雜湊；若遺失，請重新設定 ACCESS_TOKEN。</p>
-    <div class="field"><input id="authSecret" type="password" placeholder="管理密碼" autocomplete="current-password"></div>
+    <p class="lead">輸入第一次啟動時黑色視窗顯示的管理密碼（或 start.bat 設定的 ACCESS_TOKEN）。忘記密碼：關掉黑色視窗，刪除 data\\admin-password-hash.json 後重開 start.bat，會顯示新密碼。</p>
+    <form id="authForm" onsubmit="return false">
+      <input type="text" name="username" value="agent-chat" autocomplete="username" hidden>
+      <div class="field"><input id="authSecret" type="password" placeholder="管理密碼" autocomplete="current-password"></div>
+      <label class="opt"><input type="checkbox" id="authRemember" ${remember ? 'checked' : ''}> 記住這台電腦 30 天（伺服器重開、更新後也不用重新登入；公用電腦請不要勾）</label>
+    </form>
     <p id="authError" class="seg-error">${esc(message || '')}</p>
     <div class="modal-actions"><button id="authSubmit" class="primary">登入</button></div>`);
   async function submit() {
-    const password = $('authSecret').value;
+    const password = $('authSecret').value, rem = $('authRemember').checked;
+    try { localStorage.setItem('agentchat_remember', rem ? '1' : '0'); } catch {}
     $('authSubmit').disabled = true;
     try {
       const r = await fetch('/api/auth/login', { method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: password }) });
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: password, remember: rem }) });
       if (!r.ok) throw new Error('密碼不正確或暫時鎖定，請檢查伺服器設定');
       closeModal();
       await init();

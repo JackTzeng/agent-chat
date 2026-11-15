@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.2.0';
+const VERSION = '3.2.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -939,7 +939,7 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/auth/login' && req.method === 'POST') {
     if (!security.jsonRequest(req)) return send(res, 415, { error: '只接受 application/json' });
     try {
-      const body = await readBody(req), result = security.login(req, body.token);
+      const body = await readBody(req), result = security.login(req, body.token, body.remember === true);
       if (!result.ok) return send(res, result.blocked ? 429 : 401, { error: '登入失敗或暫時鎖定' });
       res.setHeader('Set-Cookie', result.cookie);
       return send(res, 200, { ok: true });
@@ -947,7 +947,9 @@ const server = http.createServer(async (req, res) => {
   }
   if (p.startsWith('/api/') && !security.authenticated(req)) return send(res, 401, { error: '請先登入' });
   if (p === '/api/auth/logout' && req.method === 'POST') {
-    res.setHeader('Set-Cookie', security.logout(req));
+    if (!security.jsonRequest(req) || !security.checkOrigin(req)) return send(res, 403, { error: '拒絕' });
+    const all = security.authenticated(req) && (await readBody(req)).all === true;
+    res.setHeader('Set-Cookie', all ? security.logoutAll(req) : security.logout(req));
     return send(res, 200, { ok: true });
   }
   if (p.startsWith('/api/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) &&
