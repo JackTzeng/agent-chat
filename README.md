@@ -22,10 +22,21 @@
 
 ## 2. 啟動
 
-- Windows：雙擊 `start.bat`
-- 或在這個資料夾開終端機，輸入 `node server.js`
+- Windows：雙擊 `start.bat`（會自動打開 **http://localhost:3939**）
+- 或在這個資料夾開終端機，輸入 `node launcher.js`
 
-接著用瀏覽器打開 **http://localhost:3939**。
+**你自己的設定**（CLI 路徑、允許的資料夾、遠端連線）寫在 `start.local.bat`：複製 `start.local.example.bat`、改名成 `start.local.bat` 再修改。這個檔不會進 git，更新時不會被蓋掉。
+
+### ⬆️ 一鍵更新／重新啟動
+
+不用再 `git pull` 再重開 start.bat：
+
+- 網頁左下角「⬆️ 更新／重新啟動」：顯示有哪些新功能，按「⬆️ 更新並重新啟動」就會下載、重啟，頁面自動重新整理；只想重開伺服器就按「🔄 只重新啟動」
+- Telegram：`/update`（檢查並更新）、`/restart`（重新啟動），好了會通知你；有成員正在工作時會先問你，確定就傳 `/update yes`
+- 伺服器每 6 小時在背景檢查一次，有新版時「⬆️ 更新」旁邊會出現「新」
+- **安全網**：新版本一分鐘內起不來，會自動退回原本的版本並告訴你；你自己改過的程式檔不會被蓋掉（會停下來告訴你是哪些檔）；舊的 start.bat 裡的 `set` 設定會自動搬到 start.local.bat
+- 重新啟動時，正在進行的任務會暫停，之後回覆就能繼續；沒勾「記住這台電腦」的話要再輸入一次密碼
+- 需要用 v3.6.0 以後的 start.bat 啟動（它會執行 launcher.js，由 launcher 負責重新啟動）
 
 ## 3. 自訂團隊：編輯 `agents.json`
 
@@ -235,7 +246,7 @@ Agent = Model + Harness。模型是大腦，Harness 是圍繞模型的執行系�
 | 🧪 自動檢查（Sensors） | 每個階段可以設定最多 5 個檢查指令（例如 `npm test`）。成員寫好交接後，系統在它的工作資料夾執行，**全部通過才交出**；沒通過就把錯誤輸出退回給同一位成員修正，通過的結果會附給下一位 | ⚙️ 工作流程 → 每個階段的「🧪 自動檢查」 |
 | 🔁 循環與預算（Agentic Loop） | 同一個階段最多重做幾次（被退回或檢查失敗都算）、每件任務的交接上限與時間上限。超過就暫停、交給你決定；你回覆後會再給一次預算 | ⚙️ 工作流程 |
 | 🧠 外部記憶（Memory） | 成員寫 `【決策】…` 會存進專案記憶，任務完成時自動記下成果；每一輪附上同一小組最近 10 筆，完整內容在工作資料夾的 `MEMORY.md`（只寫同小組的紀錄）。記憶只當參考，不會被當成指令 | 🧭 Harness → 記憶 |
-| 🔐 權限（Permissions） | 一覽每位成員能不能改檔案、可存取哪些資料夾、哪些階段要核准 | 成員的 ⚙️ 設定、`start.bat` 的 `AGENT_ALLOWED_ROOTS` |
+| 🔐 權限（Permissions） | 一覽每位成員能不能改檔案、可存取哪些資料夾、哪些階段要核准 | 成員的 ⚙️ 設定、`start.local.bat` 的 `AGENT_ALLOWED_ROOTS` |
 | 📊 觀測（Observability） | 每一輪的耗時、tokens、≈API 價、出錯、插話，以及檢查、預算暫停、守則建議等事件；存在 `data/harness/runs.jsonl` | 🧭 Harness → 紀錄 |
 
 #### 守則的適用範圍
@@ -356,7 +367,10 @@ Agent = Model + Harness。模型是大腦，Harness 是圍繞模型的執行系�
 **成員一直沒回應、看起來卡住？** 成員卡片上會顯示「⏱ 工作中 X 分鐘」；超過 10 分鐘沒有任何輸出會標示「⚠️ 可能卡住」，並通知 Telegram。點進那位成員，按上方的「🔍 診斷」可以看到實際執行的指令、CLI 的錯誤訊息（stderr）與最後的輸出；按「📋 複製診斷資訊」可以貼給 Claude 協助判斷。也可以在診斷畫面停止這一輪或清除排隊。卡住判定的時間可以在 `agents.json` 加上 `"stallMinutes": 15` 調整。
 
 
-**git pull 之後出現「not found」或黃色提醒？** `git pull` 只會更新檔案，正在跑的伺服器還是舊程式。請關掉 start.bat 的黑色視窗再重開，然後按 F5。
+**出問題、想請 Claude 幫忙查？** 按左下角「🐞 問題回報」，寫下發生了什麼事，按「📦 產生回報檔」：會下載一個 `agentchat-report-日期-時間.md`（也存在 `data/reports/`），**把這個檔案拖進 Claude 的對話**就能排查。在手機上可以傳 Telegram `/report 發生了什麼事`，bot 會把檔案傳給你，轉給 Claude 就好。
+回報裡有：版本、git 版本、Windows／Node.js／CLI 版本、成員設定與狀態、小組與流程、進行中的任務（含 TASK.md）、最近的錯誤與事件、網頁端錯誤、Telegram 狀態、伺服器紀錄（包含上次重新啟動或當機前的紀錄）。密碼、token、API 金鑰與成員環境變數的值會自動遮掉；預設不含對話內容，要附上就勾「附上每位成員最近 15 則對話內容」。伺服器紀錄也會存在 `data/logs/server.log`。
+
+**git pull 之後出現「not found」或黃色提醒？** `git pull` 只會更新檔案，正在跑的伺服器還是舊程式。按左下角「⬆️ 更新／重新啟動」→「🔄 只重新啟動」，或關掉黑色視窗再重開 start.bat。
 
 
 **回覆下方的「≈API價 US$…」是什麼？** 這是 Claude Code 估算「如果改用 API 計費大約要多少錢」，只是讓你參考這一輪用量大不大。用 Claude 帳號（Pro / Max）登入時，用的是訂閱額度，**不會另外收費**。除非電腦上設定了 `ANTHROPIC_API_KEY` 環境變數，Claude Code 才會改走 API 計費。
@@ -366,7 +380,7 @@ Agent = Model + Harness。模型是大腦，Harness 是圍繞模型的執行系�
 |---|---|
 | 「無法啟動 claude / codex」 | 先在終端機輸入 `claude --version`、`codex --version`，確認裝好了 |
 | 回覆是登入或驗證錯誤 | 在終端機直接執行 `claude` 或 `codex` 重新登入 |
-| 想換 port | `$env:PORT="4000"; node server.js` |
+| 想換 port | 在 start.local.bat 加 `set PORT=4000` |
 | 指令不在 PATH 裡 | 用 `CLAUDE_BIN`、`CODEX_BIN` 環境變數指定完整路徑 |
 
 ## 檔案說明
@@ -376,6 +390,11 @@ server.js        後端：呼叫 CLI、解析輸出、推送給網頁
 telegram.js      Telegram 遙控
 tasks.js         工作流程與任務
 harness.js       Harness：守則、自動檢查、預算、專案記憶、觀測紀錄
+diag.js          🐞 問題回報與伺服器紀錄（data/logs、data/reports）
+updater.js       ⬆️ 一鍵更新（git fetch／fast-forward）
+launcher.js      啟動器：執行 server.js，負責重新啟動與更新失敗時自動退回
+start.bat        Windows 啟動檔（會先執行你的 start.local.bat）
+start.local.example.bat  個人設定範本（複製成 start.local.bat，不會進 git）
 public/          前端聊天介面（office.js 是辦公室畫面；vendor/ 裡是 Markdown 套件 marked、DOMPurify）
 agents.example.json  agent 設定範本（第一次啟動會複製成 agents.json）
 agents.json      你自己的 agent 設定（不會上傳到 git，git pull 也不會蓋掉）

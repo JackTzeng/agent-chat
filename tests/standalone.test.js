@@ -60,6 +60,7 @@ function fakeTelegram() {
       }
       if (method === 'sendMessage') { sent.push({ token, chat: j.chat_id, text: j.text }); return ok({}); }
       if (method === 'sendChatAction') return ok(true);
+      if (method === 'sendDocument') { sent.push({ token, method, text: (body.match(/filename="([^"]+)"/) || [])[1] || '', body }); return ok({}); }
       if (method === 'getFile') return ok({ file_id: j.file_id, file_size: 8, file_path: 'photos/file_1.jpg' });
       return ok({});
     });
@@ -72,7 +73,7 @@ function fakeTelegram() {
 
 test('standalone ledger member: no tasks, telegram routing, photos, continuity, env, tools, audit', { timeout: 60000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-standalone-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'agents.example.json'])
+  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'agents.example.json'])
     fs.copyFileSync(path.join(source, f), path.join(dir, f));
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'agents.example.json'), 'utf8'));
@@ -109,7 +110,7 @@ test('standalone ledger member: no tasks, telegram routing, photos, continuity, 
     const j = await res.json(); if (res.status >= 400) throw Object.assign(new Error(j.error || p), { status: res.status }); return j;
   };
   const runs = () => fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
-  const waitFor = async (fn, what) => { for (let i = 0; i < 200; i++) { const v = fn(); if (v) return v; await sleep(50); } throw new Error('timeout: ' + what + '\n' + stdout + stderr); };
+  const waitFor = async (fn, what) => { for (let i = 0; i < 200; i++) { const v = fn(); if (v) return v; await sleep(50); } throw new Error('timeout: ' + what + '\n' + JSON.stringify(tg.sent.slice(-5).map((x) => [x.method, String(x.text).slice(0, 200)])) + '\n' + stdout + stderr); };
 
   const ledger = {
     name: '記帳員', avatar: '📒', role: '家庭記帳', engine: 'claude', model: 'claude-sonnet-5-5', permissionMode: 'default',
@@ -218,4 +219,14 @@ test('standalone ledger member: no tasks, telegram routing, photos, continuity, 
   await waitFor(() => tg.sent.find((s) => s.token === MAIN && new RegExp('已回覆任務 #' + emTask.id).test(s.text)), 'reply by id');
   tg.push(MAIN, 111, { text: '/status' });
   await waitFor(() => tg.sent.find((s) => s.token === MAIN && /報表組｜任務/.test(s.text) && /開發組｜任務/.test(s.text)), 'status lists both');
+
+  // 🐞 /report：產生回報檔並用 sendDocument 傳回來；/restart 不是用 launcher 啟動時會說明
+  tg.push(MAIN, 111, { text: '/report 測試 Telegram 回報' });
+  const doc = await waitFor(() => tg.sent.find((s) => s.token === MAIN && s.method === 'sendDocument'), 'report document');
+  assert.match(doc.text, /^agentchat-report-\d{8}-\d{6}\.md$/);
+  assert.match(doc.body, /測試 Telegram 回報/);
+  assert.match(doc.body, /來源：Telegram/);
+  assert.ok(!doc.body.includes(MAIN), 'bot token 不會出現在回報裡');
+  tg.push(MAIN, 111, { text: '/restart yes' });
+  await waitFor(() => tg.sent.find((s) => s.token === MAIN && /沒辦法自動重啟/.test(s.text)), 'restart needs launcher');
 });

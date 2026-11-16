@@ -32,6 +32,9 @@ const HELP =
   '/stop　全部停止\n' +
   '/new　目前對象開新對話\n' +
   '/usage　Claude / Codex 用量額度\n' +
+  '/report 描述　🐞 產生問題回報檔傳給你（轉給 Claude 排查）\n' +
+  '/update　⬆️ 檢查更新，有新版就更新並重新啟動\n' +
+  '/restart　🔄 重新啟動伺服器\n' +
   '/mute　暫停推送（/unmute 恢復）\n' +
   '/help　顯示這份說明';
 
@@ -399,6 +402,12 @@ exports.start = function start(ctx) {
   });
 
   // 新的守則建議（要到網頁的 🧭 Harness 核准）
+  // 重新啟動完成：通知當初按下 /update、/restart 的聊天室
+  listen('restarted', async ({ chatId, text, version, failed }) => {
+    if (!chatId) return;
+    if (failed && failed.failedAt && Date.now() - failed.failedAt < 300000) await say(chatId, '⚠️ 新版本無法啟動，已自動退回原本的版本 v' + (failed.fromVersion || version) + '。可以傳 /report 產生問題回報給 Claude 看。');
+    else await say(chatId, '✅ ' + (text || '重新啟動') + '完成，現在是 v' + version);
+  });
   listen('proposal', async ({ proposal, fromName, scopeLabel }) => {
     for (const id of pushRecipients()) await say(id, '💡 新的守則建議（' + fromName + (proposal.taskId ? '，任務 #' + proposal.taskId : '') + '）：\n' + proposal.text + (scopeLabel ? '\n（預設只給 ' + scopeLabel + ' 遵守）' : '') + '\n\n請到網頁的「🧭 Harness」核准或略過。');
   });
@@ -486,6 +495,37 @@ exports.start = function start(ctx) {
           return say(chatId, ctx.resetAgent(a.id) ? '🆕 ' + label(a) + ' 已開新對話' : a.name + ' 工作中，請先 /stop');
         }
         case 'usage': return say(chatId, usageText());
+        case 'report': {
+          await say(chatId, '🐞 正在整理問題回報…');
+          try {
+            const r = await ctx.makeReport({ description: arg.trim(), via: 'Telegram', agentId: targetOf(c).id });
+            await sendMedia(chatId, r.file);
+            return say(chatId, '已產生 ' + r.name + '（也存在電腦的 data/reports）。把這個檔案轉傳或拖進 Claude 的對話就能排查；密碼和 token 已經遮掉了。');
+          } catch (e) { return say(chatId, '⚠️ 產生回報失敗：' + e.message); }
+        }
+        case 'update': case 'restart': {
+          const up = ctx.updater;
+          const busy = ctx.agents.filter((a) => ctx.runs.has(a.id)).map((a) => a.name);
+          const running = ctx.tasks.actives().filter((t) => t.status === 'running').length;
+          const sure = /^(yes|y|確定|ok)$/i.test(arg.trim());
+          if (name.toLowerCase() === 'update') {
+            await say(chatId, '🔍 檢查更新中…');
+            const ck = await up.check();
+            if (!ck.ok) return say(chatId, '⚠️ ' + ck.error);
+            if (!ck.behind) return say(chatId, '✅ 已經是最新版 v' + ck.version);
+            const what = '⬆️ 有新版本' + (ck.remoteVersion ? ' v' + ck.remoteVersion : '') + '（目前 v' + ck.version + '）：\n' + ck.commits.slice(0, 8).map((x) => '• ' + x.replace(/^\w+ /, '')).join('\n');
+            if ((busy.length || running) && !sure) return say(chatId, what + '\n\n⚠️ ' + (busy.length ? busy.join('、') + ' 正在工作' : '有任務進行中') + '，重新啟動會中斷（任務會暫停，之後可以繼續）。確定要更新請傳 /update yes');
+            await say(chatId, what + '\n\n更新中…');
+            try {
+              const r = await up.update('Telegram');
+              up.restart({ chatId, text: '更新' });
+              return say(chatId, '🔄 已更新到 ' + (r.toVersion ? 'v' + r.toVersion : r.to) + (r.moved && r.moved.length ? '（start.bat 的設定已搬到 start.local.bat）' : '') + '，重新啟動中，好了會通知你。');
+            } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+          }
+          if ((busy.length || running) && !sure) return say(chatId, '⚠️ ' + (busy.length ? busy.join('、') + ' 正在工作' : '有任務進行中') + '，重新啟動會中斷（任務會暫停，之後可以繼續）。確定請傳 /restart yes');
+          try { up.restart({ chatId, text: '重新啟動' }); } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+          return say(chatId, '🔄 重新啟動中，好了會通知你。');
+        }
         case 'task': {
           if (!arg.trim()) return say(chatId, '用法：/task 任務目標\n例如：/task 做一個讀 CSV 算平均值的 Python 小工具\n指定小組：/task 小組名 目標');
           // 第一個詞是小組名稱 → 交給那個小組；否則交給目前對象所在的小組

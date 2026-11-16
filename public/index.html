@@ -286,6 +286,8 @@
 .warn-line{color:#d97706}
 .hn-load{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}.hn-load span{font-size:12px;padding:2px 8px;border-radius:10px;background:var(--panel2,#eef);}
 .hn-load span.over{background:#fde68a}.hn-item.off{opacity:.55}.hn-item .acts select{max-width:180px}
+.warn-box{background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 10px;margin:8px 0;font-size:13px}.warn-box button{margin-left:8px}
+.rp-ok{background:#ecfdf5;border:1px solid #10b981;border-radius:8px;padding:8px 10px;margin:10px 0;font-size:13px;line-height:1.7}.up-list{margin:6px 0 0 18px;padding:0;font-size:13px}
 </style>
 </head>
 <body>
@@ -333,13 +335,14 @@
 try { localStorage.removeItem('agentchat_token'); } catch {}
 if (location.search) history.replaceState(null, '', location.pathname + location.hash);
 const withToken = (u) => u;
+let UPD_BADGE = false; // 有新版本時，側邊欄的「⬆️ 更新」顯示「新」
 
 const $ = (id) => document.getElementById(id);
 const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.5.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.6.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1498,7 +1501,7 @@ $('settingsBtn').onclick = () => (current === ALL ? openTeamForm() : openAgentFo
 
 function staleWarning(serverVer) {
   const el = $('stale');
-  el.textContent = '⚠️ 伺服器還在跑舊版（' + serverVer + '），網頁已經是 v' + UI_VERSION + '。請關掉 start.bat 的黑色視窗再重開，然後按 F5。';
+  el.textContent = '⚠️ 伺服器還在跑舊版（' + serverVer + '），網頁已經是 v' + UI_VERSION + '。請按左下角「⬆️ 更新／重新啟動」→「🔄 只重新啟動」（或關掉黑色視窗、重新執行 start.bat）。';
   el.classList.add('show');
 }
 
@@ -1569,8 +1572,12 @@ function renderUsage() {
   };
   el.innerHTML = `<div class="uh">用量額度<button id="usageBtn" title="送出一個極小的請求，取得最新額度">${USAGE && USAGE.probing ? '查詢中…' : '🔄 查詢'}</button></div>` +
     block('Claude', USAGE && USAGE.claude) + block('Codex', USAGE && USAGE.codex) + tgLineHTML() +
+    `<div class="tg-line" id="updLine" title="檢查新版本、一鍵更新並重新啟動">⬆️ 更新／重新啟動${UPD_BADGE ? ' <span class="hn-dot">新</span>' : ''}</div>` +
+    '<div class="tg-line" id="repLine" title="出問題時產生一個回報檔，帶給 Claude 排查">🐞 問題回報</div>' +
     '<div class="tg-line" id="logoutLine" title="登出這個瀏覽器；可以選擇登出所有裝置">🔒 登出</div>';
   $('tgLine').onclick = openTelegramForm;
+  $('updLine').onclick = () => openUpdate();
+  $('repLine').onclick = () => openReport();
   $('logoutLine').onclick = openLogout;
   $('usageBtn').onclick = async () => {
     $('usageBtn').textContent = '查詢中…';
@@ -1775,6 +1782,7 @@ function connectEvents() {
     if (ev.kind === 'telegram') { loadTelegram(); return; }
     if (ev.kind === 'task') { loadTasks(); return; }
     if (ev.kind === 'harness' || ev.kind === 'harness-run') { loadHarness(ev.kind === 'harness-run'); return; }
+    if (ev.kind === 'update-available') { if (!UPD_BADGE) { UPD_BADGE = true; renderUsage(); } return; }
     if (ev.kind === 'queue') { refreshQueue(); return; }
     const a = agentOf(ev.agentId); if (!a) return;
     if (ev.kind === 'busy') { a.busy = ev.busy; refreshAgents().then(updateThinking); return; }
@@ -1799,6 +1807,8 @@ async function init() {
     $('ver').textContent = 'v' + i.version;
     if (i.version !== UI_VERSION) staleWarning(i.version);
   }).catch(() => staleWarning('舊版'));
+  // 伺服器定期在背景檢查更新，有新版就在側邊欄提示
+  api('/api/update').then((u) => { UPD_BADGE = !!(u.last && u.last.behind > 0); if (u.failed) toast('⚠️ 上次更新失敗，已自動退回原本的版本（按側邊欄「⬆️ 更新」看詳情）'); renderUsage(); }).catch(() => {});
   connectEvents();
   loadUsage();
   loadTelegram();
@@ -1806,6 +1816,109 @@ async function init() {
   await Promise.all([loadWorkflow(), loadTasks()]);
   selectAgent(saved === ALL || agents.some((a) => a.id === saved) ? saved : agents[0].id);
 }
+// ---------- 🐞 問題回報 ----------
+async function openReport(preset) {
+  let list = { reports: [], dir: '' };
+  try { list = await api('/api/diag/reports'); } catch {}
+  const mem = agents.map((a) => `<option value="${esc(a.id)}" ${preset && preset.agentId === a.id ? 'selected' : ''}>${esc(label(a))}</option>`).join('');
+  const dl = (r) => `<a href="${withToken('/api/diag/reports/' + encodeURIComponent(r.name))}" download>${esc(r.name)}</a> <small>${Math.round(r.size / 1024)} KB・${fmtTime(r.at)}</small>`;
+  openModal(`<h2>🐞 問題回報</h2>
+    <p class="lead">出問題時按這裡：系統會把版本、環境、CLI 版本、成員狀態、任務進度、最近的錯誤與伺服器紀錄整理成<b>一個 .md 檔</b>。把檔案拖進 Claude 的對話就能排查。密碼、token、API 金鑰與成員環境變數的值會自動遮掉。</p>
+    <div class="field full"><label>發生了什麼事？（越具體越好：做了什麼、預期什麼、實際看到什麼）</label>
+      <textarea id="rp_desc" rows="4" placeholder="例如：EM 報表組的阿資交接後沒有動作，畫面一直顯示工作中">${esc((preset && preset.description) || '')}</textarea></div>
+    <div class="form-grid">
+      <div class="field"><label>相關成員（可不選）</label><select id="rp_agent"><option value="">—</option>${mem}</select></div>
+      <div class="field"><label>相關任務編號（可不填）</label><input id="rp_task" type="number" min="1" placeholder="例如 12"></div>
+    </div>
+    <label class="opt"><input type="checkbox" id="rp_chat"> 附上每位成員最近 15 則對話內容（比較好查，但可能含工作資料；不勾只附錯誤訊息）</label>
+    <div id="rp_out"></div>
+    ${list.reports.length ? `<h3 style="margin:14px 0 6px;font-size:14px">之前的回報</h3><div class="hn-list">${list.reports.slice(0, 8).map((r) => `<div class="hn-item"><div class="grow">${dl(r)}</div></div>`).join('')}</div>
+      <p class="help">也存在電腦的 <code>${esc(list.dir)}</code></p>` : ''}
+    <div class="modal-actions"><span class="spacer"></span><button id="rp_close">關閉</button><button class="primary" id="rp_go">📦 產生回報檔</button></div>`);
+  $('rp_close').onclick = closeModal;
+  $('rp_go').onclick = async () => {
+    $('rp_go').disabled = true; $('rp_go').textContent = '整理中…';
+    try {
+      const r = await api('/api/diag/report', { method: 'POST', body: JSON.stringify({ description: $('rp_desc').value, agentId: $('rp_agent').value,
+        taskId: $('rp_task').value, includeChat: $('rp_chat').checked, uiVersion: UI_VERSION }) });
+      const url = withToken('/api/diag/reports/' + encodeURIComponent(r.name));
+      $('rp_out').innerHTML = `<div class="rp-ok">✅ 已產生 <b>${esc(r.name)}</b>（${Math.round(r.size / 1024)} KB），已開始下載。<br>
+        把這個檔案拖進 Claude 的對話就可以了。也存在電腦的 <code>${esc(r.path)}</code><br><a href="${url}" download>再下載一次</a></div>`;
+      const a = document.createElement('a'); a.href = url; a.download = r.name; document.body.appendChild(a); a.click(); a.remove();
+    } catch (e) { toast(e.message); }
+    $('rp_go').disabled = false; $('rp_go').textContent = '📦 再產生一份';
+  };
+}
+// 網頁端的錯誤也記下來（附在問題回報裡）；每次開啟頁面最多送 30 筆
+let clientErrSent = 0;
+function reportClientError(kind, message, where) {
+  if (clientErrSent++ >= 30 || !message) return;
+  fetch(withToken('/api/diag/client-error'), { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind, message: String(message).slice(0, 800), where: String(where || '').slice(0, 300) }) }).catch(() => {});
+}
+window.addEventListener('error', (e) => reportClientError('js', e.message, (e.filename || '') + ':' + (e.lineno || '') + ':' + (e.colno || '')));
+window.addEventListener('unhandledrejection', (e) => reportClientError('promise', e.reason && (e.reason.stack || e.reason.message || e.reason), ''));
+
+// ---------- ⬆️ 更新／重新啟動 ----------
+async function openUpdate() {
+  let st;
+  try { st = await api('/api/update'); } catch (e) { toast(e.message); return; }
+  const busyNote = (st.busy.length ? st.busy.join('、') + ' 正在工作' : '') + (st.tasks ? (st.busy.length ? '，' : '') + '有 ' + st.tasks + ' 件任務進行中' : '');
+  openModal(`<h2>⬆️ 更新／重新啟動</h2>
+    <p class="lead">目前是 v${esc(st.version)}。更新會從 GitHub 下載新版本，然後自動重新啟動；新版本如果起不來，會自動退回原本的版本。</p>
+    ${st.failed ? `<div class="warn-box">⚠️ 上次更新到 ${esc(st.failed.toVersion || st.failed.to || '')} 後無法啟動，已自動退回 v${esc(st.failed.fromVersion || '')}。<button id="up_failrep">🐞 產生問題回報</button><button id="up_failok">知道了</button></div>` : ''}
+    ${st.launcher ? '' : `<div class="warn-box">這次不是用新版 start.bat 啟動的，沒辦法自動重啟。請關掉黑色視窗、重新執行 start.bat 一次，之後就能一鍵更新。</div>`}
+    <div id="up_info" class="help">檢查中…</div>
+    ${busyNote ? `<p class="help warn-line">⚠️ ${esc(busyNote)}：重新啟動會中斷正在進行的工作（任務會暫停，之後回覆就能繼續）。</p>` : ''}
+    <p class="help">沒勾「記住這台電腦」的話，重新啟動後要再輸入一次密碼。</p>
+    <div class="modal-actions"><button id="up_restart" ${st.launcher ? '' : 'disabled'}>🔄 只重新啟動</button><span class="spacer"></span><button id="up_close">關閉</button><button class="primary" id="up_go" disabled>⬆️ 更新並重新啟動</button></div>`);
+  $('up_close').onclick = closeModal;
+  if ($('up_failok')) $('up_failok').onclick = async () => { await api('/api/update/failed', { method: 'DELETE' }).catch(() => {}); openUpdate(); };
+  if ($('up_failrep')) $('up_failrep').onclick = () => openReport({ description: '一鍵更新後新版本無法啟動，已自動退回' });
+  const confirmBusy = () => !busyNote || confirm(busyNote + '，重新啟動會中斷。確定嗎？');
+  $('up_restart').onclick = async () => {
+    if (!confirmBusy()) return;
+    try { await api('/api/restart', { method: 'POST' }); waitRestart('重新啟動中…'); } catch (e) { toast(e.message); }
+  };
+  let ck;
+  try { ck = await api('/api/update/check', { method: 'POST' }); } catch (e) { $('up_info').textContent = '⚠️ ' + e.message; return; }
+  if (!$('up_info')) return;
+  if (!ck.ok) { $('up_info').innerHTML = '⚠️ ' + esc(ck.error); return; }
+  UPD_BADGE = ck.behind > 0; renderUsage();
+  if (!ck.behind) { $('up_info').innerHTML = '✅ 已經是最新版（' + esc(ck.branch) + ' ' + esc(ck.head) + '）'; return; }
+  $('up_info').innerHTML = `<b>有新版本${ck.remoteVersion ? ' v' + esc(ck.remoteVersion) : ''}</b>（${ck.behind} 個更新）：<ul class="up-list">${ck.commits.map((c) => '<li>' + esc(c.replace(/^\w+ /, '')) + '</li>').join('')}</ul>` +
+    (ck.dirty.length ? `<p class="warn-line">⚠️ 這些檔案你改過：${esc(ck.dirty.join('、'))}。${ck.dirty.length === 1 && ck.dirty[0] === 'start.bat' ? '更新時會自動把你的 set 設定搬到 start.local.bat，再換成新的 start.bat。' : '為了不蓋掉你的修改，要先還原才能更新。'}</p>` : '');
+  $('up_go').disabled = !st.launcher;
+  $('up_go').onclick = async () => {
+    if (!confirmBusy()) return;
+    $('up_go').disabled = true; $('up_go').textContent = '更新中…';
+    try {
+      const r = await api('/api/update', { method: 'POST' });
+      if (r.upToDate) { toast('已經是最新版'); return openUpdate(); }
+      if (!r.restarting) { $('up_info').innerHTML = '✅ 已下載新版本，但' + esc(r.note || '沒辦法自動重啟'); return; }
+      waitRestart('已更新到 ' + (r.toVersion ? 'v' + r.toVersion : r.to) + '，重新啟動中…');
+    } catch (e) { toast(e.message); $('up_go').disabled = false; $('up_go').textContent = '⬆️ 更新並重新啟動'; }
+  };
+}
+// 等伺服器重新啟動完成（started 時間變了）再重新整理頁面
+async function waitRestart(msg) {
+  let before = null;
+  try { before = (await fetch('/api/info', { cache: 'no-store' }).then((r) => r.json())).started; } catch {}
+  openModal(`<h2>🔄 ${esc(msg)}</h2><p class="lead" id="wr_t">通常 5～15 秒，好了會自動重新整理。</p>`);
+  const t0 = Date.now();
+  const tick = async () => {
+    try {
+      const r = await fetch('/api/info', { cache: 'no-store' });
+      if (r.status === 401) { location.reload(); return; } // 新的伺服器起來了，只是要重新登入
+      const j = await r.json();
+      if (j.started && j.started !== before) { location.reload(); return; }
+    } catch {}
+    if (Date.now() - t0 > 120000) { $('wr_t').innerHTML = '超過 2 分鐘還沒好。請看電腦上的黑色視窗有沒有錯誤訊息，或在 Telegram 傳 /report。'; return; }
+    setTimeout(tick, 1000);
+  };
+  setTimeout(tick, 1500);
+}
+
 function openLogout() {
   openModal(`<h2>🔒 登出</h2>
     <p class="lead">登出後要重新輸入密碼。如果手機或別台電腦曾勾「記住這台電腦」而你不再信任它，選「登出所有裝置」。</p>

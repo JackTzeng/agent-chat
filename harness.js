@@ -371,5 +371,6 @@ exports.create = function create(ctx) {
     addMemory, deleteMemory, docs, runChecks, cancelChecks, checksText, isChecking: (id) => checking.has(id), stats,
     snapshot: () => ({ guides: G.guides.map((g) => ({ ...g, scopeLabel: scopeLabel(g.scope) })), proposals: G.proposals.map((p) => ({ ...p, scope: validScope(p.scope), scopeLabel: scopeLabel(validScope(p.scope)) })), memory: M.items.slice().reverse(), config: cfg(), load: guideLoad() }),
     pendingCount: () => G.proposals.length,
+    recentRuns: (n) => RUNS.slice(-(n || 100)),
   };
 };

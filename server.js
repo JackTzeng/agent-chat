@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.5.0';
+const VERSION = '3.6.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -76,6 +76,20 @@ const AVATAR_DIR = path.join(DATA_DIR, 'avatars'); // 自訂頭像圖片
 fs.mkdirSync(HIST_DIR, { recursive: true });
 fs.mkdirSync(AVATAR_DIR, { recursive: true });
 const security = createSecurity({ root: ROOT, dataDir: DATA_DIR, host: HOST, port: PORT });
+// 🐞 問題回報：越早建立越好，才能記下啟動過程的訊息（其餘資料在產生回報時才讀）
+const late = (fn) => { try { return fn(); } catch { return undefined; } };
+const reporter = require('./diag').create({
+  VERSION, ROOT, DATA_DIR, HOST, PORT, allowedRoots: security.allowedRoots, redact: security.redact,
+  get CONFIG() { return late(() => CONFIG); }, get AGENTS() { return late(() => AGENTS) || []; },
+  agentById: (id) => agentById(id), publicAgent: (a) => publicAgent(a), loadHistory: (id) => loadHistory(id),
+  tasks: { actives: () => tasks.actives(), list: () => tasks.list(), detail: (id) => tasks.detail(id) },
+  harnessCfg: () => harness.cfg(), harnessRuns: (n) => harness.recentRuns(n), telegramStatus: () => telegram.status(),
+  getBin: (e) => getBin(e), safeEnv: () => security.safeEnvironment(),
+  updateStatus: () => late(() => updater.status()),
+});
+// ⬆️ 一鍵更新與重新啟動（要用 start.bat → launcher.js 啟動）
+const updater = require('./updater').create({ ROOT, DATA_DIR, VERSION, shutdown: (c) => shutdown(c) });
+const STARTED_AT = Date.now();
 
 // agents.json 是你自己的設定（不進 git）；第一次啟動時從範本複製一份
 const AGENTS_FILE = path.join(ROOT, 'agents.json');
@@ -1154,7 +1168,40 @@ const server = http.createServer(async (req, res) => {
 
   let m0;
   try {
-    if (p === '/api/info') return send(res, 200, { version: VERSION });
+    if (p === '/api/info') return send(res, 200, { version: VERSION, started: STARTED_AT });
+
+    // ---- 🐞 問題回報 ----
+    if (p === '/api/diag/client-error' && req.method === 'POST') { reporter.clientError(await readBody(req), req.headers['user-agent']); return send(res, 200, { ok: true }); }
+    if (p === '/api/diag/report' && req.method === 'POST') {
+      const body = await readBody(req);
+      const r = await reporter.makeReport({ description: String(body.description || '').slice(0, 4000), agentId: body.agentId || '', taskId: Number(body.taskId) || null,
+        includeChat: body.includeChat === true, uiVersion: String(body.uiVersion || ''), userAgent: req.headers['user-agent'], via: '網頁' });
+      return send(res, 200, { name: r.name, size: r.size, path: r.file });
+    }
+    if (p === '/api/diag/reports' && req.method === 'GET') return send(res, 200, { dir: reporter.REP_DIR, reports: reporter.listReports() });
+    if ((m0 = p.match(/^\/api\/diag\/reports\/([\w.-]+)$/)) && req.method === 'GET') {
+      const f = reporter.reportPath(m0[1]);
+      if (!f) return send(res, 404, { error: '找不到這份回報' });
+      res.setHeader('Content-Disposition', 'attachment; filename="' + m0[1] + '"');
+      return send(res, 200, fs.readFileSync(f), 'text/markdown; charset=utf-8');
+    }
+
+    // ---- ⬆️ 更新與重新啟動 ----
+    if (p === '/api/update' && req.method === 'GET') return send(res, 200, { ...updater.status(), busy: [...runs.keys()].map((id) => (agentById(id) || {}).name || id), tasks: tasks.actives().length });
+    if (p === '/api/update/check' && req.method === 'POST') return send(res, 200, await updater.check());
+    if (p === '/api/update/failed' && req.method === 'DELETE') { updater.clearFailed(); return send(res, 200, { ok: true }); }
+    if (p === '/api/update' && req.method === 'POST') {
+      try {
+        const r = await updater.update('網頁');
+        if (r.upToDate) return send(res, 200, r);
+        try { updater.restart(); } catch (e) { return send(res, 200, { ...r, restarting: false, note: e.message }); }
+        return send(res, 200, { ...r, restarting: true });
+      } catch (e) { return send(res, 409, { error: e.message }); }
+    }
+    if (p === '/api/restart' && req.method === 'POST') {
+      try { updater.restart(); } catch (e) { return send(res, 409, { error: e.message }); }
+      return send(res, 200, { restarting: true });
+    }
     if (p === '/api/agents' && req.method === 'GET') return send(res, 200, AGENTS.map(publicAgent));
 
     // ---- Telegram 設定（網頁上貼 token、產生配對碼）----
@@ -1462,16 +1509,25 @@ const server = http.createServer(async (req, res) => {
     if (!inside(pubRoot, file)) return send(res, 403, 'forbidden', 'text/plain');
     return sendFile(res, file);
   } catch (e) {
+    if (!e.status) console.error('API 錯誤 ' + req.method + ' ' + p + '：', e);
     return send(res, e.status || 500, { error: e.status ? e.message : '內部錯誤，請查看伺服器日誌' });
   }
 });
 
+// 重新啟動時舊的程序可能還沒放開連接埠：等一下再試（最多 10 秒）
+let listenTries = 0;
 server.on('error', (e) => {
-  if (e.code === 'EADDRINUSE') console.error('⚠️  ' + PORT + ' port 已被佔用，可能舊的伺服器還開著。請先關掉舊的黑色視窗再啟動。');
-  else console.error(e);
+  if (e.code === 'EADDRINUSE' && process.env.AGENTCHAT_LAUNCHER === '1' && listenTries++ < 20) { setTimeout(() => server.listen(PORT, HOST), 500); return; }
+  console.error('伺服器無法啟動：' + e.message + (e.code === 'EADDRINUSE' ? '（連接埠 ' + PORT + ' 已被佔用，可能舊的視窗還開著）' : ''));
   process.exit(1);
 });
 server.listen(PORT, HOST, () => {
+  updater.afterStart((n, failed) => hooks.emit('restarted', { ...n, version: VERSION, failed }));
+  // 背景檢查更新：啟動 1 分鐘後一次，之後每 6 小時（只 fetch，不會自己更新）
+  if (process.env.AGENTCHAT_NO_UPDATE_CHECK !== '1') {
+    const bg = () => updater.check().then((c) => { if (c.ok && c.behind) broadcast({ agentId: '*', kind: 'update-available', version: c.remoteVersion }); }).catch(() => {});
+    setTimeout(bg, 60000).unref(); setInterval(bg, 6 * 3600000).unref();
+  }
   console.log('✅ Agent Chat v' + VERSION + ' 已啟動： http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT);
   for (const a of AGENTS) console.log('   ' + (a.avatar && !a.avatar.startsWith('img:') ? a.avatar : '•') + ' ' + a.name + '（' + [a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ') + '） → ' + a.cwd);
   for (const [k, v] of Object.entries(BIN)) console.log('   ' + (v ? '✔ ' + k + '：' + v : '✘ 找不到 ' + k + '（這個引擎的 agent 會無法回覆）'));
@@ -1482,10 +1538,17 @@ const telegram = require('./telegram');
 const tgCtx = {
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,
+  makeReport: (o) => reporter.makeReport(o), updater,
 };
 telegram.start(tgCtx);
 telegram.startAgentBots(tgCtx);
 
-const shutdown = () => { for (const id of runs.keys()) stopRun(id); process.exit(0); };
+// code 75 = 請啟動器重新啟動（一鍵更新／重啟）
+const shutdown = (code) => {
+  const had = runs.size;
+  for (const id of runs.keys()) stopRun(id);
+  const exit = () => process.exit(typeof code === 'number' ? code : 0);
+  if (had) setTimeout(exit, 800); else exit();
+};
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
