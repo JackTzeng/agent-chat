@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.6.1';
+const VERSION = '3.6.2';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -101,6 +101,16 @@ const CONFIG = JSON.parse(fs.readFileSync(AGENTS_FILE, 'utf8'));
 const maxHops = () => Number(CONFIG.maxRelayHops) || 12; // agent 之間自動轉交的上限
 // 舊設定不符合安全規則時，不讓整個伺服器無法啟動：這位成員標示為停用並說明原因，其他成員照常運作
 const warned = new Set();
+// 依暫停原因給對應的處理方式
+function blockedHelp(reason) {
+  if (/add-dir 不會強制唯讀/.test(reason))
+    return '怎麼處理：到這位成員的「⚙️ 設定」→ 額外資料夾，把這個資料夾改成「可讀寫」後儲存（如果是副本資料夾通常沒關係）；需要真的唯讀的話，改用 Codex 成員讀它，或在 Windows 資料夾內容的「安全性」設成唯讀。';
+  if (/不在核准的工作根目錄內|不存在，先略過/.test(reason))
+    return '怎麼處理：在程式資料夾的 local-settings.txt 加一行 AGENT_ALLOWED_ROOTS=那個資料夾（或它的上層），再按左下角「⬆️ 更新／重新啟動」→「🔄 只重新啟動」。';
+  if (/完整權限模式/.test(reason))
+    return '怎麼處理：到這位成員的「⚙️ 設定」把權限改成 auto、acceptEdits 或 Codex 的 workspace-write。';
+  return '怎麼處理：到這位成員的「⚙️ 設定」修改，或按左下角「🐞 問題回報」把檔案給 Claude 看。';
+}
 const prepAgent = (a) => {
   try {
     const cwd = security.assertAllowedDir(a.cwd || './workspace');
@@ -562,7 +572,7 @@ function startRun(agent, userText, opts = {}) {
 
   if (blocked) {
     run.segments.push({ type: 'error', text: '⛔ 這位成員的設定不符合安全規則，暫停使用：\n' + blocked +
-      '\n請到成員的「⚙️ 設定」修改（例如把資料夾移到核准範圍、改用 Codex 唯讀或可讀寫），或在 local-settings.txt 加一行 AGENT_ALLOWED_ROOTS=那個資料夾，再按左下角「⬆️ 更新／重新啟動」→「🔄 只重新啟動」。' });
+      '\n' + blockedHelp(blocked) });
     broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
     finish();
     hooks.emit('done', { agent, tg: opts.tg, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
