@@ -8,6 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
+const proctree = require('./proctree');
 
 const MAX_LOG = 600, MAX_CLIENT = 100, MAX_REPORTS = 30;
 const pad = (n) => String(n).padStart(2, '0');
@@ -96,9 +97,9 @@ exports.create = function create(ctx) {
       let out = '', done = false;
       const finish = (v) => { if (done) return; done = true; verCache[engine] = { at: Date.now(), v }; resolve(v); };
       let proc;
-      try { proc = spawn(needShell && /\s/.test(cmd) ? '"' + cmd + '"' : cmd, ['--version'], { shell: needShell, env: ctx.safeEnv(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); }
+      try { proc = proctree.track(spawn(needShell && /\s/.test(cmd) ? '"' + cmd + '"' : cmd, ['--version'], { shell: needShell, env: ctx.safeEnv(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...proctree.groupOpts() })); }
       catch (e) { return finish('（無法執行：' + e.message + '）'); }
-      const timer = setTimeout(() => { try { proc.kill(); } catch {} finish('（逾時）'); }, 10000);
+      const timer = setTimeout(() => { proctree.killTree(proc); finish('（逾時）'); }, 10000);
       proc.stdout.on('data', (d) => (out += d)); proc.stderr.on('data', (d) => (out += d));
       proc.on('error', (e) => { clearTimeout(timer); finish('（無法執行：' + e.message + '）'); });
       proc.on('close', () => { clearTimeout(timer); finish(short(out.trim().split(/\r?\n/)[0] || '（沒有輸出）', 200) + '（' + cmd + '）'); });

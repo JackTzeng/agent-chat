@@ -404,6 +404,7 @@ updater.js       ⬆️ 一鍵更新（git fetch／fast-forward）
 launcher.js      啟動器：執行 server.js，負責重新啟動與更新失敗時自動退回
 start.bat        Windows 啟動檔（只用英文：cmd 讀中文會出錯）
 localsettings.js 讀取你的 local-settings.txt
+proctree.js      關子程式時連整串一起關（避免殘留的 CLI 佔記憶體）
 local-settings.example.txt  個人設定範本（複製成 local-settings.txt，不會進 git）
 public/          前端聊天介面（office.js 是辦公室畫面；vendor/ 裡是 Markdown 套件 marked、DOMPurify）
 agents.example.json  agent 設定範本（第一次啟動會複製成 agents.json）

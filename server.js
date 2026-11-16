@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.6.2';
+const VERSION = '3.6.3';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -16,6 +16,7 @@ const { createSecurity, inside, isProtectedEnvKey } = require('./security');
 const ROOT = __dirname;
 // 你自己的設定（local-settings.txt）：要在讀 PORT、HOST、AGENT_ALLOWED_ROOTS 之前載入
 const LOCAL = require('./localsettings').load(ROOT);
+const proctree = require('./proctree'); // 關子程式時連整串一起關，不留殘留的 CLI
 const PORT = Number(process.env.PORT) || 3939;
 const HOST = process.env.HOST || '127.0.0.1';
 // ACCESS_TOKEN is handled exclusively by security.js. Never put it in URLs or logs.
@@ -602,7 +603,7 @@ function startRun(agent, userText, opts = {}) {
   const spawnCmd = needShell && /\s/.test(cmd) ? '"' + cmd + '"' : cmd;
   // 透過 cmd.exe 執行時，含空白或特殊符號的參數（例如資料夾路徑）要加引號
   const spawnArgs = needShell ? args.map((x) => (/[\s&|<>^()]/.test(x) && !x.includes('"') ? '"' + x + '"' : x)) : args;
-  const proc = spawn(spawnCmd, spawnArgs, { cwd: agent.cwd, shell: needShell, env: { ...security.safeEnvironment(), ...(agent.env || {}) }, windowsHide: true });
+  const proc = proctree.track(spawn(spawnCmd, spawnArgs, { cwd: agent.cwd, shell: needShell, env: { ...security.safeEnvironment(), ...(agent.env || {}) }, windowsHide: true }));
   run.proc = proc;
   run.pid = proc.pid;
   run.cmdline = [cmd, ...args].map((x) => (/[\s"']/.test(x) ? JSON.stringify(x) : x)).join(' ');
@@ -719,8 +720,7 @@ function stopRun(id, silent) {
   if (!run || !run.proc) return false;
   run.stopped = true;
   if (silent) run.silentStop = true;
-  if (IS_WIN) spawn('taskkill', ['/pid', String(run.proc.pid), '/T', '/F'], { windowsHide: true });
-  else run.proc.kill('SIGTERM');
+  proctree.killTree(run.proc);
   return true;
 }
 
@@ -730,8 +730,7 @@ function interruptRun(id, text, via) {
   if (!run || !run.proc) return false;
   if (run.interrupt) { run.interrupt.text += '\n' + text; return true; }
   run.interrupt = { text, via };
-  if (IS_WIN) spawn('taskkill', ['/pid', String(run.proc.pid), '/T', '/F'], { windowsHide: true });
-  else run.proc.kill('SIGTERM');
+  proctree.killTree(run.proc);
   return true;
 }
 // 送給某位成員：正在工作就插話，否則照常送出
@@ -912,9 +911,11 @@ function runQuiet(cmd, args, input, timeoutMs, onLine) {
   return new Promise((resolve) => {
     const cwd = path.join(DATA_DIR, 'probe'); fs.mkdirSync(cwd, { recursive: true });
     const needShell = IS_WIN && !/\.exe$/i.test(cmd);
-    const proc = spawn(needShell && /\s/.test(cmd) ? '"' + cmd + '"' : cmd, args, { cwd, shell: needShell, env: security.safeEnvironment(), windowsHide: true });
+    const proc = proctree.track(spawn(needShell && /\s/.test(cmd) ? '"' + cmd + '"' : cmd, args,
+      { cwd, shell: needShell, env: security.safeEnvironment(), windowsHide: true, ...proctree.groupOpts() }));
     let buf = '', err = '';
-    const timer = setTimeout(() => { try { proc.kill(); } catch {} }, timeoutMs);
+    // 逾時：連 cmd 裡面的 claude／codex 一起關（只關 cmd 的話，CLI 會殘留在背景佔記憶體）
+    const timer = setTimeout(() => proctree.killTree(proc), timeoutMs);
     proc.stdout.setEncoding('utf8');
     proc.stdout.on('data', (c) => {
       buf += c; let nl;
@@ -1560,8 +1561,9 @@ telegram.startAgentBots(tgCtx);
 
 // code 75 = 請啟動器重新啟動（一鍵更新／重啟）
 const shutdown = (code) => {
-  const had = runs.size;
   for (const id of runs.keys()) stopRun(id);
+  // 用量查詢、自動檢查、版本查詢等其他子程式也一起關掉，不留在背景
+  const had = proctree.killAll();
   const exit = () => process.exit(typeof code === 'number' ? code : 0);
   if (had) setTimeout(exit, 800); else exit();
 };

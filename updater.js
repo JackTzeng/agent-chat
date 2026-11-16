@@ -6,6 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const proctree = require('./proctree');
 
 exports.RESTART_CODE = 75;
 
@@ -25,10 +26,10 @@ exports.create = function create(ctx) {
       const finish = (code) => { if (!done) { done = true; resolve({ code, out: out.trim(), err: err.trim() }); } };
       let p;
       try {
-        p = spawn('git', args, { cwd: ROOT, windowsHide: true,
-          env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', LC_ALL: 'C' } });
+        p = proctree.track(spawn('git', args, { cwd: ROOT, windowsHide: true,
+          env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', LC_ALL: 'C' } }));
       } catch (e) { return finish(-1, (err = e.message)); }
-      const t = setTimeout(() => { err += '（逾時）'; try { p.kill(); } catch {} finish(-1); }, timeoutMs);
+      const t = setTimeout(() => { err += '（逾時）'; proctree.killTree(p); finish(-1); }, timeoutMs);
       p.stdout.on('data', (d) => (out += d)); p.stderr.on('data', (d) => (err += d));
       p.on('error', (e) => { clearTimeout(t); err += e.message; finish(-1); });
       p.on('close', (code) => { clearTimeout(t); finish(code); });

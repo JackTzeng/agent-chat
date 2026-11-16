@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const proctree = require('./proctree');
 
 const short = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) + '…' : s; };
 const pad = (n) => String(n).padStart(2, '0');
@@ -302,7 +303,7 @@ exports.create = function create(ctx) {
       const keep = (b) => { out = Buffer.concat([out, b]); if (out.length > 64000) out = out.subarray(-64000); };
       let proc;
       try {
-        proc = spawn(c.command, { cwd: agent.cwd, shell: true, env: ctx.safeEnv(), windowsHide: true });
+        proc = proctree.track(spawn(c.command, { cwd: agent.cwd, shell: true, env: ctx.safeEnv(), windowsHide: true, ...proctree.groupOpts() }));
       } catch (e) {
         results.push({ name: c.name, command: c.command, ok: false, code: null, ms: 0, output: '無法執行：' + e.message });
         return next();
@@ -325,12 +326,7 @@ exports.create = function create(ctx) {
     };
     next();
   }
-  function kill(proc) {
-    try {
-      if (ctx.IS_WIN) spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true });
-      else proc.kill('SIGKILL');
-    } catch {}
-  }
+  const kill = (proc) => proctree.killTree(proc, { signal: 'SIGKILL' });
   function cancelChecks(taskId) {
     const s = checking.get(taskId);
     if (!s) return false;
