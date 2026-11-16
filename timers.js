@@ -5,6 +5,9 @@
 // - 上一次還沒做完就略過這一次，不會疊在一起
 // - 「做完」和「要不要通知」分開判斷：成員回【無異常】就安靜，【通知】才傳到 Telegram；跟上次一樣的通知不重複發
 // - 成員可以用【排程建議】提出排程，要你核准才會生效
+// - 沒事就不要叫醒成員：
+//   · 前置檢查（precheck）：到點先跑一個小指令，沒有輸出 = 沒有待辦 → 跳過，不花 AI 額度；有輸出才叫醒成員並附上輸出
+//   · 成員回【排程暫停】→ 排程先暫停，有新任務開始時自動恢復
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -48,6 +51,14 @@ function cleanSchedule(input) {
     hours = { from: input.hours.from.padStart(5, '0'), to: input.hours.to.padStart(5, '0') };
   }
   return { schedule: out, days: days.length === 7 ? [] : days, hours };
+}
+
+// 前置檢查指令：一行、不超過 500 字、不能有控制字元
+function cleanPrecheck(v) {
+  const c = String(v || '').trim();
+  if (!c) return '';
+  if (c.length > 500 || /[\u0000-\u001f]/.test(c)) throw new Error('前置檢查要是一行指令（500 字以內）');
+  return c;
 }
 
 function describe(t) {
@@ -144,6 +155,8 @@ exports.create = function create(ctx) {
       name, prompt, agentId: agent.id, ...sch,
       notify: ['changes', 'always', 'never'].includes(input.notify) ? input.notify : 'changes',
       ownSession: input.ownSession !== false,
+      precheck: cleanPrecheck(input.precheck),
+      allowPause: input.allowPause !== false,
       enabled: input.enabled !== false,
       ...(existing ? {} : { createdAt: Date.now(), createdBy: input.createdBy || 'user' }),
     };
@@ -174,24 +187,48 @@ exports.create = function create(ctx) {
   function setEnabled(id, on) {
     const t = byId(id);
     if (!t) throw new Error('找不到這個排程');
-    t.enabled = !!on;
     if (on && t.schedule.kind === 'once' && t.done) throw new Error('這個只做一次的排程已經做過了');
+    t.enabled = !!on;
+    delete t.paused;
     t.nextRun = on ? computeNext(t, Date.now() - 1) : null;
     changed(); return t;
   }
 
+  // 有新任務開始：恢復「被成員暫停」的排程（只限那個小組的成員；你自己暫停的不會被恢復）
+  function resumePaused(agentIds, why) {
+    const ids = new Set(agentIds);
+    const back = [];
+    for (const t of S.timers) {
+      if (!t.paused || t.enabled || !ids.has(t.agentId)) continue;
+      delete t.paused; t.enabled = true;
+      t.nextRun = computeNext(t, Date.now());
+      back.push(t);
+      logRun({ timerId: t.id, name: t.name, agentId: t.agentId, status: 'resumed', summary: why || '有新任務' });
+    }
+    if (back.length) changed();
+    return back;
+  }
+
   // ---------- 觸發 ----------
-  function header(t, why) {
+  function header(t, why, checkOut) {
     const lines = ['【⏰ 排程：' + t.name + '】第 ' + (t.runs + 1) + ' 次' + (why ? '（' + why + '）' : '') +
       (t.last ? '｜上次 ' + fmt(t.last.at) + '：' + (t.last.summary ? short(t.last.summary, 120) : t.last.status) : '')];
     lines.push(t.prompt);
+    if (checkOut) lines.push('', '【前置檢查 ' + t.precheck + ' 的輸出】', checkOut);
     if (t.notify !== 'never') {
       lines.push('', '回覆規則（系統會依這個決定要不要通知使用者）：',
         '- 沒有需要使用者注意的事：第一行寫「【無異常】」再簡短說明，系統不會打擾使用者。',
         '- 有需要使用者知道或處理的事：寫一行「【通知】一句話重點」，系統會把這句話傳到使用者的 Telegram。');
     }
+    if (t.allowPause) lines.push('- 如果所有工作都已完成、短期內不會有新的事，這個排程繼續跑只是浪費額度：另起一行寫「【排程暫停】原因」，系統會暫停這個排程，有新任務開始時自動恢復。');
     return lines.join('\n');
   }
+  // ---------- 前置檢查 ----------
+  function runPrecheck(t, agent) {
+    if (!ctx.runCheck) return Promise.resolve({ code: 0, out: 'X' });
+    return ctx.runCheck(agent, t.precheck).catch((e) => ({ code: -1, out: '', error: e.message }));
+  }
+
   // why：'補做' 之類的說明；manual：手動「立即執行」
   function fire(t, { why = '', manual = false, slot = null } = {}) {
     const agent = ctx.agentById(t.agentId);
@@ -204,9 +241,30 @@ exports.create = function create(ctx) {
     }
     t.active = { at: Date.now(), key, manual };
     t.firedKey = key;
-    const r = ctx.dispatch(agent, header(t, why), { via: 'timer', timerId: t.id, sessionTag: t.ownSession ? 'x' + t.id : null, system: false });
-    logRun({ timerId: t.id, name: t.name, agentId: agent.id, status: r === 'queued' ? 'queued' : 'started', manual, why });
-    return r;
+    const wake = (checkOut) => {
+      const r = ctx.dispatch(agent, header(t, why, checkOut), { via: 'timer', timerId: t.id, sessionTag: t.ownSession ? 'x' + t.id : null, system: false });
+      logRun({ timerId: t.id, name: t.name, agentId: agent.id, status: r === 'queued' ? 'queued' : 'started', manual, why });
+      return r;
+    };
+    // 手動執行一定叫醒成員；自動執行有前置檢查就先檢查
+    if (!t.precheck || manual) return wake('');
+    t.active.checking = true;
+    runPrecheck(t, agent).then((res) => {
+      const out = String(res.out || '').trim();
+      if (res.code === 0 && !out) {
+        delete t.active;
+        t.checks = (t.checks || 0) + 1;
+        t.last = { ...(t.last || {}), checkedAt: Date.now(), idle: true };
+        logRun({ timerId: t.id, name: t.name, agentId: agent.id, status: 'idle', summary: '前置檢查沒有發現待辦，沒有叫醒成員' });
+        changed();
+        return;
+      }
+      if (t.active) delete t.active.checking;
+      const note = res.code !== 0 ? '（前置檢查結束碼 ' + res.code + (res.timedOut ? '，逾時' : '') + (res.error ? '：' + res.error : '') + '）\n' : '';
+      wake((note + out).slice(0, 4000) || '（沒有輸出）');
+      changed();
+    });
+    return 'checking';
   }
   function runNow(id) {
     const t = byId(id);
@@ -239,6 +297,7 @@ exports.create = function create(ctx) {
     const text = (segments || []).filter((s) => s.type === 'text').map((s) => s.text).join('\n').trim();
     const err = (segments || []).filter((s) => s.type === 'error').map((s) => s.text).join(' / ');
     const quiet = /【無異常】/.test(text);
+    const pause = t.allowPause && (text.match(/【排程暫停】\s*[:：]?\s*(.*)/) || null);
     const tag = (text.match(/【通知】\s*[:：]?\s*(.+)/) || [])[1];
     let status, summary;
     if (stopped) { status = 'stopped'; summary = '被手動停止'; }
@@ -257,6 +316,14 @@ exports.create = function create(ctx) {
     t.runs = (t.runs || 0) + 1;
     t.last = { at: Date.now(), status, summary, notified: notify, quietReason: why };
     delete t.active;
+    t.last.idle = false;
+    if (pause && status !== 'failed') {
+      t.enabled = false; t.nextRun = null;
+      t.paused = { by: agent ? agent.id : null, reason: short(pause[1] || '所有工作都完成了', 200), at: Date.now() };
+      t.last.paused = true;
+      logRun({ timerId: t.id, name: t.name, agentId: agent && agent.id, status: 'paused', summary: t.paused.reason });
+      if (ctx.notify && t.notify !== 'never') ctx.notify({ timer: t, agent, status: 'paused', summary: t.paused.reason });
+    }
     if (notify) {
       t.lastNotified = { at: Date.now(), summary };
       if (ctx.notify) ctx.notify({ timer: t, agent, status, summary });
@@ -275,14 +342,19 @@ exports.create = function create(ctx) {
   // ---------- 成員提出的排程建議（要使用者核准）----------
   // 【排程建議】每天 08:30｜整理昨天的帳並寫進表單
   function propose(agent, line, taskId) {
-    const m = String(line).match(/^(.+?)[｜|](.+)$/);
-    if (!m) return null;
+    // 【排程建議】每小時｜要做的事｜先檢查：node pm/check.mjs
+    const parts = String(line).split(/[｜|]/).map((x) => x.trim());
+    if (parts.length < 2) return null;
+    const m = [line, parts[0], parts.slice(1).filter((x) => !/^先檢查\s*[:：]/.test(x)).join('｜')];
+    const pre = (parts.find((x) => /^先檢查\s*[:：]/.test(x)) || '').replace(/^先檢查\s*[:：]\s*/, '');
     const sch = parsePhrase(m[1]);
-    if (!sch) return null;
+    if (!sch || !m[2]) return null;
+    let precheck = '';
+    try { precheck = cleanPrecheck(pre); } catch { return null; }
     const prompt = m[2].trim().slice(0, 1000);
     const norm = (s) => s.replace(/\s+/g, '');
     if (S.proposals.some((p) => norm(p.prompt) === norm(prompt) && p.agentId === agent.id)) return null;
-    const p = { id: ++S.seq, agentId: agent.id, name: short(prompt, 20), prompt, ...sch, notify: 'changes', ownSession: true, taskId: taskId || null, createdAt: Date.now(), phrase: m[1].trim() };
+    const p = { id: ++S.seq, agentId: agent.id, name: short(prompt, 20), prompt, ...sch, notify: 'changes', ownSession: true, allowPause: true, precheck, taskId: taskId || null, createdAt: Date.now(), phrase: m[1].trim() };
     S.proposals.push(p); changed();
     if (ctx.onProposal) ctx.onProposal(p, agent);
     return p;
@@ -309,12 +381,13 @@ exports.create = function create(ctx) {
 
   const view = (t) => ({ ...t, desc: describe(t), agentName: (ctx.agentById(t.agentId) || {}).name || t.agentId });
   const snapshot = () => ({ timers: S.timers.map(view), proposals: S.proposals.map(view), runs: recent.slice(-80).reverse(), minEvery: MIN_EVERY });
-  const promptHint = () => '【排程】需要定期或稍後再做的事（例如每小時檢查、每天早上整理），不要自己建立 Windows 排程或背景程式；在回覆中另起一行寫「【排程建議】每天 08:30｜要做的事」（也可以寫「每小時」「每 30 分鐘」「平日 08:30」），使用者核准後系統會準時叫你。';
+  const promptHint = () => '【排程】需要定期或稍後再做的事（例如每小時檢查、每天早上整理），不要自己建立 Windows 排程或背景程式；在回覆中另起一行寫「【排程建議】每天 08:30｜要做的事」（也可以寫「每小時」「每 30 分鐘」「平日 08:30」），使用者核准後系統會準時叫你。' +
+    '定期檢查最好附一個不花 AI 額度的檢查指令：「【排程建議】每小時｜要做的事｜先檢查：node 檢查腳本.mjs」，腳本在沒有待辦時不要輸出任何東西，系統就不會叫醒你。';
 
   let timer = null;
-  const start = () => { if (!timer) { timer = setInterval(() => { try { tick(); } catch (e) { console.error('排程錯誤：' + e.message); } }, 20000); timer.unref(); setTimeout(() => tick(), 3000).unref(); } };
+  const start = () => { if (!timer) { timer = setInterval(() => { try { tick(); } catch (e) { console.error('排程錯誤：' + e.message); } }, Number(process.env.AGENTCHAT_TIMER_TICK_MS) || 20000); timer.unref(); setTimeout(() => tick(), 3000).unref(); } };
   const stop = () => { clearInterval(timer); timer = null; };
 
-  return { create, update, remove, setEnabled, runNow, tick, onDone, collect, propose, acceptProposal, dismissProposal,
+  return { create, update, remove, setEnabled, runNow, tick, onDone, collect, propose, acceptProposal, dismissProposal, resumePaused,
     snapshot, byId, list: () => S.timers, describe, promptHint, start, stop };
 };

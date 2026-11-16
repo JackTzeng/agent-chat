@@ -13,6 +13,7 @@ const T = require('../timers');
 const source = path.resolve(__dirname, '..');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const at = (y, mo, d, h, mi) => new Date(y, mo - 1, d, h, mi, 0, 0).getTime();
+const DAYMS = 86400000;
 
 test('computeNext: every with work hours and weekdays, daily, once', () => {
   const t = { schedule: { kind: 'every', minutes: 60 }, days: [1, 2, 3, 4, 5], hours: { from: '08:00', to: '18:00' } };
@@ -124,6 +125,71 @@ test('scheduler: fire once per slot, catch up once, skip overlap, quiet on 無�
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('precheck skips the AI run when there is nothing to do; members can pause until a new task', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-timers-pre-'));
+  const sent = [], notes = [];
+  let checkResult = { code: 0, out: '' };
+  const agent = { id: 'em', name: '阿資' };
+  const s = T.create({ DATA_DIR: dir, agentById: (id) => (id === 'em' ? agent : null),
+    dispatch: (a, text, opts) => { sent.push({ text, opts }); return 'started'; }, notify: (e) => notes.push(e),
+    runCheck: async () => checkResult });
+  const t = s.create({ name: '派工', prompt: '檢查 dispatch.json', agentId: 'em', schedule: { kind: 'every', minutes: 60 }, precheck: 'node pm/check_dispatch.mjs' });
+  assert.equal(t.precheck, 'node pm/check_dispatch.mjs');
+  assert.equal(t.allowPause, true);
+  assert.throws(() => s.create({ name: 'x', prompt: 'y', agentId: 'em', schedule: { kind: 'every', minutes: 60 }, precheck: 'a\nb' }), /一行指令/);
+  // 沒有輸出 → 不叫醒成員
+  s.tick(s.byId(t.id).nextRun + 1000);
+  await sleep(20);
+  assert.equal(sent.length, 0, '沒事就不叫醒');
+  assert.equal(s.byId(t.id).checks, 1);
+  assert.equal(s.byId(t.id).active, undefined);
+  assert.equal(s.snapshot().runs[0].status, 'idle');
+  // 有輸出 → 叫醒並附上輸出
+  checkResult = { code: 0, out: 'WO-Q3a 逾時 2 小時\n' };
+  s.tick(s.byId(t.id).nextRun + 1000);
+  await sleep(20);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /【前置檢查 node pm\/check_dispatch\.mjs 的輸出】\nWO-Q3a 逾時 2 小時/);
+  assert.match(sent[0].text, /【排程暫停】/, '提示成員可以暫停');
+  // 成員回【排程暫停】→ 停用並通知一次
+  s.onDone({ timerId: t.id, agent, segments: [{ type: 'text', text: '【無異常】已處理\n【排程暫停】所有工單都完成了' }] });
+  let x = s.byId(t.id);
+  assert.equal(x.enabled, false);
+  assert.equal(x.nextRun, null);
+  assert.equal(x.paused.reason, '所有工單都完成了');
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].status, 'paused');
+  s.tick(Date.now() + 10 * DAYMS);
+  assert.equal(sent.length, 1, '暫停後不會再觸發');
+  // 有新任務 → 自動恢復；你自己暫停的不會被恢復
+  const mine = s.create({ name: '我暫停的', prompt: 'z', agentId: 'em', schedule: { kind: 'every', minutes: 60 } });
+  s.setEnabled(mine.id, false);
+  const back = s.resumePaused(['em'], '任務 #3 開始');
+  assert.deepEqual(back.map((b) => b.id), [t.id]);
+  x = s.byId(t.id);
+  assert.equal(x.enabled, true);
+  assert.ok(x.nextRun > Date.now());
+  assert.equal(x.paused, undefined);
+  assert.equal(s.byId(mine.id).enabled, false);
+  // 手動執行不先檢查
+  checkResult = { code: 0, out: '' };
+  s.runNow(t.id);
+  assert.equal(sent.length, 2);
+  // 前置檢查失敗（結束碼不是 0）→ 叫醒成員並說明
+  s.onDone({ timerId: t.id, agent, segments: [{ type: 'text', text: '【無異常】' }] });
+  checkResult = { code: 2, out: '' };
+  s.tick(s.byId(t.id).nextRun + 1000);
+  await sleep(20);
+  assert.equal(sent.length, 3);
+  assert.match(sent[2].text, /前置檢查結束碼 2/);
+  // 成員的建議可以附前置檢查
+  s.collect(agent, '【排程建議】每小時｜檢查派工｜先檢查：node pm/check_dispatch.mjs', null);
+  const pr = s.snapshot().proposals[0];
+  assert.equal(pr.prompt, '檢查派工');
+  assert.equal(pr.precheck, 'node pm/check_dispatch.mjs');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 // ---------- 端對端：真的伺服器＋假的 CLI ----------
 const MOCK_CLAUDE = `#!/usr/bin/env node
 const fs = require('fs');
@@ -133,7 +199,8 @@ let inp = ''; process.stdin.on('data', (d) => (inp += d)).on('end', () => {
   const sid = inp.includes('【⏰ 排程') ? 'timer-session' : 'main-session';
   o({ type: 'system', subtype: 'init', session_id: sid });
   let text = '好的';
-  if (inp.includes('ALERT')) text = '【通知】發現 1 筆超標';
+  if (inp.includes('PAUSEME')) text = '【無異常】都做完了\\n【排程暫停】所有工單都完成';
+  else if (inp.includes('ALERT')) text = '【通知】發現 1 筆超標';
   else if (inp.includes('【⏰ 排程')) text = '【無異常】都正常';
   else if (inp.includes('排程看看')) text = '可以，我建議：\\n【排程建議】每天 08:30｜整理昨天的帳';
   o({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
@@ -159,7 +226,7 @@ test('timers through the real server: own session, quiet result, alert, proposal
   const proc = spawn(process.execPath, ['server.js'], {
     cwd: dir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), ACCESS_TOKEN: 'timers-test-password-long', TELEGRAM_BOT_TOKEN: '',
-      CLAUDE_BIN: path.join(bin, 'claude'), CODEX_BIN: '', MOCKLOG: log, AGENT_ENV_ALLOWLIST: 'MOCKLOG', AGENTCHAT_NO_UPDATE_CHECK: '1' },
+      CLAUDE_BIN: path.join(bin, 'claude'), CODEX_BIN: '', MOCKLOG: log, AGENT_ENV_ALLOWLIST: 'MOCKLOG', AGENTCHAT_NO_UPDATE_CHECK: '1', AGENTCHAT_TIMER_TICK_MS: '300' },
   });
   let stderr = ''; proc.stderr.on('data', (s) => { stderr += s; });
   t.after(async () => {
@@ -175,7 +242,7 @@ test('timers through the real server: own session, quiet result, alert, proposal
     const res = await fetch(base + p, { method, headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
     const j = await res.json(); if (res.status >= 400) throw new Error(p + ' ' + res.status + ' ' + JSON.stringify(j)); return j;
   };
-  const waitFor = async (fn, what) => { for (let i = 0; i < 200; i++) { const v = await fn(); if (v) return v; await sleep(50); } throw new Error('timeout: ' + what + '\n' + stderr); };
+  const waitFor = async (fn, what) => { for (let i = 0; i < 200; i++) { const v = await fn(); if (v) return v; await sleep(50); } throw new Error('timeout: ' + what + '\n' + JSON.stringify((await api('/api/timers')).timers.map((x) => [x.id, x.last, x.active, x.runs]).slice(0, 3)) + '\n' + JSON.stringify((await api('/api/timers')).runs.slice(0, 4)) + '\n' + stderr); };
 
   const tm = await api('/api/timers', 'POST', { name: '檢查超標', agentId: 'hikari', prompt: '看 EM 資料', schedule: { kind: 'daily', time: '08:30' } });
   assert.equal(tm.desc, undefined);
@@ -214,4 +281,23 @@ test('timers through the real server: own session, quiet result, alert, proposal
   assert.equal((await api('/api/timers')).timers.length, 2);
   // 提示詞裡有排程說明：成員知道要用【排程建議】而不是自己建 Windows 排程
   assert.match(fs.readFileSync(log, 'utf8'), /不要自己建立 Windows 排程/);
+
+  // 前置檢查（真的跑指令）：沒輸出 → 不叫醒；有輸出 → 叫醒並附上
+  const calls = () => fs.readFileSync(log, 'utf8').split('=====').filter((x) => x.includes('【⏰ 排程')).length;
+  const before = calls();
+  const quiet = await api('/api/timers', 'POST', { name: '安靜', agentId: 'hikari', prompt: '看看', schedule: { kind: 'once', at: Date.now() + 500 }, precheck: 'node -e "process.exit(0)"' });
+  await waitFor(async () => (await api('/api/timers')).runs.find((r) => r.timerId === quiet.id && r.status === 'idle'), 'precheck idle');
+  assert.equal(calls(), before, '沒有叫醒成員');
+  const busy = await api('/api/timers', 'POST', { name: '有事', agentId: 'hikari', prompt: '看看', schedule: { kind: 'once', at: Date.now() + 500 }, precheck: 'node -e "console.log(\'NEW-ORDER-7\')"' });
+  await waitFor(async () => (await api('/api/timers')).timers.find((x) => x.id === busy.id).runs === 1, 'precheck wake');
+  assert.match(fs.readFileSync(log, 'utf8'), /【前置檢查 [^\n]+ 的輸出】\nNEW-ORDER-7/);
+  // 成員回【排程暫停】→ 暫停；開始新任務 → 自動恢復
+  await api('/api/timers/' + tm.id, 'PUT', { prompt: 'PAUSEME 看 EM 資料' });
+  await api('/api/timers/' + tm.id + '/run', 'POST');
+  const paused = await waitFor(async () => { const x = (await api('/api/timers')).timers.find((y) => y.id === tm.id); return x.paused && x; }, 'paused');
+  assert.equal(paused.enabled, false);
+  assert.equal(paused.paused.reason, '所有工單都完成');
+  await api('/api/tasks', 'POST', { goal: '新的工作' });
+  const resumed = await waitFor(async () => { const x = (await api('/api/timers')).timers.find((y) => y.id === tm.id); return x.enabled && !x.paused && x; }, 'resumed');
+  assert.ok(resumed.nextRun > Date.now());
 });

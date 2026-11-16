@@ -345,7 +345,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.7.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.7.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1868,7 +1868,8 @@ window.addEventListener('unhandledrejection', (e) => reportClientError('promise'
 
 // ---------- ⏰ 排程 ----------
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
-const TIMER_STATUS = { ok: '✅ 無異常', alert: '🔔 有異常', failed: '❌ 失敗', stopped: '⏹ 停止', interrupted: '⚠️ 中斷', skipped: '⏭ 略過', queued: '🕒 排隊', started: '⚙️ 開始' };
+const TIMER_STATUS = { ok: '✅ 無異常', alert: '🔔 有異常', failed: '❌ 失敗', stopped: '⏹ 停止', interrupted: '⚠️ 中斷', skipped: '⏭ 略過', queued: '🕒 排隊', started: '⚙️ 開始',
+  idle: '💤 沒有待辦（沒叫醒成員）', paused: '⏸ 成員暫停', resumed: '▶️ 自動恢復' };
 async function refreshTimerBadge() {
   try { const t = await api('/api/timers'); const n = t.proposals.length; if (n !== TIMER_BADGE) { TIMER_BADGE = n; renderUsage(); } } catch {}
 }
@@ -1881,11 +1882,11 @@ async function openTimers(keepScroll) {
   openModal(`<h2>⏰ 排程</h2>
     <p class="lead">定時叫成員做一件事，例如每小時檢查有沒有新的超標資料、每天早上整理昨天的帳。成員回「【無異常】」就不會打擾你；有異常或失敗才傳到 Telegram，而且和上次一樣的內容不重複發。每次執行都會用到 CLI 額度。</p>
     ${T.proposals.length ? `<h3 class="tmr-h">💡 成員提出的排程（要你核准）</h3><div class="hn-list">${T.proposals.map((p) => `
-      <div class="hn-item" data-p="${p.id}"><div class="grow"><b>${esc(p.agentName)}</b>：${esc(p.desc)}<br>${esc(p.prompt)}</div>
+      <div class="hn-item" data-p="${p.id}"><div class="grow"><b>${esc(p.agentName)}</b>：${esc(p.desc)}<br>${esc(p.prompt)}${p.precheck ? '<br><span class="tmr-prompt">🔍 先檢查：<code>' + esc(p.precheck) + '</code>（沒有輸出就不叫醒成員）</span>' : ''}</div>
         <div class="acts"><button class="primary" data-pok>✅ 核准</button><button data-pedit>✏️ 修改後核准</button><button data-pno>略過</button></div></div>`).join('')}</div>` : ''}
     <div id="tmr_list" class="hn-list">${T.timers.length ? T.timers.map((t) => `
-      <div class="hn-item ${t.enabled ? '' : 'off'}" data-t="${t.id}"><div class="grow"><b>${esc(t.name)}</b>｜${esc(t.agentName)}｜${esc(t.desc)}${t.active ? '｜⚙️ 進行中' : t.enabled && t.nextRun ? '｜下次 ' + fmtTime(t.nextRun) : t.enabled ? '' : '｜⏸ 已暫停'}
-        <br><span class="tmr-prompt">${esc(t.prompt.slice(0, 140))}</span>${last(t)}</div>
+      <div class="hn-item ${t.enabled ? '' : 'off'}" data-t="${t.id}"><div class="grow"><b>${esc(t.name)}</b>｜${esc(t.agentName)}｜${esc(t.desc)}${t.active ? (t.active.checking ? '｜🔍 前置檢查中' : '｜⚙️ 進行中') : t.enabled && t.nextRun ? '｜下次 ' + fmtTime(t.nextRun) : t.paused ? '｜⏸ 成員暫停：' + esc(t.paused.reason) + '（有新任務時自動恢復）' : t.enabled ? '' : '｜⏸ 已暫停'}
+        <br><span class="tmr-prompt">${esc(t.prompt.slice(0, 140))}</span>${t.precheck ? `<br><span class="tmr-prompt">🔍 先檢查：<code>${esc(t.precheck)}</code>${t.checks ? '｜沒事跳過 ' + t.checks + ' 次' : ''}${t.last && t.last.checkedAt ? '｜最近檢查 ' + fmtTime(t.last.checkedAt) : ''}</span>` : ''}${last(t)}</div>
         <div class="acts"><button data-trun title="現在就執行一次">▶ 執行</button><button data-ton title="${t.enabled ? '暫停' : '開啟'}">${t.enabled ? '⏸' : '▶️'}</button><button data-tedit>✏️</button><button data-tdel>🗑</button></div></div>`).join('')
       : '<p class="help">還沒有排程。按「＋ 新增排程」，或請成員在回覆中用【排程建議】提出（例如：【排程建議】每天 08:30｜整理昨天的帳）。</p>'}</div>
     ${T.runs.length ? `<details class="tmr-runs"><summary>最近的執行紀錄（${T.runs.length}）</summary>${T.runs.slice(0, 40).map((r) => `<div>${fmtTime(r.ts)}｜#${r.timerId} ${esc(r.name || '')}｜${TIMER_STATUS[r.status] || r.status}${r.manual ? '（手動）' : ''}${r.summary ? '：' + esc(String(r.summary).slice(0, 100)) : ''}${r.notified ? '｜📱 已通知' : r.quietReason ? '｜🔕 ' + esc(r.quietReason) : ''}</div>`).join('')}</details>` : ''}
@@ -1935,6 +1936,9 @@ function openTimerForm(t, fromProposal) {
         <option value="always" ${t.notify === 'always' ? 'selected' : ''}>每次都通知</option>
         <option value="never" ${t.notify === 'never' ? 'selected' : ''}>不通知（只記錄）</option></select></div>
       <div class="field"><label class="opt"><input type="checkbox" id="tf_own" ${t.ownSession !== false ? 'checked' : ''}> 用獨立的對話</label><span class="help">建議勾選：排程有自己的對話，會記得上次檢查的結果，也不會把你和成員的主對話越拉越長</span></div>
+      <div class="field full"><label>🔍 前置檢查（選填，不花 AI 額度）</label><input id="tf_pre" maxlength="500" value="${esc(t.precheck || '')}" placeholder="例如 node pm/check_dispatch.mjs">
+        <span class="help">到點先在成員的工作資料夾跑這個指令：<b>沒有輸出 = 沒事，直接跳過、不叫醒成員</b>；有輸出才叫醒成員並把輸出給他看。腳本可以請成員幫你寫（沒有待辦時不要印任何東西）。手動「▶ 執行」不會先檢查。</span></div>
+      <div class="field full"><label class="opt"><input type="checkbox" id="tf_pause" ${t.allowPause !== false ? 'checked' : ''}> 事情都做完時，讓成員可以先暫停這個排程（有新任務開始時自動恢復）</label></div>
     </div>
     <p class="help" id="tf_est"></p>
     <div class="modal-actions"><span class="spacer"></span><button id="tf_cancel">取消</button><button class="primary" id="tf_save">${fromProposal ? '✅ 核准' : '儲存'}</button></div>`);
@@ -1963,7 +1967,7 @@ function openTimerForm(t, fromProposal) {
   $('tf_cancel').onclick = () => openTimers();
   $('tf_save').onclick = async () => {
     const k = $('tf_kind').value;
-    const body = { name: $('tf_name').value, agentId: $('tf_agent').value, prompt: $('tf_prompt').value, notify: $('tf_notify').value, ownSession: $('tf_own').checked,
+    const body = { name: $('tf_name').value, agentId: $('tf_agent').value, prompt: $('tf_prompt').value, notify: $('tf_notify').value, ownSession: $('tf_own').checked, precheck: $('tf_pre').value, allowPause: $('tf_pause').checked,
       schedule: k === 'every' ? { kind: k, minutes: Number($('tf_min').value) } : k === 'daily' ? { kind: k, time: $('tf_time').value } : { kind: k, at: new Date($('tf_at').value).getTime() },
       days: [...document.querySelectorAll('[data-day]:checked')].map((e) => Number(e.dataset.day)),
       hours: k === 'every' && $('tf_from').value && $('tf_to').value ? { from: $('tf_from').value, to: $('tf_to').value } : null };

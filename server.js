@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.7.0';
+const VERSION = '3.7.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -805,6 +805,30 @@ const timers = require('./timers').create({
   onChange: () => broadcast({ agentId: '*', kind: 'timers' }),
   notify: (e) => hooks.emit('timer-alert', e),
   onProposal: (p, agent) => hooks.emit('timer-proposal', { proposal: p, agent, desc: timers.describe(p) }),
+  runCheck: (agent, command) => runPrecheck(agent, command),
+});
+// 前置檢查：在成員的工作資料夾跑一行指令（不花 AI 額度），60 秒逾時，連子程式一起關
+function runPrecheck(agent, command) {
+  return new Promise((resolve) => {
+    let out = Buffer.alloc(0), done = false, timedOut = false;
+    const finish = (code) => { if (done) return; done = true; clearTimeout(timer); resolve({ code, timedOut, out: decodeOutput(out).slice(0, 8000) }); };
+    let proc;
+    try {
+      proc = proctree.track(spawn(command, { cwd: agent.cwd, shell: true, windowsHide: true, env: { ...security.safeEnvironment(), ...(agent.env || {}) }, ...proctree.groupOpts() }));
+    } catch (e) { return resolve({ code: -1, out: '', error: e.message }); }
+    const add = (d) => { if (out.length < 64000) out = Buffer.concat([out, d]); };
+    proc.stdout.on('data', add); proc.stderr.on('data', add);
+    proc.on('error', (e) => { out = Buffer.concat([out, Buffer.from(e.message)]); finish(-1); });
+    proc.on('close', (code) => finish(code == null ? -1 : code));
+    const timer = setTimeout(() => { timedOut = true; proctree.killTree(proc); finish(-1); }, 60000);
+  });
+}
+// 有新任務開始：被成員暫停的排程（那個小組的成員）自動恢復
+hooks.on('task', ({ task, event }) => {
+  if (event !== 'started') return;
+  const ids = CONFIG.agents.filter((a) => !a.standalone && a.team === task.teamId).map((a) => a.id);
+  const back = timers.resumePaused(ids, '任務 #' + task.id + ' 開始');
+  for (const t of back) console.log('⏰ 排程「' + t.name + '」自動恢復（任務 #' + task.id + ' 開始）');
 });
 hooks.on('done', (e) => { if (e.timerId) { try { timers.onDone(e); } catch (err) { console.error('排程結果處理失敗：' + err.message); } } });
 

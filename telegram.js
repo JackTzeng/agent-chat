@@ -411,6 +411,10 @@ exports.start = function start(ctx) {
   });
   // ⏰ 排程：只有異常、失敗（或設定為每次都通知）才會到這裡
   listen('timer-alert', async ({ timer, agent, status, summary }) => {
+    if (status === 'paused') {
+      for (const id of pushRecipients()) await say(id, '⏸ 排程「' + timer.name + '」先暫停了（' + (agent ? agent.name : '') + '：' + summary + '）\n有新任務開始時會自動恢復；要現在恢復請傳 /timer ' + timer.id + ' on');
+      return;
+    }
     const icon = status === 'failed' ? '❌' : status === 'ok' ? '✅' : '🔔';
     for (const id of pushRecipients()) await say(id, icon + ' 排程「' + timer.name + '」（' + (agent ? agent.name : '') + '）' + (status === 'failed' ? '失敗' : '') + '：\n' + summary +
       '\n\n想看完整內容就切到 ' + (agent ? agent.name : '那位成員') + '（/to ' + (agent ? agent.name : '') + '），或傳 /timers 看所有排程');
@@ -513,7 +517,7 @@ exports.start = function start(ctx) {
           const st = { ok: '✅', alert: '🔔', failed: '❌', stopped: '⏹', interrupted: '⚠️' };
           const lines = snap.timers.map((t) => (t.enabled ? '▶️' : '⏸') + ' #' + t.id + ' ' + t.name + '（' + t.agentName + '）\n   ' + t.desc +
             (t.enabled && t.nextRun ? '｜下次 ' + fmtT(t.nextRun) : '') + (t.last ? '\n   上次 ' + fmtT(t.last.at) + ' ' + (st[t.last.status] || '') + ' ' + (t.last.summary || '').slice(0, 60) : ''));
-          if (snap.proposals.length) lines.push('', '待核准的建議：', ...snap.proposals.map((p) => '#' + p.id + ' ' + p.agentName + '：' + p.desc + '｜' + p.prompt.slice(0, 60)));
+          if (snap.proposals.length) lines.push('', '待核准的建議：', ...snap.proposals.map((p) => '#' + p.id + ' ' + p.agentName + '：' + p.desc + '｜' + p.prompt.slice(0, 60) + (p.precheck ? '｜先檢查：' + p.precheck : '')));
           return say(chatId, '⏰ 排程\n' + lines.join('\n') + '\n\n/timer 編號 run 立即執行｜on／off 開關｜ok／no 核准或略過建議');
         }
         case 'timer': {
