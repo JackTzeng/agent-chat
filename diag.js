@@ -202,6 +202,15 @@ exports.create = function create(ctx) {
       if (d) L.push('', '<details><summary>任務 #' + wantTask + ' 的 TASK.md</summary>', '', code(short(d.markdown, 12000), 'markdown'), '</details>');
     }
 
+    if (ctx.timers) {
+      const ts = ctx.timers();
+      L.push('', '### ⏰ 排程', '');
+      if (!ts.timers.length) L.push('（沒有排程）');
+      for (const t of ts.timers) L.push('- #' + t.id + ' ' + t.name + '｜' + t.agentName + '｜' + t.desc + '｜' + (t.enabled ? '下次 ' + (t.nextRun ? stamp(t.nextRun) : '—') : '已停用') +
+        (t.last ? '｜上次 ' + stamp(t.last.at) + ' ' + t.last.status + (t.last.summary ? '：' + short(t.last.summary, 120) : '') : '') + (t.active ? '｜⚙️ 進行中' : ''));
+      const bad = ts.runs.filter((r) => ['failed', 'skipped', 'interrupted', 'stopped'].includes(r.status)).slice(0, 15);
+      if (bad.length) L.push('', '最近的排程問題：', code(bad.map((r) => stamp(r.ts) + ' #' + r.timerId + ' ' + r.name + ' ' + r.status + (r.summary ? '：' + short(r.summary, 150) : '')).join('\n'), 'text'));
+    }
     L.push('', '## 6. 最近的錯誤與事件', '');
     const ev = ctx.harnessRuns(150).filter((r) => r.type !== 'turn' || r.error || r.interrupted);
     L.push(ev.length ? code(ev.slice(-60).map((r) => stamp(r.ts) + ' ' + JSON.stringify({ ...r, ts: undefined })).join('\n'), 'text') : '（沒有）');

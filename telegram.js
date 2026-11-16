@@ -32,6 +32,7 @@ const HELP =
   '/stop　全部停止\n' +
   '/new　目前對象開新對話\n' +
   '/usage　Claude / Codex 用量額度\n' +
+  '/timers　⏰ 看所有排程；/timer 編號 run／on／off／ok／no\n' +
   '/report 描述　🐞 產生問題回報檔傳給你（轉給 Claude 排查）\n' +
   '/update　⬆️ 檢查更新，有新版就更新並重新啟動\n' +
   '/restart　🔄 重新啟動伺服器\n' +
@@ -408,6 +409,16 @@ exports.start = function start(ctx) {
     if (failed && failed.failedAt && Date.now() - failed.failedAt < 300000) await say(chatId, '⚠️ 新版本無法啟動，已自動退回原本的版本 v' + (failed.fromVersion || version) + '。可以傳 /report 產生問題回報給 Claude 看。');
     else await say(chatId, '✅ ' + (text || '重新啟動') + '完成，現在是 v' + version);
   });
+  // ⏰ 排程：只有異常、失敗（或設定為每次都通知）才會到這裡
+  listen('timer-alert', async ({ timer, agent, status, summary }) => {
+    const icon = status === 'failed' ? '❌' : status === 'ok' ? '✅' : '🔔';
+    for (const id of pushRecipients()) await say(id, icon + ' 排程「' + timer.name + '」（' + (agent ? agent.name : '') + '）' + (status === 'failed' ? '失敗' : '') + '：\n' + summary +
+      '\n\n想看完整內容就切到 ' + (agent ? agent.name : '那位成員') + '（/to ' + (agent ? agent.name : '') + '），或傳 /timers 看所有排程');
+  });
+  listen('timer-proposal', async ({ proposal, agent, desc }) => {
+    for (const id of pushRecipients()) await say(id, '⏰ ' + (agent ? agent.name : '成員') + ' 建議新增排程（#' + proposal.id + '）：\n' + desc + '｜' + proposal.prompt +
+      '\n\n同意請傳 /timer ' + proposal.id + ' ok，不要請傳 /timer ' + proposal.id + ' no（也可以到網頁「⏰ 排程」修改後再核准）');
+  });
   listen('proposal', async ({ proposal, fromName, scopeLabel }) => {
     for (const id of pushRecipients()) await say(id, '💡 新的守則建議（' + fromName + (proposal.taskId ? '，任務 #' + proposal.taskId : '') + '）：\n' + proposal.text + (scopeLabel ? '\n（預設只給 ' + scopeLabel + ' 遵守）' : '') + '\n\n請到網頁的「🧭 Harness」核准或略過。');
   });
@@ -495,6 +506,28 @@ exports.start = function start(ctx) {
           return say(chatId, ctx.resetAgent(a.id) ? '🆕 ' + label(a) + ' 已開新對話' : a.name + ' 工作中，請先 /stop');
         }
         case 'usage': return say(chatId, usageText());
+        case 'timers': {
+          const snap = ctx.timers.snapshot();
+          if (!snap.timers.length && !snap.proposals.length) return say(chatId, '目前沒有排程。可以在網頁左下角「⏰ 排程」新增，或請成員用【排程建議】提出。');
+          const fmtT = (ts) => { const d = new Date(ts); return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+          const st = { ok: '✅', alert: '🔔', failed: '❌', stopped: '⏹', interrupted: '⚠️' };
+          const lines = snap.timers.map((t) => (t.enabled ? '▶️' : '⏸') + ' #' + t.id + ' ' + t.name + '（' + t.agentName + '）\n   ' + t.desc +
+            (t.enabled && t.nextRun ? '｜下次 ' + fmtT(t.nextRun) : '') + (t.last ? '\n   上次 ' + fmtT(t.last.at) + ' ' + (st[t.last.status] || '') + ' ' + (t.last.summary || '').slice(0, 60) : ''));
+          if (snap.proposals.length) lines.push('', '待核准的建議：', ...snap.proposals.map((p) => '#' + p.id + ' ' + p.agentName + '：' + p.desc + '｜' + p.prompt.slice(0, 60)));
+          return say(chatId, '⏰ 排程\n' + lines.join('\n') + '\n\n/timer 編號 run 立即執行｜on／off 開關｜ok／no 核准或略過建議');
+        }
+        case 'timer': {
+          const m = arg.trim().match(/^#?(\d+)\s+(run|on|off|ok|no)$/i);
+          if (!m) return say(chatId, '用法：/timer 編號 run（立即執行）、on／off（開關）、ok／no（核准或略過成員的建議）');
+          const [, id, act] = m;
+          try {
+            if (/^ok$/i.test(act)) { const t = ctx.timers.acceptProposal(id); return say(chatId, '✅ 已新增排程 #' + t.id + '「' + t.name + '」：' + ctx.timers.describe(t)); }
+            if (/^no$/i.test(act)) { ctx.timers.dismissProposal(id); return say(chatId, '已略過這個建議'); }
+            if (/^run$/i.test(act)) { const r = ctx.timers.runNow(id); return say(chatId, r === 'skipped' ? '上一次還沒做完，先略過' : '▶️ 已觸發，做完有異常會通知你'); }
+            const t = ctx.timers.setEnabled(id, /^on$/i.test(act));
+            return say(chatId, (t.enabled ? '▶️ 已開啟' : '⏸ 已暫停') + '「' + t.name + '」');
+          } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+        }
         case 'report': {
           await say(chatId, '🐞 正在整理問題回報…');
           try {

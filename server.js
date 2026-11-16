@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.6.3';
+const VERSION = '3.7.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -90,6 +90,7 @@ const reporter = require('./diag').create({
   getBin: (e) => getBin(e), safeEnv: () => security.safeEnvironment(),
   localSettings: () => ({ ...LOCAL, missingRoots: security.missingRoots }),
   updateStatus: () => late(() => updater.status()),
+  timers: () => late(() => timers.snapshot()),
 });
 // ⬆️ 一鍵更新與重新啟動（要用 start.bat → launcher.js 啟動）
 const updater = require('./updater').create({ ROOT, DATA_DIR, VERSION, shutdown: (c) => shutdown(c) });
@@ -273,7 +274,7 @@ function freeHeader(agent) {
 }
 
 function buildPrompt(agent, text, opts = {}) {
-  const header = opts.taskId ? tasks.promptHeader(agent, opts) : freeHeader(agent);
+  const header = (opts.taskId ? tasks.promptHeader(agent, opts) : freeHeader(agent)) + '\n' + timers.promptHint();
   let body;
   const fromAgent = opts.from && agentById(opts.from);
   if (opts.shift) return header + '\n\n' + shiftPrompt(agent, opts);
@@ -403,7 +404,8 @@ function cancelTask(taskId) {
   for (const [id, r] of runs) if (r.opts && r.opts.taskId === taskId) stopRun(id, true);
 }
 
-const sessionKey = (agent, opts) => (opts.taskId ? 't' + opts.taskId + ':' + agent.id : agent.id);
+// 任務、排程（ownSession）各用自己的對話，不會擠在和你的主對話裡
+const sessionKey = (agent, opts) => (opts.taskId ? 't' + opts.taskId + ':' + agent.id : opts.sessionTag ? opts.sessionTag + ':' + agent.id : agent.id);
 
 function buildCommand(agent, sid) {
   security.checkAgent(agent);
@@ -537,7 +539,7 @@ function startRun(agent, userText, opts = {}) {
   // 對話太長：先換班（寫交班筆記），原本的訊息排在換班之後
   if (!opts.shift && !opts.interject && !agent.blocked && shiftDue(agent, key)) {
     pending.unshift({ agentId: agent.id, text: userText, opts });
-    return startRun(agent, '（換班）', { taskId: opts.taskId, stageId: opts.stageId, shift: true, system: true });
+    return startRun(agent, '（換班）', { taskId: opts.taskId, stageId: opts.stageId, sessionTag: opts.sessionTag, shift: true, system: true });
   }
   state.lastKey[agent.id] = key;
   const sid = state.sessions[key];
@@ -547,7 +549,7 @@ function startRun(agent, userText, opts = {}) {
   }
   const hops = opts.hops || 0;
   const prompt = buildPrompt(agent, userText, opts);
-  const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system, interject: opts.interject, shift: opts.shift };
+  const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system, interject: opts.interject, shift: opts.shift, timerId: opts.timerId };
 
   const shownText = opts.shift ? '🔄 換班：' + (opts.manualShift ? '你要求換班' : '對話已經很長') + '，請成員寫交班筆記，之後換成全新的對話接手' : userText;
   appendHistory(agent.id, { role: 'user', text: shownText, ...meta, ts: Date.now() });
@@ -576,7 +578,7 @@ function startRun(agent, userText, opts = {}) {
       '\n' + blockedHelp(blocked) });
     broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
     finish();
-    hooks.emit('done', { agent, tg: opts.tg, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
+    hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
     if (opts.taskId) tasks.onTurnDone(agent, run, opts, null);
     setImmediate(pump);
     return;
@@ -589,7 +591,7 @@ function startRun(agent, userText, opts = {}) {
       agent.engine.toUpperCase() + '_BIN。' });
     broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
     finish();
-    hooks.emit('done', { agent, tg: opts.tg, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
+    hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
     if (opts.taskId) tasks.onTurnDone(agent, run, opts, null);
     setImmediate(pump);
     return;
@@ -667,11 +669,11 @@ function startRun(agent, userText, opts = {}) {
       // 使用者插話：結束這一輪（不轉交、不判斷任務交接），馬上帶著指示接著做同一段對話
       emit({ kind: 'tool', text: '⚡ 使用者插話，這一輪先暫停' });
       finish();
-      hooks.emit('done', { agent, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
+      hooks.emit('done', { agent, timerId: null, stopped: false, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
       if (opts.taskId) tasks.noteInterrupt(agent, opts, before, run.interrupt.text);
       if (agent.engine === 'codex') setTimeout(readCodexUsage, 500);
       startRun(agentById(agent.id) || agent, run.interrupt.text,
-        { taskId: opts.taskId, stageId: opts.stageId, hops: opts.hops, via: run.interrupt.via, interject: true });
+        { taskId: opts.taskId, stageId: opts.stageId, hops: opts.hops, via: run.interrupt.via, interject: true, timerId: opts.timerId, sessionTag: opts.sessionTag });
       pump();
       return;
     }
@@ -687,7 +689,7 @@ function startRun(agent, userText, opts = {}) {
       const note = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n').trim();
       if (!run.stopped) finishShift(agent, key, run, note);
       finish();
-      hooks.emit('done', { agent, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId, shift: true });
+      hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId, shift: true });
       pump();
       return;
     }
@@ -695,13 +697,14 @@ function startRun(agent, userText, opts = {}) {
     // 自由聊天模式：回覆裡 @ 了同事 → 自動轉交（任務模式改由流程決定）
     const replyText = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n');
     if (!opts.taskId && replyText && !run.stopped && !agent.standalone) harness.collect(agent, replyText, null);
+    if (replyText && !run.stopped) timers.collect(agent, replyText, opts.taskId || null);
     const targets = opts.taskId || run.stopped || !replyText ? [] : findMentions(agent, replyText);
     if (targets.length && hops >= maxHops()) {
       emit({ kind: 'tool', text: '⛔ 已達自動轉交上限（' + maxHops() + ' 次），沒有再轉給 ' +
         targets.map((t) => t.name).join('、') + '。需要的話請你手動接手。' });
     }
     finish();
-    hooks.emit('done', { agent, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: hops < maxHops() ? targets : [], taskId: opts.taskId });
+    hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: hops < maxHops() ? targets : [], taskId: opts.taskId });
 
     if (opts.taskId && !run.silentStop) tasks.onTurnDone(agent, run, opts, before);
     if (hops < maxHops()) for (const t of targets) dispatch(t, replyText, { from: agent.id, hops: hops + 1 });
@@ -795,6 +798,15 @@ const tasks = taskLib.create({
   teams: () => CONFIG.teams, teamById,
 });
 tasks.writeWorkflowDocs();
+
+// ---------- ⏰ 排程（timers.js）----------
+const timers = require('./timers').create({
+  DATA_DIR, agentById, dispatch: (agent, text, opts) => dispatch(agent, text, opts),
+  onChange: () => broadcast({ agentId: '*', kind: 'timers' }),
+  notify: (e) => hooks.emit('timer-alert', e),
+  onProposal: (p, agent) => hooks.emit('timer-proposal', { proposal: p, agent, desc: timers.describe(p) }),
+});
+hooks.on('done', (e) => { if (e.timerId) { try { timers.onDone(e); } catch (err) { console.error('排程結果處理失敗：' + err.message); } } });
 
 // ---------- 訂閱用量額度（5 小時 / 每週）----------
 // Claude Code：執行時輸出的 rate_limit_event（utilization 是 0~1 的比例）
@@ -1186,6 +1198,24 @@ const server = http.createServer(async (req, res) => {
   try {
     if (p === '/api/info') return send(res, 200, { version: VERSION, started: STARTED_AT });
 
+    // ---- ⏰ 排程 ----
+    if (p === '/api/timers' && req.method === 'GET') return send(res, 200, timers.snapshot());
+    if (p === '/api/timers' && req.method === 'POST') { try { return send(res, 200, timers.create(await readBody(req))); } catch (e) { return send(res, 400, { error: e.message }); } }
+    if ((m0 = p.match(/^\/api\/timers\/proposals\/(\d+)(\/accept)?$/))) {
+      try {
+        if (req.method === 'POST' && m0[2]) return send(res, 200, timers.acceptProposal(m0[1], await readBody(req)));
+        if (req.method === 'DELETE' && !m0[2]) { timers.dismissProposal(m0[1]); return send(res, 200, { ok: true }); }
+      } catch (e) { return send(res, 400, { error: e.message }); }
+    }
+    if ((m0 = p.match(/^\/api\/timers\/(\d+)(\/run|\/enable|\/disable)?$/))) {
+      try {
+        if (req.method === 'PUT' && !m0[2]) return send(res, 200, timers.update(m0[1], await readBody(req)));
+        if (req.method === 'DELETE' && !m0[2]) { timers.remove(m0[1]); return send(res, 200, { ok: true }); }
+        if (req.method === 'POST' && m0[2] === '/run') return send(res, 200, { result: timers.runNow(m0[1]) });
+        if (req.method === 'POST' && m0[2]) return send(res, 200, timers.setEnabled(m0[1], m0[2] === '/enable'));
+      } catch (e) { return send(res, 400, { error: e.message }); }
+    }
+
     // ---- 🐞 問題回報 ----
     if (p === '/api/diag/client-error' && req.method === 'POST') { reporter.clientError(await readBody(req), req.headers['user-agent']); return send(res, 200, { ok: true }); }
     if (p === '/api/diag/report' && req.method === 'POST') {
@@ -1539,6 +1569,7 @@ server.on('error', (e) => {
 });
 server.listen(PORT, HOST, () => {
   updater.afterStart((n, failed) => hooks.emit('restarted', { ...n, version: VERSION, failed }));
+  timers.start();
   // 背景檢查更新：啟動 1 分鐘後一次，之後每 6 小時（只 fetch，不會自己更新）
   if (process.env.AGENTCHAT_NO_UPDATE_CHECK !== '1') {
     const bg = () => updater.check().then((c) => { if (c.ok && c.behind) broadcast({ agentId: '*', kind: 'update-available', version: c.remoteVersion }); }).catch(() => {});
@@ -1554,7 +1585,7 @@ const telegram = require('./telegram');
 const tgCtx = {
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,
-  makeReport: (o) => reporter.makeReport(o), updater,
+  makeReport: (o) => reporter.makeReport(o), updater, timers,
 };
 telegram.start(tgCtx);
 telegram.startAgentBots(tgCtx);
