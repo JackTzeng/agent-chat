@@ -2,6 +2,7 @@ data/
 workspace/
 agents.json
 start.local.bat
+local-settings.txt
 node_modules/
 
 # Local secrets

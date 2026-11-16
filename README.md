@@ -25,7 +25,16 @@
 - Windows：雙擊 `start.bat`（會自動打開 **http://localhost:3939**）
 - 或在這個資料夾開終端機，輸入 `node launcher.js`
 
-**你自己的設定**（CLI 路徑、允許的資料夾、遠端連線）寫在 `start.local.bat`：複製 `start.local.example.bat`、改名成 `start.local.bat` 再修改。這個檔不會進 git，更新時不會被蓋掉。
+**你自己的設定**（允許的資料夾、CLI 路徑、遠端連線）寫在 `local-settings.txt`：把 `local-settings.example.txt` 複製一份、改名成 `local-settings.txt`，用記事本修改，一行一個「名稱=值」，例如：
+
+```
+AGENT_ALLOWED_ROOTS=C:\EM_reports_copy
+```
+
+- 這個檔不會進 git，更新時不會被蓋掉；中文路徑沒問題
+- 改完按左下角「⬆️ 更新／重新啟動」→「🔄 只重新啟動」就生效，不用重開 start.bat
+- 存檔時注意檔名要是 `local-settings.txt`（不是 `local-settings.txt.txt`；在檔案總管「檢視」勾「副檔名」就看得到）
+- 舊版寫在 start.bat 或 start.local.bat 的 `set` 設定會自動搬進來
 
 ### ⬆️ 一鍵更新／重新啟動
 
@@ -34,7 +43,7 @@
 - 網頁左下角「⬆️ 更新／重新啟動」：顯示有哪些新功能，按「⬆️ 更新並重新啟動」就會下載、重啟，頁面自動重新整理；只想重開伺服器就按「🔄 只重新啟動」
 - Telegram：`/update`（檢查並更新）、`/restart`（重新啟動），好了會通知你；有成員正在工作時會先問你，確定就傳 `/update yes`
 - 伺服器每 6 小時在背景檢查一次，有新版時「⬆️ 更新」旁邊會出現「新」
-- **安全網**：新版本一分鐘內起不來，會自動退回原本的版本並告訴你；你自己改過的程式檔不會被蓋掉（會停下來告訴你是哪些檔）；舊的 start.bat 裡的 `set` 設定會自動搬到 start.local.bat
+- **安全網**：新版本一分鐘內起不來，會自動退回原本的版本並告訴你；你自己改過的程式檔不會被蓋掉（會停下來告訴你是哪些檔）；舊的 start.bat 裡的 `set` 設定會自動搬到 local-settings.txt
 - 重新啟動時，正在進行的任務會暫停，之後回覆就能繼續；沒勾「記住這台電腦」的話要再輸入一次密碼
 - 需要用 v3.6.0 以後的 start.bat 啟動（它會執行 launcher.js，由 launcher 負責重新啟動）
 
@@ -246,7 +255,7 @@ Agent = Model + Harness。模型是大腦，Harness 是圍繞模型的執行系�
 | 🧪 自動檢查（Sensors） | 每個階段可以設定最多 5 個檢查指令（例如 `npm test`）。成員寫好交接後，系統在它的工作資料夾執行，**全部通過才交出**；沒通過就把錯誤輸出退回給同一位成員修正，通過的結果會附給下一位 | ⚙️ 工作流程 → 每個階段的「🧪 自動檢查」 |
 | 🔁 循環與預算（Agentic Loop） | 同一個階段最多重做幾次（被退回或檢查失敗都算）、每件任務的交接上限與時間上限。超過就暫停、交給你決定；你回覆後會再給一次預算 | ⚙️ 工作流程 |
 | 🧠 外部記憶（Memory） | 成員寫 `【決策】…` 會存進專案記憶，任務完成時自動記下成果；每一輪附上同一小組最近 10 筆，完整內容在工作資料夾的 `MEMORY.md`（只寫同小組的紀錄）。記憶只當參考，不會被當成指令 | 🧭 Harness → 記憶 |
-| 🔐 權限（Permissions） | 一覽每位成員能不能改檔案、可存取哪些資料夾、哪些階段要核准 | 成員的 ⚙️ 設定、`start.local.bat` 的 `AGENT_ALLOWED_ROOTS` |
+| 🔐 權限（Permissions） | 一覽每位成員能不能改檔案、可存取哪些資料夾、哪些階段要核准 | 成員的 ⚙️ 設定、`local-settings.txt` 的 `AGENT_ALLOWED_ROOTS` |
 | 📊 觀測（Observability） | 每一輪的耗時、tokens、≈API 價、出錯、插話，以及檢查、預算暫停、守則建議等事件；存在 `data/harness/runs.jsonl` | 🧭 Harness → 紀錄 |
 
 #### 守則的適用範圍
@@ -380,7 +389,7 @@ Agent = Model + Harness。模型是大腦，Harness 是圍繞模型的執行系�
 |---|---|
 | 「無法啟動 claude / codex」 | 先在終端機輸入 `claude --version`、`codex --version`，確認裝好了 |
 | 回覆是登入或驗證錯誤 | 在終端機直接執行 `claude` 或 `codex` 重新登入 |
-| 想換 port | 在 start.local.bat 加 `set PORT=4000` |
+| 想換 port | 在 local-settings.txt 加 `PORT=4000` |
 | 指令不在 PATH 裡 | 用 `CLAUDE_BIN`、`CODEX_BIN` 環境變數指定完整路徑 |
 
 ## 檔案說明
@@ -393,8 +402,9 @@ harness.js       Harness：守則、自動檢查、預算、專案記憶、觀�
 diag.js          🐞 問題回報與伺服器紀錄（data/logs、data/reports）
 updater.js       ⬆️ 一鍵更新（git fetch／fast-forward）
 launcher.js      啟動器：執行 server.js，負責重新啟動與更新失敗時自動退回
-start.bat        Windows 啟動檔（會先執行你的 start.local.bat）
-start.local.example.bat  個人設定範本（複製成 start.local.bat，不會進 git）
+start.bat        Windows 啟動檔（只用英文：cmd 讀中文會出錯）
+localsettings.js 讀取你的 local-settings.txt
+local-settings.example.txt  個人設定範本（複製成 local-settings.txt，不會進 git）
 public/          前端聊天介面（office.js 是辦公室畫面；vendor/ 裡是 Markdown 套件 marked、DOMPurify）
 agents.example.json  agent 設定範本（第一次啟動會複製成 agents.json）
 agents.json      你自己的 agent 設定（不會上傳到 git，git pull 也不會蓋掉）
@@ -412,6 +422,6 @@ workspace/       預設工作資料夾（自動產生）
 - Claude 的 `--add-dir` 無法保證指定目錄唯讀，故不再接受 Claude 額外資料夾 ro 模式；請提供受 OS ACL 保護的資料副本。
 - 子程序環境變數採白名單，預設不傳 ACCESS_TOKEN、TELEGRAM_BOT_TOKEN 等控制端機密，也不傳 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`（避免意外改走 API 計費）。Windows 系統變數、公司網路的 proxy 與憑證設定（`HTTPS_PROXY`、`NODE_EXTRA_CA_CERTS` 等）會保留。需要其他變數時用 `AGENT_ENV_ALLOWLIST` 明確加入（逗號分隔）。
 - Telegram 僅接受私人聊天室指令與推播，並以 allowedUserIds 與聊天室 userId 雙重檢查；撤銷配對後立即停止推播。
-- 既有設定如使用白名單以外的工作目錄、危險權限或 Claude 唯讀資料夾，伺服器仍會啟動，但**那位成員會暫停使用**，卡片顯示「⛔ 設定需修正」，送訊息時會說明原因；修正設定（或在 start.bat 設定 `AGENT_ALLOWED_ROOTS`）後即可恢復。
+- 既有設定如使用白名單以外的工作目錄、危險權限或 Claude 唯讀資料夾，伺服器仍會啟動，但**那位成員會暫停使用**，卡片顯示「⛔ 設定需修正」，送訊息時會說明原因；修正設定（或在 local-settings.txt 設定 `AGENT_ALLOWED_ROOTS`）後即可恢復。
 - 任務交接：預設只在 🔒 階段等你核准。在「⚙️ 工作流程」可以打開「🛡️ 交給有寫入權限的成員時，一律要我核准」，降低成員讀到惡意內容後自動連鎖執行的風險。
 - 安全測試：`node --test tests/security.test.js tests/http.test.js`。

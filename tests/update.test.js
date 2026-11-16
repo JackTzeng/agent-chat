@@ -1,6 +1,6 @@
 'use strict';
 // ⬆️ 一鍵更新＋🐞 問題回報：用真的 git（本機的 bare repo 當 GitHub）跑一遍
-// 檢查更新 → start.bat 的個人設定搬到 start.local.bat → 更新並重新啟動 → 壞掉的新版本自動退回 → 只重新啟動 → 問題回報遮蔽秘密
+// 檢查更新 → start.bat 的個人設定搬到 local-settings.txt → 更新並重新啟動 → 壞掉的新版本自動退回 → 只重新啟動 → 問題回報遮蔽秘密
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -22,8 +22,8 @@ async function freePort() {
     s.listen(0, '127.0.0.1', () => { const port = s.address().port; s.close(() => resolve(port)); });
   });
 }
-const FILES = ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'launcher.js',
-  'agents.example.json', 'start.bat', 'start.local.example.bat', '.gitignore'];
+const FILES = ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'launcher.js',
+  'agents.example.json', 'start.bat', 'local-settings.example.txt', '.gitignore'];
 
 test('one-click update, start.bat migration, rollback, restart and problem report', { timeout: 120000 }, async (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-update-'));
@@ -83,13 +83,13 @@ test('one-click update, start.bat migration, rollback, restart and problem repor
   assert.equal(ck.remoteVersion, '9.9.0');
   assert.match(ck.commits[0], /v9\.9\.0：新功能/);
 
-  // 一鍵更新：start.bat 的設定搬到 start.local.bat，更新後自動重新啟動
+  // 一鍵更新：start.bat 的設定搬到 local-settings.txt，更新後自動重新啟動
   const before = (await info()).started;
   const up = await api('/api/update', 'POST');
   assert.equal(up.restarting, true, JSON.stringify(up));
-  assert.deepEqual(up.moved, ['set AGENT_ALLOWED_ROOTS=C:\\EM_reports_copy']);
+  assert.deepEqual(up.moved, ['AGENT_ALLOWED_ROOTS=C:\\EM_reports_copy']);
   const after = await waitStarted(before, '9.9.0');
-  assert.match(fs.readFileSync(path.join(app, 'start.local.bat'), 'utf8'), /set AGENT_ALLOWED_ROOTS=C:\\EM_reports_copy/);
+  assert.match(fs.readFileSync(path.join(app, 'local-settings.txt'), 'utf8'), /^AGENT_ALLOWED_ROOTS=C:\\EM_reports_copy$/m);
   assert.equal(git(app, 'status', '--porcelain', '--untracked-files=no'), '');
   assert.equal(git(app, 'rev-parse', 'HEAD'), git(dev, 'rev-parse', 'HEAD'));
 
@@ -106,9 +106,17 @@ test('one-click update, start.bat migration, rollback, restart and problem repor
   assert.equal(st.failed.rollback, 'ok');
   await api('/api/update/failed', 'DELETE');
 
-  // 只重新啟動
+  // local-settings.txt：中文路徑也能用；改完「只重新啟動」就生效；start.local.bat 的 set 會自動搬進來；不存在的資料夾略過不當機
+  const extra = path.join(tmp, '共用資料');
+  fs.mkdirSync(extra);
+  fs.writeFileSync(path.join(app, 'local-settings.txt'), Buffer.from('\ufeff# 中文註解\r\nAGENT_ALLOWED_ROOTS=' + extra + ';' + path.join(tmp, '不存在') + '\r\n'));
+  fs.writeFileSync(path.join(app, 'start.local.bat'), '@echo off\r\nrem 中文註解\r\nset AGENT_ENV_ALLOWLIST=FOO_BAR\r\n');
   await api('/api/restart', 'POST');
   await waitStarted(back.started, '9.9.0');
+  const ls = fs.readFileSync(path.join(app, 'local-settings.txt'), 'utf8');
+  assert.match(ls, /^AGENT_ENV_ALLOWLIST=FOO_BAR$/m);
+  const { id: farId } = await api('/api/agents', 'POST', { name: '遠端', engine: 'claude', permissionMode: 'auto', cwd: extra });
+  assert.ok(farId, '共用資料 在核准範圍內');
 
   // 問題回報：有環境、git、成員、伺服器紀錄；秘密被遮掉
   const rep = await api('/api/diag/report', 'POST', { description: '測試：我的金鑰 sk-ant-abcdefghijklmnopqrstuvwxyz0123 和密碼 update-test-password-long 不該出現', agentId: 'hikari', includeChat: true });
@@ -119,7 +127,10 @@ test('one-click update, start.bat migration, rollback, restart and problem repor
   for (const sec of ['## 1. 發生了什麼事', '## 2. 環境', '## 3. 成員', '## 9. 伺服器紀錄']) assert.ok(md.includes(sec), sec);
   assert.match(md, /Agent Chat：v9\.9\.0/);
   assert.match(md, /啟動方式：start\.bat → launcher\.js/);
-  assert.match(md, /重新啟動中|已更新/);
+  assert.match(md, /已更新/);
+  assert.match(md, /local-settings\.txt：有（AGENT_ALLOWED_ROOTS、AGENT_ENV_ALLOWLIST）/);
+  assert.match(md, /不存在而略過的資料夾：.*不存在/);
+  assert.ok(md.includes(extra), '允許的資料夾列出中文路徑');
   assert.doesNotMatch(md, /sk-ant-abcdefghijklmnopqrstuvwxyz0123/);
   assert.doesNotMatch(md, /update-test-password-long/);
   assert.match(md, /\[API_KEY\]/);

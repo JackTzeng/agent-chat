@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.6.0';
+const VERSION = '3.6.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -14,6 +14,8 @@ const harnessLib = require('./harness');
 const { createSecurity, inside, isProtectedEnvKey } = require('./security');
 
 const ROOT = __dirname;
+// 你自己的設定（local-settings.txt）：要在讀 PORT、HOST、AGENT_ALLOWED_ROOTS 之前載入
+const LOCAL = require('./localsettings').load(ROOT);
 const PORT = Number(process.env.PORT) || 3939;
 const HOST = process.env.HOST || '127.0.0.1';
 // ACCESS_TOKEN is handled exclusively by security.js. Never put it in URLs or logs.
@@ -85,6 +87,7 @@ const reporter = require('./diag').create({
   tasks: { actives: () => tasks.actives(), list: () => tasks.list(), detail: (id) => tasks.detail(id) },
   harnessCfg: () => harness.cfg(), harnessRuns: (n) => harness.recentRuns(n), telegramStatus: () => telegram.status(),
   getBin: (e) => getBin(e), safeEnv: () => security.safeEnvironment(),
+  localSettings: () => ({ ...LOCAL, missingRoots: security.missingRoots }),
   updateStatus: () => late(() => updater.status()),
 });
 // ⬆️ 一鍵更新與重新啟動（要用 start.bat → launcher.js 啟動）
@@ -97,6 +100,7 @@ if (!fs.existsSync(AGENTS_FILE)) fs.copyFileSync(path.join(ROOT, 'agents.example
 const CONFIG = JSON.parse(fs.readFileSync(AGENTS_FILE, 'utf8'));
 const maxHops = () => Number(CONFIG.maxRelayHops) || 12; // agent 之間自動轉交的上限
 // 舊設定不符合安全規則時，不讓整個伺服器無法啟動：這位成員標示為停用並說明原因，其他成員照常運作
+const warned = new Set();
 const prepAgent = (a) => {
   try {
     const cwd = security.assertAllowedDir(a.cwd || './workspace');
@@ -104,7 +108,8 @@ const prepAgent = (a) => {
     fs.mkdirSync(cwd, { recursive: true });
     return { ...a, cwd };
   } catch (e) {
-    console.error('⛔ 成員「' + a.name + '」的設定不符合安全規則，已暫停使用：' + e.message);
+    const msg = '⛔ 成員「' + a.name + '」的設定不符合安全規則，已暫停使用：' + e.message;
+    if (!warned.has(msg)) { warned.add(msg); console.error(msg); }
     return { ...a, cwd: path.resolve(ROOT, 'workspace'), blocked: e.message };
   }
 };
@@ -557,7 +562,7 @@ function startRun(agent, userText, opts = {}) {
 
   if (blocked) {
     run.segments.push({ type: 'error', text: '⛔ 這位成員的設定不符合安全規則，暫停使用：\n' + blocked +
-      '\n請到成員的「⚙️ 設定」修改（例如把資料夾移到核准範圍、改用 Codex 唯讀或可讀寫），或在 start.bat 設定 AGENT_ALLOWED_ROOTS。' });
+      '\n請到成員的「⚙️ 設定」修改（例如把資料夾移到核准範圍、改用 Codex 唯讀或可讀寫），或在 local-settings.txt 加一行 AGENT_ALLOWED_ROOTS=那個資料夾，再按左下角「⬆️ 更新／重新啟動」→「🔄 只重新啟動」。' });
     broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
     finish();
     hooks.emit('done', { agent, tg: opts.tg, via: opts.via, segments: run.segments, meta: '', relayTo: [] });

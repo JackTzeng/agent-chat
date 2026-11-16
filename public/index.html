@@ -342,7 +342,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.6.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.6.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1432,7 +1432,7 @@ async function openHarness(tab) {
       <td>${writable(m) ? '✏️ 可修改檔案' : '👀 唯讀'}<br><small>${esc(m.engine === 'codex' ? 'sandbox: ' + (m.sandbox || 'workspace-write') : 'mode: ' + (m.permissionMode || '預設'))}</small></td>
       <td>${(m.extraDirs || []).map((d) => esc(d.path) + (d.mode === 'ro' ? '（唯讀）' : '（可寫）')).join('<br>') || '—'}</td>
       <td>${m.takeTurns ? '🔁' : '—'}</td><td>${(agentOf(m.id) || {}).blocked ? '⛔ 暫停使用' : '✅'}</td></tr>`).join('')}</table>
-      <p class="help">核准關卡：${wf.stages.filter((s) => s.approval).map((s) => '🔒 ' + esc(s.name)).join('、') || '沒有 🔒 階段'}${cfg.approveWritableHandoffs ? '；交給可寫入的成員一律要核准' : ''}。工作資料夾以外的位置要在 start.bat 的 AGENT_ALLOWED_ROOTS 核准。權限在每位成員的「⚙️ 設定」修改。</p>`;
+      <p class="help">核准關卡：${wf.stages.filter((s) => s.approval).map((s) => '🔒 ' + esc(s.name)).join('、') || '沒有 🔒 階段'}${cfg.approveWritableHandoffs ? '；交給可寫入的成員一律要核准' : ''}。工作資料夾以外的位置要在 local-settings.txt 的 AGENT_ALLOWED_ROOTS 核准。權限在每位成員的「⚙️ 設定」修改。</p>`;
   } else if (hnTab === 'obs') {
     const EV = { sensor: '🧪', budget: '⏸', proposal: '💡', guide: '📏', run: '⚠️', shift: '🔄' };
     body = `<table class="hn-t"><tr><th>成員</th><th>輪數</th><th>出錯</th><th>插話</th><th>總時間</th><th>平均每輪</th><th>tokens（入/出）</th><th>≈API 價</th></tr>${S.agents.map((a) => `<tr>
@@ -1887,7 +1887,7 @@ async function openUpdate() {
   UPD_BADGE = ck.behind > 0; renderUsage();
   if (!ck.behind) { $('up_info').innerHTML = '✅ 已經是最新版（' + esc(ck.branch) + ' ' + esc(ck.head) + '）'; return; }
   $('up_info').innerHTML = `<b>有新版本${ck.remoteVersion ? ' v' + esc(ck.remoteVersion) : ''}</b>（${ck.behind} 個更新）：<ul class="up-list">${ck.commits.map((c) => '<li>' + esc(c.replace(/^\w+ /, '')) + '</li>').join('')}</ul>` +
-    (ck.dirty.length ? `<p class="warn-line">⚠️ 這些檔案你改過：${esc(ck.dirty.join('、'))}。${ck.dirty.length === 1 && ck.dirty[0] === 'start.bat' ? '更新時會自動把你的 set 設定搬到 start.local.bat，再換成新的 start.bat。' : '為了不蓋掉你的修改，要先還原才能更新。'}</p>` : '');
+    (ck.dirty.length ? `<p class="warn-line">⚠️ 這些檔案你改過：${esc(ck.dirty.join('、'))}。${ck.dirty.length === 1 && ck.dirty[0] === 'start.bat' ? '更新時會自動把你的 set 設定搬到 local-settings.txt，再換成新的 start.bat。' : '為了不蓋掉你的修改，要先還原才能更新。'}</p>` : '');
   $('up_go').disabled = !st.launcher;
   $('up_go').onclick = async () => {
     if (!confirmBusy()) return;

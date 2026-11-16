@@ -169,6 +169,10 @@ exports.create = function create(ctx) {
     const us = ctx.updateStatus ? ctx.updateStatus() : null;
     if (us) L.push('- 啟動方式：' + (us.launcher ? 'start.bat → launcher.js（可一鍵重啟）' : '直接執行 server.js（不能一鍵重啟）') +
       (us.failed ? '｜⚠️ 上次更新失敗、已退回：' + JSON.stringify(us.failed) : '') + (us.last && !us.last.ok ? '｜上次檢查更新失敗：' + us.last.error : ''));
+    const ls = ctx.localSettings ? ctx.localSettings() : null;
+    if (ls) L.push('- local-settings.txt：' + (ls.exists ? '有（' + (ls.keys.join('、') || '沒有設定') + '）' : '沒有') +
+      (ls.moved && ls.moved.length ? '｜這次啟動從 start.local.bat 搬過來：' + ls.moved.map((l) => l.split('=')[0]).join('、') : '') +
+      (ls.missingRoots && ls.missingRoots.length ? '｜⚠️ 不存在而略過的資料夾：' + ls.missingRoots.join('、') : ''));
     L.push('- 允許的資料夾（AGENT_ALLOWED_ROOTS）：' + ((ctx.allowedRoots || []).map((d) => '`' + d + '`').join('、') || '—'));
     L.push('- 監聽：' + ctx.HOST + ':' + ctx.PORT + '｜ALLOWED_HOSTS：' + (process.env.ALLOWED_HOSTS ? '有設定' : '未設定'));
     L.push('- 瀏覽器：' + short(opts.userAgent || '（不明）', 200));

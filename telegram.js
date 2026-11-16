@@ -519,7 +519,7 @@ exports.start = function start(ctx) {
             try {
               const r = await up.update('Telegram');
               up.restart({ chatId, text: '更新' });
-              return say(chatId, '🔄 已更新到 ' + (r.toVersion ? 'v' + r.toVersion : r.to) + (r.moved && r.moved.length ? '（start.bat 的設定已搬到 start.local.bat）' : '') + '，重新啟動中，好了會通知你。');
+              return say(chatId, '🔄 已更新到 ' + (r.toVersion ? 'v' + r.toVersion : r.to) + (r.moved && r.moved.length ? '（start.bat 的設定已搬到 local-settings.txt）' : '') + '，重新啟動中，好了會通知你。');
             } catch (e) { return say(chatId, '⚠️ ' + e.message); }
           }
           if ((busy.length || running) && !sure) return say(chatId, '⚠️ ' + (busy.length ? busy.join('、') + ' 正在工作' : '有任務進行中') + '，重新啟動會中斷（任務會暫停，之後可以繼續）。確定請傳 /restart yes');

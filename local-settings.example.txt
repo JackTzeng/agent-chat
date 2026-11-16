@@ -1,0 +1,18 @@
+# 你自己的設定：把這個檔複製一份、改名成 local-settings.txt 再修改（用記事本打開就可以）
+# local-settings.txt 不會進 git，更新時不會被蓋掉。
+# 一行一個「名稱=值」，# 開頭是註解；中文路徑沒問題。
+# 改完按網頁左下角「⬆️ 更新／重新啟動」→「🔄 只重新啟動」就會生效，不用重開 start.bat。
+
+# 成員要存取 workspace 以外的資料夾時，把那些資料夾（或它們的上層資料夾）加進來，多個用分號分隔
+# AGENT_ALLOWED_ROOTS=C:\EM_reports_copy;D:\共用資料
+
+# 若自動找不到 CLI，把 where.exe 查到的完整路徑填在這裡
+# CLAUDE_BIN=C:\Users\你的帳號\AppData\Roaming\npm\claude.cmd
+# CODEX_BIN=C:\Users\你的帳號\AppData\Roaming\npm\codex.cmd
+
+# 用手機 / Tailscale 遠端連線時才需要（本機使用不用設定）
+# HOST=0.0.0.0
+# ALLOWED_HOSTS=你的Tailscale-IP
+
+# 換連接埠（預設 3939；換了之後瀏覽器網址也要跟著換）
+# PORT=3939

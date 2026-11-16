@@ -1,6 +1,6 @@
 // ⬆️ 一鍵更新：git fetch 檢查有沒有新版本 → 只做 fast-forward 合併 → 請啟動器重新啟動
 // - 只在用新版 start.bat（launcher.js）啟動時才能自動重啟
-// - 有自己改過的檔案就不更新（避免蓋掉）；start.bat 裡的個人設定會先搬到 start.local.bat
+// - 有自己改過的檔案就不更新（避免蓋掉）；start.bat 裡的個人設定會先搬到 local-settings.txt
 // - 新版本起不來時，launcher.js 會自動退回（data/update-pending.json 記著更新前的版本）
 'use strict';
 const fs = require('fs');
@@ -56,20 +56,11 @@ exports.create = function create(ctx) {
       commits, remoteVersion, version: ctx.VERSION, dirty: await dirtyFiles(), launcher: viaLauncher(), at: Date.now() });
   }
 
-  // start.bat 被改過（填了 CLAUDE_BIN、AGENT_ALLOWED_ROOTS 之類）：把 set 那幾行搬到 start.local.bat，再把 start.bat 還原
+  // start.bat 被改過（填了 CLAUDE_BIN、AGENT_ALLOWED_ROOTS 之類）：把 set 那幾行搬到 local-settings.txt，再把 start.bat 還原
   async function moveStartBatSettings() {
-    const bat = path.join(ROOT, 'start.bat'), local = path.join(ROOT, 'start.local.bat');
-    let text; try { text = fs.readFileSync(bat, 'utf8'); } catch { return false; }
-    const sets = text.split(/\r?\n/).filter((l) => /^\s*set\s+\w+=/i.test(l)).map((l) => l.trim());
-    const have = fs.existsSync(local) ? fs.readFileSync(local, 'utf8') : '';
-    const name = (l) => l.match(/^set\s+(\w+)=/i)[1].toUpperCase();
-    const add = sets.filter((l) => !new RegExp('^\\s*set\\s+' + name(l) + '=', 'im').test(have));
-    if (add.length) {
-      const head = have ? '' : '@echo off\r\nrem 你自己的設定：start.bat 啟動時會先執行這個檔，更新時不會被蓋掉\r\n';
-      fs.writeFileSync(local, have + (have && !/\n$/.test(have) ? '\r\n' : '') + head + add.join('\r\n') + '\r\n');
-    }
+    const moved = require('./localsettings').migrateFromBat(ROOT, 'start.bat');
     const r = await git(['checkout', '--', 'start.bat']);
-    return r.code === 0 ? add : false;
+    return r.code === 0 ? moved : false;
   }
 
   // 更新：成功時回傳 { from, to, commits }，之後呼叫 restart()
@@ -90,7 +81,7 @@ exports.create = function create(ctx) {
       const to = (await git(['rev-parse', 'HEAD'])).out;
       write(PENDING, { from, to, fromVersion: ctx.VERSION, toVersion: c.remoteVersion, at: Date.now(), by: by || null });
       try { fs.unlinkSync(FAILED); } catch {}
-      console.log('⬆️ 已更新：' + ctx.VERSION + ' → ' + (c.remoteVersion || to.slice(0, 7)) + (moved && moved.length ? '（start.bat 的設定已搬到 start.local.bat）' : ''));
+      console.log('⬆️ 已更新：' + ctx.VERSION + ' → ' + (c.remoteVersion || to.slice(0, 7)) + (moved && moved.length ? '（start.bat 的設定已搬到 local-settings.txt）' : ''));
       return { from: from.slice(0, 7), to: to.slice(0, 7), commits: c.commits, toVersion: c.remoteVersion, moved: moved || [] };
     } finally { busy = false; }
   }

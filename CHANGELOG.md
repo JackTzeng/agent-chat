@@ -1,5 +1,13 @@
 # 更新紀錄
 
+## v3.6.1（2026-11-16）
+- 修正：v3.6.0 的 start.bat 有中文註解，Windows 的 cmd 會讀錯（出現「is not recognized」），start.bat 改成只用英文
+- 個人設定改放 local-settings.txt（一行一個「名稱=值」，中文路徑沒問題），由伺服器自己讀取：改完按「🔄 只重新啟動」就生效
+- start.bat／start.local.bat 裡的 set 設定會自動搬進 local-settings.txt
+- AGENT_ALLOWED_ROOTS 裡有不存在的資料夾時改成略過並提醒，不會讓伺服器起不來
+- 成員設定不符合安全規則的提醒只顯示一次（原本會重複），並說明要改 local-settings.txt
+- 問題回報會列出 local-settings.txt 有哪些設定（只列名稱）與被略過的資料夾
+
 ## v3.6.0（2026-11-16）
 - 🐞 問題回報：網頁左下角或 Telegram `/report 描述`，產生一個 .md 回報檔（版本、git、環境、CLI 版本、成員與小組、任務與 TASK.md、最近的錯誤與事件、網頁端錯誤、Telegram 狀態、伺服器紀錄），拖進 Claude 的對話就能排查；密碼、token、API 金鑰、成員環境變數值自動遮蔽，對話內容預設不附
 - 伺服器紀錄存在 data/logs/server.log（含上次重新啟動前的紀錄），當機原因寫進 data/logs/crash.log；API 內部錯誤會記下來

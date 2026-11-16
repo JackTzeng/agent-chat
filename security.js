@@ -51,7 +51,8 @@ function canonicalOrParent(p) {
   }
   return path.resolve(canonicalExisting(found), path.relative(found, p));
 }
-function splitDirs(value) { return String(value || '').split(path.delimiter).map((s) => s.trim()).filter(Boolean); }
+// 多個資料夾用分號分隔（Windows 的習慣）；Linux／Mac 也接受冒號
+function splitDirs(value) { return String(value || '').split(path.delimiter === ';' ? ';' : /[:;]/).map((s) => s.trim()).filter(Boolean); }
 
 function createSecurity({ root, dataDir, host, port, env = process.env, log = console.log }) {
   fs.mkdirSync(dataDir, { recursive: true });
@@ -174,8 +175,13 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
 
   const defaultRoot = path.join(root, 'workspace');
   fs.mkdirSync(defaultRoot, { recursive: true });
-  const allowedRoots = [defaultRoot, ...splitDirs(env.AGENT_ALLOWED_ROOTS)].map((p) => {
-    if (!fs.existsSync(p) || !fs.statSync(p).isDirectory()) throw new Error('AGENT_ALLOWED_ROOTS 不存在：' + p);
+  // 不存在的資料夾直接略過（只會讓範圍變小）；不要因為一個打錯的路徑讓整個伺服器起不來
+  const missingRoots = [];
+  const allowedRoots = [defaultRoot, ...splitDirs(env.AGENT_ALLOWED_ROOTS)].filter((p) => {
+    if (fs.existsSync(p) && fs.statSync(p).isDirectory()) return true;
+    missingRoots.push(p); console.warn('⚠️ AGENT_ALLOWED_ROOTS 裡的資料夾不存在，先略過：' + p);
+    return false;
+  }).map((p) => {
     const real = canonicalExisting(p);
     const repo = canonicalExisting(root);
     if (inside(real, repo)) throw new Error('不可將 repo 或 repo 上層設為工作目錄白名單：' + real);
@@ -186,7 +192,7 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     const absolute = path.resolve(root, String(raw || ''));
     const canonical = canonicalOrParent(absolute);
     if (!allowedRoots.some((r) => inside(r, canonical)))
-      throw new Error('路徑不在核准的工作根目錄內：' + absolute + '（設定 AGENT_ALLOWED_ROOTS）');
+      throw new Error('路徑不在核准的工作根目錄內：' + absolute + '（在 local-settings.txt 的 AGENT_ALLOWED_ROOTS 加上這個資料夾或它的上層）');
     if (mustExist && (!fs.existsSync(absolute) || !fs.statSync(absolute).isDirectory()))
       throw new Error('資料夾不存在：' + absolute);
     return absolute;
@@ -225,6 +231,6 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     return s;
   }
   return { verifyHost, checkOrigin, authenticated, jsonRequest, login, logout, logoutAll, checkAgent,
-    assertAllowedDir, fileWithin, safeEnvironment, redact, allowedRoots: [...allowedRoots] };
+    assertAllowedDir, fileWithin, safeEnvironment, redact, allowedRoots: [...allowedRoots], missingRoots };
 }
 module.exports = { createSecurity, inside, isProtectedEnvKey };
