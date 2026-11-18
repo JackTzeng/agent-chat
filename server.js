@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.8.0';
+const VERSION = '3.8.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -38,6 +38,7 @@ function resolveBin(name, envVar) {
   const candidates = [
     path.join(home, '.local', 'bin', name + '.exe'), // Claude Code 官方安裝程式
     path.join(home, '.gemini', 'bin', name + '.exe'), // Google Antigravity CLI（agy）
+    path.join(process.env.LOCALAPPDATA || '', 'agy', 'bin', name + '.exe'), // Google Antigravity CLI（agy）Windows 安裝位置
     path.join(appdata, 'npm', name + '.cmd'),        // npm i -g 安裝（預設位置）
     path.join(path.dirname(process.execPath), name + '.cmd'), // npm 全域裝在 Node.js 資料夾
     path.join(process.env.LOCALAPPDATA || '', 'Programs', name, name + '.exe'),
