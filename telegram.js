@@ -31,6 +31,8 @@ const HELP =
   '/list　成員與狀態\n' +
   '/to 名字　切換對象\n' +
   '/stop　全部停止\n' +
+  '/pause 原因　⏸ 暫停專案：成員做完這一輪、寫好交班筆記後停下，新的派工和排程先排隊（/pausenow 立刻停）\n' +
+  '/resume 指示　▶ 重啟專案，可以加一句給所有成員的補充指示\n' +
   '/new　目前對象開新對話\n' +
   '/usage　Claude / Codex 用量額度（Google agy 的額度請在 agy 裡查）\n' +
   '/timers　⏰ 看所有排程；/timer 編號 run／on／off／ok／no\n' +
@@ -416,6 +418,14 @@ exports.start = function start(ctx) {
       : '⚡ ' + label(from) + ' 想緊急插話給 ' + label(to) + '，但改為排隊：' + reason;
     for (const id of pushRecipients()) await say(id, text);
   });
+  // ⏸ 專案暫停完成／▶ 重啟
+  listen('paused', async ({ label: lb, rec }) => {
+    for (const id of pushRecipients()) await say(id, '⏸ ' + lb + '已暫停' + (rec.reason ? '（' + rec.reason + '）' : '') + '：' +
+      (rec.notes ? rec.notes + ' 份交班筆記已存好，' : '') + (rec.restart && rec.restart.length ? rec.restart.length + ' 件做到一半的工作會在重啟後接著做，' : '') + '新的派工與排程都先排隊。\n👉 /resume 重啟（後面可以加一句給大家的指示）');
+  });
+  listen('resume', async ({ label: lb, minutes, restarted, held, text }) => {
+    for (const id of pushRecipients()) await say(id, '▶ ' + lb + '已重啟（暫停了 ' + minutes + ' 分鐘）：' + (restarted ? restarted + ' 位成員接著做被停下的工作，' : '') + (held ? '放行 ' + held + ' 則排隊的訊息' : '沒有排隊的訊息') + (text ? '\n補充指示：' + text : ''));
+  });
   // 🚨 唯讀成員（agy）竟然改了檔案：已自動暫停
   listen('readonly-violation', async ({ agent, changes }) => {
     const list = changes.slice(0, 8).map((c) => (c.kind === 'add' ? '＋' : c.kind === 'del' ? '－' : '～') + c.path).join('、');
@@ -517,6 +527,19 @@ exports.start = function start(ctx) {
         case 'stop':
           for (const a of ctx.agents) ctx.stopRun(a.id);
           return say(chatId, '⏹ 已全部停止');
+        case 'pause': case 'pausenow': {
+          if (!ctx.pauseProject) return say(chatId, '這個版本沒有暫停功能');
+          try {
+            const st = ctx.pauseProject('all', { mode: name.toLowerCase() === 'pausenow' ? 'now' : 'finish', reason: (arg || '').trim(), via: 'telegram' });
+            const p = st.pauses.find((x) => x.scope === 'all') || {};
+            if (p.phase === 'paused') return; // 馬上就停好了：上面的「已暫停」通知會告訴你
+            return say(chatId, '⏸ 暫停中：' + (p.working && p.working.length ? p.working.join('、') + (name.toLowerCase() === 'pausenow' ? ' 立刻停下' : ' 做完這一輪就停') + '，' : '') + '大家寫好交班筆記後會再通知你');
+          } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+        }
+        case 'resume': {
+          if (!ctx.resumeProject) return say(chatId, '這個版本沒有暫停功能');
+          try { ctx.resumeProject(null, { text: (arg || '').trim(), via: 'telegram' }); return; } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+        }
         case 'new': {
           const a = targetOf(c);
           return say(chatId, ctx.resetAgent(a.id) ? '🆕 ' + label(a) + ' 已開新對話' : a.name + ' 工作中，請先 /stop');
@@ -681,7 +704,7 @@ exports.start = function start(ctx) {
   });
 
   // agent 每做完一輪就推送結果
-  listen('done', async ({ agent, tg, segments, relayTo, shift }) => {
+  listen('done', async ({ agent, tg, segments, relayTo, shift, pauseNote }) => {
     // 獨立成員：只回到傳訊息來的那個聊天（網頁上的對話、專屬 bot 的對話不推到這裡）
     if (agent.standalone) {
       if (tg && tg.bot === 'main' && !shift) await sendReply(cl, tg.chatId, agent, segments, true);
@@ -689,6 +712,7 @@ exports.start = function start(ctx) {
     }
     const chats = pushRecipients();
     if (!chats.length || !segments.length) return;
+    if (pauseNote) return; // 專案暫停的交班筆記：全部寫好後會一起通知
     if (shift) { for (const id of chats) await say(id, label(agent) + ' 🔄 對話太長，已經寫好交班筆記，下一輪換成全新的對話接手'); return; }
     const texts = segments.filter((s) => s.type === 'text').map((s) => s.text);
     const errors = segments.filter((s) => s.type === 'error').map((s) => '⚠️ ' + s.text);

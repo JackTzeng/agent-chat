@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.9.0';
+const VERSION = '3.10.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -191,13 +191,21 @@ function normalizeTeams() {
 if (normalizeTeams()) saveConfig();
 reloadAgents();
 
+const pending = [];     // 排隊中的訊息：{ agentId, text, opts }（存在 state.queue，程式重新啟動後會接著排）
+let queueFrozen = false; // 關閉程式時：先把排隊內容存好，之後不再被「停止」清掉
 let state = { sessions: {} };
 try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
-const saveState = () => fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+const saveState = () => {
+  if (!queueFrozen) state.queue = pending.map((x) => ({ agentId: x.agentId, text: x.text, opts: x.opts }));
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+};
 state.ctx = state.ctx || {};       // 每段對話（session）目前大約用了多少 context：{ tokens, window, at }
 state.shifts = state.shifts || {}; // 換班：{ n: 第幾班, due: 下一輪前要換班, note: 交班筆記, pendingNote: 新的一班還沒讀到筆記 }
 state.lastKey = state.lastKey || {}; // 每位成員最近一次用的是哪一段對話
 state.hdr = state.hdr || {};       // 開頭說明去重：每段對話最近完整送過的版本 { hash, n: 之後省略了幾輪, saved: 累計少送的字數 }
+state.pause = state.pause || {};   // ⏸ 專案暫停：範圍（'all' 或小組 id）→ { at, reason, mode, phase, restart: [被中途停下的工作], notes: 份數 }
+for (const k of Object.keys(state.pause)) if (state.pause[k].phase === 'pausing') state.pause[k].phase = 'paused'; // 重新啟動時正在跑的都已經停了
+if (Array.isArray(state.queue)) for (const q of state.queue) if (q && q.agentId && q.opts) pending.push(q);
 
 const histFile = (id) => path.join(HIST_DIR, id + '.json');
 function loadHistory(id) {
@@ -221,7 +229,7 @@ function broadcast(ev) {
 
 // ---------- 執行 CLI ----------
 const runs = new Map(); // agentId -> { proc, segments, cwd, opts }
-const pending = [];     // 排隊中的訊息：{ agentId, text, opts }
+// 排隊中的訊息 pending 定義在 state 旁邊（要跟著存檔）
 
 // 這位成員可以 @ 誰（自由聊天模式）：有設定 canHandoffTo 就照設定，沒設定就是全部同事
 function allowedTargets(agent) {
@@ -310,10 +318,12 @@ function buildPrompt(agent, text, opts = {}) {
   if (opts.shift) return header + '\n\n' + shiftPrompt(agent, opts);
   const key = sessionKey(agent, opts), sh = state.shifts[key];
   const handover = sh && sh.pendingNote && !state.sessions[key]
-    ? '\n\n【換班：你是接手的第 ' + sh.n + ' 班】前一班的對話太長，換成你接手；你看不到前一班的對話。以下是前一班留下的交班筆記，先讀完，再處理下面的訊息' +
+    ? '\n\n【換班：你是接手的第 ' + sh.n + ' 班】' + (sh.paused ? '專案暫停後重新啟動，換成你接手；' : '前一班的對話太長，換成你接手；') + '你看不到前一班的對話。以下是前一班留下的交班筆記，先讀完，再處理下面的訊息' +
       (opts.taskId ? '（也可以看工作資料夾的 ' + tasks.taskDocName(opts.taskId) + '）' : '') + '：\n' + (sh.note || '（前一班沒有留下筆記，請從工作資料夾的檔案判斷進度）') + '\n【交班筆記結束】'
     : '';
-  if (opts.resume) {
+  if (opts.restart) {
+    body = text;
+  } else if (opts.resume) {
     body = '【系統訊息：你原本的工作被同事的緊急派工打斷了，緊急的事已經處理完】\n' + text +
       '\n\n請接著完成原本的工作（做到哪裡，可以從對話紀錄與工作資料夾的檔案判斷）；如果緊急的事改變了方向，依最新狀況調整。';
   } else if (opts.interject) {
@@ -357,6 +367,12 @@ function ctxInfo(key, engine) {
 }
 function shiftPrompt(agent, opts) {
   const c = ctxInfo(sessionKey(agent, opts), agent.engine);
+  if (opts.pauseNote) {
+    const rec = pauseOf(agent);
+    return '【系統：專案暫停】使用者暫停了專案' + (rec && rec.reason ? '（原因：' + rec.reason + '）' : '') + '，所有工作先停下。等使用者重啟時，會由一個全新的你接手，新的你看不到這段對話。\n' +
+      '請現在只寫一份交班筆記：不要繼續原本的工作、不要修改檔案、不要 @ 任何人、不要寫【交接】區塊。用下面的格式，寫得具體到可以直接照著接手，1500 字以內：\n' +
+      '## 目標\n## 已完成\n## 進行中（做到哪、卡在哪；被停下的那一步也要寫）\n## 下一步\n## 重要決定與注意事項（使用者的要求、規格、不能動的東西）\n## 相關檔案';
+  }
   return '【系統：換班】' + (opts.manualShift ? '使用者要求換班。' : '這段對話已經很長' + (c ? '（約 ' + Math.round(c.tokens / 1000) + 'k tokens，上限的 ' + c.pct + '%）' : '') + '，再長下去會被自動壓縮、遺失細節。') +
     '接下來會由一個全新的你接手，新的你看不到這段對話。\n請現在只寫一份交班筆記：不要繼續原本的工作、不要修改檔案、不要寫【交接】區塊。用下面的格式，寫得具體到可以直接照著接手，1500 字以內：\n' +
     '## 目標\n## 已完成\n## 進行中（做到哪、卡在哪）\n## 下一步\n## 重要決定與注意事項（使用者的要求、規格、不能動的東西）\n## 相關檔案';
@@ -369,7 +385,7 @@ function shiftDue(agent, key) {
 function finishShift(agent, key, run, note) {
   const prev = state.shifts[key] || { n: 1 };
   const c = ctxInfo(key, agent.engine);
-  state.shifts[key] = { n: (prev.n || 1) + 1, note: note ? note.slice(0, 8000) : '', at: Date.now(), pendingNote: true, due: false };
+  state.shifts[key] = { n: (prev.n || 1) + 1, note: note ? note.slice(0, 8000) : '', at: Date.now(), pendingNote: true, due: false, ...(run.opts.pauseNote ? { paused: true } : {}) };
   delete state.sessions[key]; delete state.ctx[key];
   saveState();
   try {
@@ -378,7 +394,8 @@ function finishShift(agent, key, run, note) {
       '\n\n# 第 ' + (prev.n || 1) + ' 班 → 第 ' + state.shifts[key].n + ' 班（' + new Date().toLocaleString('zh-TW', { hour12: false }) + '）\n\n' + (note || '（沒有交班筆記）') + '\n');
   } catch {}
   harness.record({ type: 'shift', agent: agent.id, taskId: run.opts.taskId || null, n: state.shifts[key].n, tokens: c ? c.tokens : null, pct: c ? c.pct : null, manual: !!run.opts.manualShift });
-  const t = '🔄 換班完成：下一輪起由第 ' + state.shifts[key].n + ' 班（全新的對話）接手，會先讀這份交班筆記';
+  const t = run.opts.pauseNote ? '⏸ 交班筆記已存好：重啟後由全新的對話接手，會先讀這份筆記'
+    : '🔄 換班完成：下一輪起由第 ' + state.shifts[key].n + ' 班（全新的對話）接手，會先讀這份交班筆記';
   run.segments.push({ type: 'tool', text: t });
   broadcast({ agentId: agent.id, kind: 'segment', segment: { type: 'tool', text: t } });
 }
@@ -454,13 +471,124 @@ function tryUrgent(target, text, opts) {
   say('interrupted', '');
   return 'interrupted';
 }
+// ---------- ⏸ 暫停／▶ 重啟專案 ----------
+// 暫停：新的派工、同事轉交、任務交接、排程一律排隊不叫醒；正在工作的成員做完這一輪（或立刻停），
+// 再請每位成員寫一份交班筆記（對話很短的略過）。重啟：放行排隊的訊息，被中途停下的工作接著做，
+// 寫過筆記的成員用全新的對話接手。使用者自己直接傳給成員的訊息不受影響。獨立成員（記帳員等）不屬於專案，不會被暫停。
+const pauseOf = (agent) => (!agent || agent.standalone ? null : state.pause.all || (agent.team && state.pause[agent.team]) || null);
+const isHeld = (agent, opts) => !!pauseOf(agent) && !opts.shift && !opts.restart &&
+  !!(opts.from || opts.system || opts.resume || opts.urgent || (opts.via === 'timer' && !opts.manual));
+const pauseScopeLabel = (scope) => (scope === 'all' ? '整個專案' : '小組「' + ((teamById(scope) || {}).name || scope) + '」');
+const inScope = (scope, a) => !a.standalone && (scope === 'all' || a.team === scope);
+const pauseNoteTokens = () => { const n = Number(harness.cfg().pauseNoteTokens); return Number.isFinite(n) && n >= 0 ? n : 20000; };
+// 這段對話要不要寫交班筆記：主對話與進行中任務的對話才寫；對話很短就不用（重啟後直接接著原本的對話）
+function pauseNoteOpts(agent, key) {
+  if (!state.sessions[key]) return null;
+  let o = null;
+  if (key === agent.id) o = {};
+  else {
+    const m = /^t(\d+):(.+)$/.exec(key);
+    const t = m && m[2] === agent.id && tasks.actives().find((x) => x.id === Number(m[1]));
+    if (t) o = { taskId: t.id, stageId: t.stageId };
+  }
+  if (!o) return null;
+  const min = pauseNoteTokens(), c = ctxInfo(key, agent.engine);
+  return min > 0 && c && c.tokens < min ? null : o;
+}
+function pauseProject(scope, { mode = 'finish', reason = '', via = 'web' } = {}) {
+  scope = scope && scope !== 'all' ? String(scope) : 'all';
+  if (scope !== 'all' && !teamById(scope)) throw new Error('找不到這個小組');
+  if (state.pause.all) throw new Error('整個專案已經暫停了');
+  if (state.pause[scope]) throw new Error(pauseScopeLabel(scope) + '已經暫停了');
+  const rec = { at: Date.now(), reason: String(reason || '').trim().slice(0, 300), mode: mode === 'now' ? 'now' : 'finish', via, phase: 'pausing', restart: [], notes: 0 };
+  if (scope === 'all') for (const k of Object.keys(state.pause)) { rec.restart.push(...(state.pause[k].restart || [])); rec.notes += state.pause[k].notes || 0; delete state.pause[k]; }
+  state.pause[scope] = rec;
+  const members = AGENTS.filter((a) => inScope(scope, a));
+  for (const a of members) {
+    const run = runs.get(a.id);
+    if (run && run.proc && rec.mode === 'now' && !run.opts.shift && !run.interrupt) { run.interrupt = { pause: scope }; proctree.killTree(run.proc); }
+  }
+  // 每段需要的對話各寫一份交班筆記（成員還在工作就排在這一輪之後）
+  const why = rec.reason ? '（原因：' + rec.reason + '）' : '';
+  for (const a of members) {
+    for (const key of Object.keys(state.sessions)) {
+      if (key !== a.id && !key.endsWith(':' + a.id)) continue;
+      const o = pauseNoteOpts(a, key);
+      if (!o) continue;
+      if (pending.some((q) => q.agentId === a.id && q.opts.pauseNote && sessionKey(a, q.opts) === key)) continue;
+      rec.notes++;
+      dispatch(a, '（專案暫停' + why + '）', { ...o, shift: true, pauseNote: true, system: true });
+    }
+  }
+  saveState();
+  harness.record({ type: 'pause', scope, mode: rec.mode, reason: rec.reason });
+  hooks.emit('pause', { scope, label: pauseScopeLabel(scope), rec, members: members.length });
+  broadcast({ agentId: '*', kind: 'pause' });
+  checkPaused();
+  return pauseStatus();
+}
+// 暫停中：範圍內還有成員在工作、或交班筆記還沒寫完 → 'pausing'；都好了 → 'paused'（通知一次）
+function checkPaused() {
+  for (const [scope, rec] of Object.entries(state.pause)) {
+    if (rec.phase !== 'pausing') continue;
+    const busy = AGENTS.some((a) => inScope(scope, a) && (runs.has(a.id) || pending.some((q) => q.agentId === a.id && q.opts.shift)));
+    if (busy) continue;
+    rec.phase = 'paused'; rec.pausedAt = Date.now(); saveState();
+    hooks.emit('paused', { scope, label: pauseScopeLabel(scope), rec });
+    broadcast({ agentId: '*', kind: 'pause' });
+  }
+}
+function resumeProject(scope, { text = '', via = 'web' } = {}) {
+  scope = scope && scope !== 'all' ? String(scope) : (state.pause.all ? 'all' : Object.keys(state.pause)[0]);
+  const rec = scope && state.pause[scope];
+  if (!rec) throw new Error('目前沒有暫停');
+  delete state.pause[scope];
+  const extra = String(text || '').trim().slice(0, 2000);
+  const ms = Date.now() - rec.at;
+  try { tasks.addPausedTime(ms, scope === 'all' ? null : scope); } catch {}
+  const members = AGENTS.filter((a) => inScope(scope, a) && !pauseOf(a));
+  const got = new Set();
+  const tail = extra ? '\n\n【使用者重啟時的補充指示（優先照這個做）】\n' + extra : '';
+  // 被中途停下的工作：接著做
+  for (const r of rec.restart || []) {
+    const a = agentById(r.agentId);
+    if (!a || !members.includes(a)) continue;
+    got.add(a.id);
+    dispatch(a, '【系統：專案重啟】暫停前你正在做下面這件事，做到一半被停下了。請先看交班筆記（如果有）和工作資料夾的檔案，判斷做到哪裡，再接著完成：\n\n' + r.text + tail,
+      { ...r.opts, restart: true, system: true, via });
+  }
+  // 有補充指示：其他成員也都要知道（交給它最近的對話：進行中任務或主對話）
+  if (extra) for (const a of members) {
+    if (got.has(a.id)) continue;
+    const key = state.lastKey[a.id] || a.id;
+    const m = /^t(\d+):/.exec(key);
+    const t = m && tasks.actives().find((x) => x.id === Number(m[1]));
+    dispatch(a, '【系統：專案重啟】使用者重新啟動了專案，並給所有人這段補充指示：\n' + extra +
+      '\n\n請依照它調整你接下來的工作。如果和你目前的工作無關，簡短回覆「收到」就好，不要 @ 任何人。',
+      { ...(t ? { taskId: t.id, stageId: t.stageId } : {}), restart: true, system: true, via });
+  }
+  saveState();
+  harness.record({ type: 'resume', scope, minutes: Math.round(ms / 60000), restarted: got.size });
+  hooks.emit('resume', { scope, label: pauseScopeLabel(scope), minutes: Math.round(ms / 60000), restarted: got.size, held: pending.filter((q) => members.some((a) => a.id === q.agentId)).length, text: extra });
+  broadcast({ agentId: '*', kind: 'pause' });
+  pump();
+  return pauseStatus();
+}
+function pauseStatus() {
+  return { pauses: Object.entries(state.pause).map(([scope, r]) => ({ scope, label: pauseScopeLabel(scope), at: r.at, reason: r.reason, mode: r.mode, phase: r.phase, notes: r.notes || 0,
+    restart: (r.restart || []).length,
+    held: pending.filter((q) => { const a = agentById(q.agentId); return a && inScope(scope, a) && isHeld(a, q.opts); }).length,
+    working: AGENTS.filter((a) => inScope(scope, a) && runs.has(a.id)).map((a) => a.name) })) };
+}
+
 function dispatch(agent, text, opts = {}) {
   if (opts.from && !opts.urgent && runs.has(agent.id)) {
     const r = tryUrgent(agent, text, opts);
     if (r) return r;
   }
-  if (mustWait(agent)) {
+  if (mustWait(agent) || isHeld(agent, opts)) {
     pending.push({ agentId: agent.id, text, opts });
+    saveState();
     broadcast({ agentId: '*', kind: 'queue' });
     return 'queued';
   }
@@ -473,17 +601,19 @@ function queueInfo(agentId) {
   if (!items.length) return null;
   const a = agentById(agentId);
   const blocker = a && (runs.has(agentId) ? [agentId] : turnBlocker(a));
-  return { count: items.length, waitingOn: blocker ? blocker[0] : null,
+  return { count: items.length, waitingOn: blocker ? blocker[0] : null, paused: !!pauseOf(a),
     items: items.map((p) => ({ text: p.text, from: p.opts.from || null, via: p.opts.via || null, taskId: p.opts.taskId || null })) };
 }
 function pump() {
   for (let i = 0; i < pending.length; i++) {
     const item = pending[i], agent = agentById(item.agentId);
     if (!agent) { pending.splice(i--, 1); continue; }
-    if (mustWait(agent)) continue;
+    if (mustWait(agent) || isHeld(agent, item.opts)) continue;
     pending.splice(i--, 1);
     startRun(agent, item.text, item.opts);
   }
+  saveState();
+  checkPaused();
   broadcast({ agentId: '*', kind: 'queue' });
 }
 function cancelTask(taskId) {
@@ -655,7 +785,7 @@ function startRun(agent, userText, opts = {}) {
   }
   const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system, interject: opts.interject, shift: opts.shift, timerId: opts.timerId };
 
-  const shownText = opts.shift ? '🔄 換班：' + (opts.manualShift ? '你要求換班' : '對話已經很長') + '，請成員寫交班筆記，之後換成全新的對話接手' : userText;
+  const shownText = opts.pauseNote ? '⏸ 專案暫停：請成員寫交班筆記，重啟後換成全新的對話接手' : opts.shift ? '🔄 換班：' + (opts.manualShift ? '你要求換班' : '對話已經很長') + '，請成員寫交班筆記，之後換成全新的對話接手' : userText;
   appendHistory(agent.id, { role: 'user', text: shownText, ...meta, ts: Date.now() });
   broadcast({ agentId: agent.id, kind: 'user', text: shownText, ...meta });
   hooks.emit('user', { agent, text: userText, from: opts.from, via: opts.via });
@@ -771,6 +901,20 @@ function startRun(agent, userText, opts = {}) {
     emit({ kind: 'error', text: '無法啟動「' + cmd + '」：' + err.message + '。請確認已安裝並在終端機能執行。' });
   });
   proc.on('close', (code) => {
+    if (run.interrupt && run.interrupt.pause) {
+      // 專案暫停（立刻停）：這一輪先停下，記下來，重啟時接著做
+      emit({ kind: 'tool', text: '⏸ 專案暫停，這一輪先停下（重啟後會接著做）' });
+      finish();
+      hooks.emit('done', { agent, timerId: opts.timerId, stopped: true, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
+      if (opts.taskId) tasks.noteInterrupt(agent, opts, before, '專案暫停');
+      if (agent.engine === 'codex') { setTimeout(readCodexUsage, 500); codexContext(key); }
+      const rec = state.pause[run.interrupt.pause] || pauseOf(agent);
+      if (rec && opts.via !== 'timer') rec.restart.push({ agentId: agent.id, text: userText,
+        opts: { taskId: opts.taskId, stageId: opts.stageId, sessionTag: opts.sessionTag, hops: opts.hops, via: opts.via, tg: opts.tg } });
+      saveState();
+      pump();
+      return;
+    }
     if (run.interrupt) {
       // 使用者插話：結束這一輪（不轉交、不判斷任務交接），馬上帶著指示接著做同一段對話
       const urgent = run.interrupt.urgent;
@@ -805,7 +949,7 @@ function startRun(agent, userText, opts = {}) {
       const note = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n').trim();
       if (!run.stopped) finishShift(agent, key, run, note);
       finish();
-      hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId, shift: true });
+      hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId, shift: true, pauseNote: !!opts.pauseNote });
       pump();
       return;
     }
@@ -852,7 +996,7 @@ function agyAfter(agent, run, emit, code, roBefore) {
 
 // silent：任務被整個停止時，不再觸發任務的後續判斷
 function stopRun(id, silent) {
-  for (let i = pending.length - 1; i >= 0; i--) if (pending[i].agentId === id) pending.splice(i, 1);
+  if (!queueFrozen) { for (let i = pending.length - 1; i >= 0; i--) if (pending[i].agentId === id) pending.splice(i, 1); saveState(); }
   broadcast({ agentId: '*', kind: 'queue' });
   const run = runs.get(id);
   if (!run || !run.proc) return false;
@@ -941,6 +1085,7 @@ const timers = require('./timers').create({
   notify: (e) => hooks.emit('timer-alert', e),
   onProposal: (p, agent) => hooks.emit('timer-proposal', { proposal: p, agent, desc: timers.describe(p) }),
   runCheck: (agent, command) => runPrecheck(agent, command),
+  isPaused: (agent) => !!pauseOf(agent),
 });
 // 前置檢查：在成員的工作資料夾跑一行指令（不花 AI 額度），60 秒逾時，連子程式一起關
 function runPrecheck(agent, command) {
@@ -1323,7 +1468,7 @@ const publicAgent = (a) => ({
   busy: runs.has(a.id), hasSession: !!state.sessions[a.id],
   queued: (queueInfo(a.id) || {}).count || 0, waitingOn: (queueInfo(a.id) || {}).waitingOn || null,
   runningSince: runs.has(a.id) ? runs.get(a.id).startedAt : null, lastActivity: runs.has(a.id) ? runs.get(a.id).lastActivity : null,
-  stalled: runs.has(a.id) ? !!runs.get(a.id).stalled : false,
+  stalled: runs.has(a.id) ? !!runs.get(a.id).stalled : false, paused: !!pauseOf(a),
   ctx: ctxInfo(state.lastKey[a.id] || a.id, a.engine), shiftNo: ((state.shifts[state.lastKey[a.id] || a.id] || {}).n) || 1,
   shifting: runs.has(a.id) ? !!runs.get(a.id).opts.shift : false,
 });
@@ -1690,10 +1835,20 @@ const server = http.createServer(async (req, res) => {
       const cc = userSend(agent, String(text));
       return send(res, 200, { ok: true, queued, cc: cc.map((a) => a.name) });
     }
+    if (p === '/api/pause' && req.method === 'GET') return send(res, 200, pauseStatus());
+    if (p === '/api/pause' && req.method === 'POST') {
+      const b = await readBody(req);
+      try { return send(res, 200, pauseProject(b.scope, { mode: b.mode, reason: b.reason, via: 'web' })); } catch (e) { return send(res, 400, { error: e.message }); }
+    }
+    if (p === '/api/resume' && req.method === 'POST') {
+      const b = await readBody(req);
+      try { return send(res, 200, resumeProject(b.scope, { text: b.text, via: 'web' })); } catch (e) { return send(res, 400, { error: e.message }); }
+    }
     if (p === '/api/stopall' && req.method === 'POST') {
       for (const t of tasks.actives()) { try { tasks.stop(t.id); } catch {} }
       pending.length = 0;
       for (const a of AGENTS) stopRun(a.id);
+      saveState();
       return send(res, 200, { ok: true });
     }
     if ((m = p.match(/^\/api\/stop\/([\w-]+)$/)) && req.method === 'POST') return send(res, 200, { ok: stopRun(m[1]) });
@@ -1736,6 +1891,8 @@ server.on('error', (e) => {
 server.listen(PORT, HOST, () => {
   updater.afterStart((n, failed) => hooks.emit('restarted', { ...n, version: VERSION, failed }));
   timers.start();
+  if (pending.length) { console.log('   📮 接著處理上次留下的 ' + pending.length + ' 則排隊訊息' + (Object.keys(state.pause).length ? '（專案暫停中，按「▶ 重啟」才會放行）' : '')); setTimeout(pump, 1500).unref(); }
+  for (const scope of Object.keys(state.pause)) console.log('   ⏸ ' + pauseScopeLabel(scope) + '暫停中');
   // 背景檢查更新：啟動 1 分鐘後一次，之後每 6 小時（只 fetch，不會自己更新）
   if (process.env.AGENTCHAT_NO_UPDATE_CHECK !== '1') {
     const bg = () => updater.check().then((c) => { if (c.ok && c.behind) broadcast({ agentId: '*', kind: 'update-available', version: c.remoteVersion }); }).catch(() => {});
@@ -1752,12 +1909,15 @@ const tgCtx = {
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,
   makeReport: (o) => reporter.makeReport(o), updater, timers,
+  pauseProject, resumeProject, pauseStatus,
 };
 telegram.start(tgCtx);
 telegram.startAgentBots(tgCtx);
 
 // code 75 = 請啟動器重新啟動（一鍵更新／重啟）
 const shutdown = (code) => {
+  try { saveState(); } catch {}
+  queueFrozen = true; // 排隊的訊息已經存好，下面的停止不會把它清掉
   for (const id of runs.keys()) stopRun(id);
   // 用量查詢、自動檢查、版本查詢等其他子程式也一起關掉，不留在背景
   const had = proctree.killAll();

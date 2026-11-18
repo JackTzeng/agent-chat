@@ -243,7 +243,7 @@ exports.create = function create(ctx) {
     t.active = { at: Date.now(), key, manual };
     t.firedKey = key;
     const wake = (checkOut) => {
-      const r = ctx.dispatch(agent, header(t, why, checkOut), { via: 'timer', timerId: t.id, sessionTag: t.ownSession ? 'x' + t.id : null, fresh: !!t.ownSession && !t.keepSession, system: false });
+      const r = ctx.dispatch(agent, header(t, why, checkOut), { via: 'timer', timerId: t.id, sessionTag: t.ownSession ? 'x' + t.id : null, fresh: !!t.ownSession && !t.keepSession, manual: !!manual, system: false });
       logRun({ timerId: t.id, name: t.name, agentId: agent.id, status: r === 'queued' ? 'queued' : 'started', manual, why });
       return r;
     };
@@ -283,6 +283,14 @@ exports.create = function create(ctx) {
       const slot = t.nextRun;
       if (t.firedKey === String(slot)) { t.nextRun = computeNext(t, now); dirty = true; continue; } // 這一次已經觸發過（例如重新啟動前）
       const late = now - slot;
+      const ag = ctx.agentById(t.agentId);
+      if (ag && ctx.isPaused && ctx.isPaused(ag)) {
+        // 專案暫停中：這一次直接略過（重啟後從下一次開始，不會一口氣補做）
+        t.firedKey = String(slot); t.nextRun = computeNext(t, now); dirty = true;
+        logRun({ timerId: t.id, name: t.name, agentId: t.agentId, status: 'skipped', summary: '專案暫停中，這次略過' });
+        if (t.schedule.kind === 'once') { t.done = true; t.enabled = false; t.nextRun = null; }
+        continue;
+      }
       fire(t, { slot, why: late > 5 * 60000 ? '補做：原本 ' + fmt(slot) + ' 該執行，當時電腦或程式沒開' : '' });
       if (t.schedule.kind === 'once') { t.done = true; t.enabled = false; t.nextRun = null; }
       else t.nextRun = computeNext(t, now); // 錯過好幾次也只補做一次

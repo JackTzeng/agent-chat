@@ -280,7 +280,7 @@ exports.create = function create(ctx) {
     }
     // 預算：任務總時間
     const minutes = Number(hcfg().maxTaskMinutes) || 0;
-    if (minutes > 0 && Date.now() - task.createdAt > minutes * 60000 * (1 + (task.extraBudget || 0))) {
+    if (minutes > 0 && Date.now() - task.createdAt - (task.pausedMs || 0) > minutes * 60000 * (1 + (task.extraBudget || 0))) {
       return overBudget(task, agent, '任務已經進行超過 ' + minutes + ' 分鐘的時間預算');
     }
     if (!ho || !st || /使用者|^你$/.test(ho.to)) {
@@ -561,6 +561,8 @@ exports.create = function create(ctx) {
     // 相容舊介面：active() 是最近更新的一件；actives() 是所有小組進行中的任務
     active: () => summary(actives().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0]),
     actives: () => actives().map(summary),
+    // 專案暫停的時間不算進任務的時間預算（teamId 空白 = 所有小組）
+    addPausedTime: (ms, teamId) => { for (const t of actives()) if (!teamId || t.teamId === teamId) { t.pausedMs = (t.pausedMs || 0) + ms; } save(); },
     activeOf: (teamId) => summary(activeOf(teamId)),
     list: () => store.tasks.slice(-20).reverse().map(summary),
     detail: (id) => { const t = get(id); return t ? { task: summary(t), markdown: taskMarkdown(t) } : null; },

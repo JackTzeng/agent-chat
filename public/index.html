@@ -285,6 +285,8 @@
   }
 .warn-line{color:#d97706}
 .hn-load{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}.hn-load span{font-size:12px;padding:2px 8px;border-radius:10px;background:var(--panel2,#eef);}
+.pausebar{margin:0 10px 8px}.pausebar>button{width:100%}.pausebar .pz{background:#fde68a;color:#3b2f00;border-radius:10px;padding:8px 10px;font-size:13px;margin-bottom:6px}
+.pausebar .pz b{display:block;margin-bottom:2px}.pausebar .pz small{display:block;opacity:.8}.pausebar .pz button{margin-top:6px}
 .hn-load span.over{background:#fde68a}.hn-ctx>div{font-size:13px;padding:4px 8px;margin:3px 0;border-radius:8px;background:var(--panel2,#eef)}.hn-ctx>div.over{background:#fde68a}.hn-ctx small{opacity:.75}.hn-item.off{opacity:.55}.hn-item .acts select{max-width:180px}
 .warn-box{background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 10px;margin:8px 0;font-size:13px}.warn-box button{margin-left:8px}
 .rp-ok{background:#ecfdf5;border:1px solid #10b981;border-radius:8px;padding:8px 10px;margin:10px 0;font-size:13px;line-height:1.7}.up-list{margin:6px 0 0 18px;padding:0;font-size:13px}
@@ -297,6 +299,7 @@
 <div class="app">
   <aside class="side">
     <h1>💬 Agent Chat <span id="ver" class="ver"></span></h1>
+    <div class="pausebar" id="pausebar"></div>
     <div class="agents" id="agents"></div>
     <div class="usage" id="usage"></div>
   </aside>
@@ -345,7 +348,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.9.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.10.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -427,9 +430,10 @@ function agentCard(a, extraClass = '') {
         ${a.extraDirs && a.extraDirs.length ? `<div class="role" title="${esc(a.extraDirs.map((d) => d.path + (d.mode === 'ro' ? '（唯讀）' : '（可讀寫）')).join('\n'))}">📁 +${a.extraDirs.length} 個資料夾</div>` : ''}
         ${a.blocked ? `<div class="role stall" title="${esc(a.blocked)}">⛔ 設定需修正，暫停使用</div>` : ''}
         ${a.standalone ? `<div class="role" title="不進工作流程、不建立任務，訊息直接交給它處理">🧍 獨立成員${a.tgPrefix ? '｜Telegram ' + esc(a.tgPrefix) : ''}${a.tgBot ? '｜專屬 bot' : ''}</div>` : ''}
+        ${a.paused ? `<div class="role stall" title="專案暫停中：同事轉交、任務交接、排程都先排隊；你直接傳給它的訊息照樣會處理">⏸ 專案暫停中</div>` : ''}
         ${a.shifting ? '<div class="role">🔄 換班中：正在寫交班筆記</div>' : a.busy && a.runningSince ? `<div class="role ${a.stalled ? 'stall' : ''}">${a.stalled ? '⚠️ 可能卡住 · ' : '⏱ '}工作中 ${esc(ago(a.runningSince))}</div>` : ''}
         ${a.ctx || a.shiftNo > 1 ? `<div class="role ${a.ctx && CFG_H && CFG_H.shiftPercent && a.ctx.pct >= CFG_H.shiftPercent ? 'stall' : ''}" title="這段對話大約用了 ${a.ctx ? Math.round(a.ctx.tokens / 1000) + 'k / ' + Math.round(a.ctx.window / 1000) + 'k tokens' : '—'}；超過 ${CFG_H ? CFG_H.shiftPercent : 40}% 會自動換班">🧠 ${a.ctx ? a.ctx.pct + '%' : '新對話'}${a.shiftNo > 1 ? ' · 第 ' + a.shiftNo + ' 班' : ''}${a.ctx && CFG_H && CFG_H.shiftPercent && a.ctx.pct >= CFG_H.shiftPercent && !a.busy ? ' · 下一輪先換班' : ''}</div>` : ''}
-        ${a.queued ? `<div class="qline">🕒 排隊中${a.waitingOn === a.id ? '（等它這輪做完）' : a.waitingOn && agentOf(a.waitingOn) ? '（等 ' + esc(agentOf(a.waitingOn).name) + ' 做完）' : ''}</div>` : ''}
+        ${a.queued ? `<div class="qline">🕒 排隊中${a.paused && !a.busy ? '（重啟後才處理）' : a.waitingOn === a.id ? '（等它這輪做完）' : a.waitingOn && agentOf(a.waitingOn) ? '（等 ' + esc(agentOf(a.waitingOn).name) + ' 做完）' : ''}</div>` : ''}
       </div>
       <span class="unread"></span>
       ${a.id !== ALL && a.id !== OFFICE ? `<button class="gear" data-edit="${esc(a.id)}" title="編輯成員">⚙️</button>` : ''}
@@ -1826,7 +1830,8 @@ function connectEvents() {
     if (ev.kind === 'harness' || ev.kind === 'harness-run') { loadHarness(ev.kind === 'harness-run'); return; }
     if (ev.kind === 'timers') { refreshTimerBadge(); if ($('tmr_list')) openTimers(true); return; }
     if (ev.kind === 'update-available') { if (!UPD_BADGE) { UPD_BADGE = true; renderUsage(); } return; }
-    if (ev.kind === 'queue') { refreshQueue(); return; }
+    if (ev.kind === 'queue') { refreshQueue(); if ((PAUSE.pauses || []).length) loadPause(); return; }
+    if (ev.kind === 'pause') { loadPause(); refreshAgents(); return; }
     if (ev.kind === 'urgent') { toast(ev.status === 'interrupted' ? '⚡ ' + ev.from + ' 緊急插話給 ' + ev.to : '⚡ ' + ev.from + ' 想緊急插話給 ' + ev.to + '，但改為排隊（' + ev.reason + '）'); return; }
     const a = agentOf(ev.agentId); if (!a) return;
     if (ev.kind === 'busy') { a.busy = ev.busy; refreshAgents().then(updateThinking); return; }
@@ -1859,7 +1864,52 @@ async function init() {
   loadTelegram();
   loadHarness();
   await Promise.all([loadWorkflow(), loadTasks()]);
+  loadPause();
   selectAgent(saved === ALL || agents.some((a) => a.id === saved) ? saved : agents[0].id);
+}
+// ---------- ⏸ 暫停／▶ 重啟專案 ----------
+let PAUSE = { pauses: [] };
+async function loadPause() { try { PAUSE = await api('/api/pause'); } catch {} renderPause(); }
+function renderPause() {
+  const el = $('pausebar'); if (!el) return;
+  const ps = PAUSE.pauses || [];
+  el.innerHTML = ps.map((p) => `<div class="pz"><b>⏸ ${esc(p.label)}${p.phase === 'pausing' ? '暫停中…' : '已暫停'}</b>
+    ${p.reason ? `<small>原因：${esc(p.reason)}</small>` : ''}
+    <small>${p.phase === 'pausing' ? (p.working.length ? esc(p.working.join('、')) + (p.mode === 'now' ? ' 正在停下' : ' 做完這一輪就停') + '，' : '') + '正在寫交班筆記' : fmtTime(p.at) + ' 起'}
+      ${p.notes ? '・筆記 ' + p.notes + ' 份' : ''}${p.restart ? '・做到一半 ' + p.restart + ' 件' : ''}${p.held ? '・排隊 ' + p.held + ' 則' : ''}</small>
+    <button class="primary" data-resume="${esc(p.scope)}">▶ 重啟</button></div>`).join('') +
+    (ps.some((p) => p.scope === 'all') ? '' : '<button id="pauseOpen" title="暫停專案：成員停下手上的工作、寫好交班筆記，新的派工與排程先排隊，等你按重啟">⏸ 暫停專案</button>');
+  el.querySelectorAll('[data-resume]').forEach((b) => { b.onclick = () => openResume(b.dataset.resume); });
+  if ($('pauseOpen')) $('pauseOpen').onclick = openPause;
+}
+function openPause() {
+  const teams = TEAMS.filter((t) => !(PAUSE.pauses || []).some((p) => p.scope === t.id));
+  openModal(`<h2>⏸ 暫停專案</h2>
+    <p class="help">暫停後：同事之間的轉交、任務交接、排程都先排隊，不會叫醒成員；有在進行的對話，每位成員會先寫一份交班筆記，重啟後用全新的對話帶著筆記接手（對話很短的不寫，直接接著原本的對話）。你自己直接傳給成員的訊息照樣會處理。獨立成員（例如記帳員）不受影響。暫停狀態和排隊的訊息會存檔，程式重新啟動也不會自己恢復。</p>
+    <div class="form-grid">
+      <div class="field"><label>範圍</label><select id="pz_scope"><option value="all">整個專案（所有小組）</option>${teams.map((t) => `<option value="${esc(t.id)}">${esc((t.icon || '') + ' ' + t.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>正在工作的成員</label><select id="pz_mode"><option value="finish">做完這一輪再停（建議）</option><option value="now">立刻停下（檔案可能改到一半，重啟後會接著做）</option></select></div>
+      <div class="field full"><label>原因（選填，會告訴成員）</label><input id="pz_reason" maxlength="300" placeholder="例如：午休、等客戶回覆、方向要重新討論"></div>
+    </div>
+    <div class="modal-actions"><span class="spacer"></span><button id="pz_cancel">取消</button><button class="primary" id="pz_go">⏸ 暫停</button></div>`);
+  $('pz_cancel').onclick = closeModal;
+  $('pz_go').onclick = async () => {
+    try { PAUSE = await api('/api/pause', { method: 'POST', body: JSON.stringify({ scope: $('pz_scope').value, mode: $('pz_mode').value, reason: $('pz_reason').value }) }); closeModal(); renderPause(); refreshAgents(); }
+    catch (e) { toast(e.message); }
+  };
+}
+function openResume(scope) {
+  const p = (PAUSE.pauses || []).find((x) => x.scope === scope) || {};
+  openModal(`<h2>▶ 重啟${esc(p.label || '專案')}</h2>
+    <p class="help">${p.restart ? p.restart + ' 件做到一半的工作會接著做；' : ''}${p.held ? '排隊的 ' + p.held + ' 則訊息會放行；' : ''}寫過交班筆記的成員會用全新的對話接手。${p.phase === 'pausing' ? '<br>⚠️ 還有成員沒停好或筆記還沒寫完，現在重啟也可以，它們寫完會照常接手。' : ''}</p>
+    <div class="field full"><label>給所有成員的補充指示（選填）</label><textarea id="rz_text" rows="3" maxlength="2000" placeholder="例如：方向改了，先做 B；或留空直接接著原本的工作"></textarea>
+      <span class="help">有寫的話，範圍內每位成員都會收到一則（各花一輪額度）；留空就只有被停下的工作和排隊的訊息會動。</span></div>
+    <div class="modal-actions"><span class="spacer"></span><button id="rz_cancel">取消</button><button class="primary" id="rz_go">▶ 重啟</button></div>`);
+  $('rz_cancel').onclick = closeModal;
+  $('rz_go').onclick = async () => {
+    try { PAUSE = await api('/api/resume', { method: 'POST', body: JSON.stringify({ scope, text: $('rz_text').value }) }); closeModal(); renderPause(); refreshAgents(); toast('▶ 已重啟'); }
+    catch (e) { toast(e.message); }
+  };
 }
 // ---------- 🐞 問題回報 ----------
 async function openReport(preset) {
