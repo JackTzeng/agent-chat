@@ -348,7 +348,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.10.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.11.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -427,6 +427,7 @@ function agentCard(a, extraClass = '') {
         <div class="name">${esc(a.name)}${a.engine ? `<span class="badge ${esc(a.engine)}">${esc(a.engine)}</span>` : ''}</div>
         <div class="role">${esc(a.role || '')}</div>
         ${a.engine ? `<div class="role">${esc([a.model || '預設模型', a.effort].filter(Boolean).join(' · '))}${a.takeTurns ? ' · <span title="和團隊輪流工作：同一時間只有一位輪流成員在動手">🔁 輪流</span>' : ''}</div>` : ''}
+        ${a.rtk ? `<div class="role" title="${a.rtkOn ? '這位 Claude 成員的指令輸出會經過 rtk 精簡' : '已勾選，但還沒找到 rtk（請先安裝），或這位成員不適用'}">🗜 rtk${a.rtkOn ? '' : '（未生效）'}</div>` : ''}
         ${a.extraDirs && a.extraDirs.length ? `<div class="role" title="${esc(a.extraDirs.map((d) => d.path + (d.mode === 'ro' ? '（唯讀）' : '（可讀寫）')).join('\n'))}">📁 +${a.extraDirs.length} 個資料夾</div>` : ''}
         ${a.blocked ? `<div class="role stall" title="${esc(a.blocked)}">⛔ 設定需修正，暫停使用</div>` : ''}
         ${a.standalone ? `<div class="role" title="不進工作流程、不建立任務，訊息直接交給它處理">🧍 獨立成員${a.tgPrefix ? '｜Telegram ' + esc(a.tgPrefix) : ''}${a.tgBot ? '｜專屬 bot' : ''}</div>` : ''}
@@ -935,6 +936,10 @@ async function openAgentForm(id) {
         <label class="opt"><input type="checkbox" id="f_urgent" ${(a.canInterrupt !== undefined ? a.canInterrupt : /\bPM\b|專案經理/i.test(a.role || '')) ? 'checked' : ''}> ⚡ 可以緊急插話同事</label>
         <span class="help">派工訊息寫「【緊急】」時，會立刻中斷正在工作的同事，先處理這件事，再回頭做原本的工作。預設只有角色寫了 PM 的成員有；同一位同事冷卻時間內只能被插話一次（在「⚙️ 工作流程」設定）。</span>
       </div>
+      <div class="field full claude-only">
+        <label class="opt"><input type="checkbox" id="f_rtk" ${a.rtk ? 'checked' : ''}> 🗜 壓縮指令輸出（rtk，只限 Claude 成員）</label>
+        <span class="help" id="f_rtkhelp">成員在 Bash 執行的 git、測試、建置等指令，輸出會先經過 rtk 精簡再交給它，省 token、對話也不會被長長的紀錄撐大。要先在這台電腦裝 rtk（PowerShell：<code>winget install rtk-ai.rtk</code>）。只影響勾選的成員，不會改你自己的 Claude Code 設定；rtk 不能替成員核准指令，權限照原本的設定。獨立成員和有「限制工具」的成員不會使用。</span>
+      </div>
       <div class="field full">
         <label>工作資料夾</label>
         <input id="f_cwd" value="${esc(a.cwd || teamCwd(a.team || TEAM_SEL) || './workspace')}" placeholder="./workspace 或 C:/Users/你/專案">
@@ -1047,6 +1052,7 @@ async function openAgentForm(id) {
     document.querySelectorAll('.sa-only').forEach((x) => (x.style.display = sa ? '' : 'none'));
     document.querySelectorAll('.team-only').forEach((x) => (x.style.display = sa ? 'none' : ''));
     document.querySelectorAll('.cl-only').forEach((x) => (x.style.display = cl ? '' : 'none'));
+    document.querySelectorAll('.claude-only').forEach((x) => (x.style.display = cl && !sa ? '' : 'none'));
   };
   syncKind();
   $('f_standalone').onchange = syncKind;
@@ -1092,6 +1098,7 @@ async function openAgentForm(id) {
       model: $('f_model').value, effort: $('f_effort').value, cwd: $('f_cwd').value, persona: $('f_persona').value,
       canHandoffTo: $('f_unres').checked ? null : [...document.querySelectorAll('#f_handoff input:checked')].map((x) => x.value),
       extraDirs: dirs.filter((d) => d.path),
+      rtk: engineSel.value === 'claude' && !$('f_standalone').checked && $('f_rtk').checked,
       takeTurns: $('f_turns').checked && !$('f_standalone').checked, canInterrupt: $('f_urgent').checked && !$('f_standalone').checked, team: $('f_team').value,
       standalone: $('f_standalone').checked, personaFile: $('f_pfile').value, env: $('f_env').value,
       tools: $('f_tools').value, allowedTools: $('f_allow').value, disallowedTools: $('f_deny').value,
@@ -1409,16 +1416,24 @@ const fmtMs = (ms) => ms >= 3600000 ? (ms / 3600000).toFixed(1) + ' 小時' : ms
 const fmtTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n || 0);
 
 // 📏 上下文用量：每位成員每一輪固定帶的說明有多大、省了多少、目前的對話用了多少
+function rtkHtml(r) {
+  if (!r) return '';
+  const used = r.members.filter((m) => m.active).map((m) => m.name), skip = r.members.filter((m) => !m.active);
+  return `<div class="hn-ctx"><div class="${r.bin ? '' : 'over'}">🗜 <b>rtk 指令輸出精簡</b>（只限 Claude 成員）：${r.bin ? '已安裝' + (r.version ? '（' + esc(r.version) + '）' : '') + (used.length ? '，' + esc(used.join('、')) + ' 使用中' : '，目前沒有成員使用') : '找不到 rtk，勾選的成員還不會壓縮：在 PowerShell 跑 <code>winget install rtk-ai.rtk</code>，再重新整理這頁'}
+    ${skip.length ? `<small>｜${skip.map((m) => esc(m.name) + '：' + esc(m.why)).join('、')}</small>` : ''}
+    ${r.global ? '<br><small>⚠️ 你的 ~/.claude/settings.json 裡也有全域的 rtk hook（rtk init -g 裝的）：你自己的 Claude Code 也會被壓縮，舊版 rtk 還會自動核准改寫後的指令。只想給成員用的話，可以跑 <code>rtk init -g --uninstall</code> 移除全域設定（照 rtk 說明為準）。</small>' : ''}
+    ${r.bin ? '<br><button id="rtkGain" style="margin-top:4px">📊 看 rtk 省了多少</button><pre id="rtkGainOut" style="display:none;white-space:pre-wrap;font-size:12px;margin:6px 0 0"></pre>' : ''}</div></div>`;
+}
 function ctxLoadHtml(H) {
   const rows = H.contextLoad || [];
-  if (!rows.length) return '';
+  if (!rows.length) return rtkHtml(H.rtk);
   const kc = (n) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
   return `<h3 style="margin:14px 0 6px;font-size:15px">📏 上下文用量（每輪固定帶的說明）</h3>
     <p class="help">每一輪都會附給成員的開頭說明：身分、團隊、守則、記憶。內容沒變時，同一段對話只在第一輪、有變動、或每 ${H.headerRefresh || '（已關閉）'} 輪完整送一次，其餘只送一行，不會讓對話越堆越長。超過 4k 字會標黃，可以到下面精簡守則或記憶。</p>
     <div class="hn-ctx">${rows.map((r) => `<div class="${r.header > 4000 ? 'over' : ''}"><b>${esc(r.name)}</b>　每輪 ${kc(r.header)} 字
       <small>（角色 ${kc(r.persona)}・守則 ${kc(r.guides)}・記憶 ${kc(r.memory)}・其他 ${kc(r.other)}）</small>
       ${r.skipped ? `<small>｜已省略 ${r.skipped} 輪、少送約 ${kc(r.saved)} 字</small>` : ''}
-      ${r.ctx ? `<small>｜🧠 對話 ${r.ctx.pct}%（${Math.round(r.ctx.tokens / 1000)}k）</small>` : ''}</div>`).join('')}</div>`;
+      ${r.ctx ? `<small>｜🧠 對話 ${r.ctx.pct}%（${Math.round(r.ctx.tokens / 1000)}k）</small>` : ''}</div>`).join('')}</div>` + rtkHtml(H.rtk);
 }
 
 async function openHarness(tab) {
@@ -1867,6 +1882,14 @@ async function init() {
   loadPause();
   selectAgent(saved === ALL || agents.some((a) => a.id === saved) ? saved : agents[0].id);
 }
+// 🗜 rtk：按了才跑 rtk gain（要幾秒）
+document.addEventListener('click', async (e) => {
+  if (!e.target || e.target.id !== 'rtkGain') return;
+  const out = $('rtkGainOut'); e.target.disabled = true; e.target.textContent = '查詢中…';
+  try { const r = await api('/api/rtk?gain=1'); out.textContent = r.gain || '（rtk 沒有回傳統計，可能還沒有任何指令經過它）'; out.style.display = ''; }
+  catch (err) { toast(err.message); }
+  e.target.disabled = false; e.target.textContent = '📊 看 rtk 省了多少';
+});
 // ---------- ⏸ 暫停／▶ 重啟專案 ----------
 let PAUSE = { pauses: [] };
 async function loadPause() { try { PAUSE = await api('/api/pause'); } catch {} renderPause(); }

@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.10.0';
+const VERSION = '3.11.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -56,6 +56,63 @@ const BIN = {
   codex: resolveBin('codex', 'CODEX_BIN'),
   agy: resolveBin('agy', 'AGY_BIN'),
 };
+// ---------- 🗜 rtk：壓縮 Claude 成員的指令輸出（只限 Claude 成員）----------
+// rtk 要另外裝在電腦上（winget install rtk-ai.rtk）。不改你的全域 ~/.claude/settings.json：
+// 只有勾了「壓縮指令輸出」的 Claude 成員，啟動時用 --settings 額外接上 hook；hook 經過 rtkhook.js，
+// 只採用 rtk 的指令改寫，不讓它自動核准指令（權限仍由 Claude 與 Agent Chat 的設定決定）。
+const RTK = { bin: null, at: 0, version: null };
+function rtkBin(force) {
+  if (process.env.RTK_BIN) return process.env.RTK_BIN;
+  if (RTK.bin && fs.existsSync(RTK.bin)) return RTK.bin;
+  if (!force && RTK.at && Date.now() - RTK.at < 300000) return RTK.bin; // 找不到時 5 分鐘內不重找（找一次可能要好幾秒）
+  RTK.at = Date.now(); RTK.bin = null; RTK.version = null;
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const cands = IS_WIN
+    ? [path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WinGet', 'Links', 'rtk.exe'), path.join(home, '.cargo', 'bin', 'rtk.exe'), path.join(home, '.local', 'bin', 'rtk.exe')]
+    : [path.join(home, '.cargo', 'bin', 'rtk'), path.join(home, '.local', 'bin', 'rtk'), '/opt/homebrew/bin/rtk', '/usr/local/bin/rtk'];
+  RTK.bin = cands.find((c) => c && fs.existsSync(c)) || null;
+  if (!RTK.bin) {
+    try {
+      const out = execFileSync(IS_WIN ? 'where' : 'which', ['rtk'], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 })
+        .split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      RTK.bin = (IS_WIN ? out.find((f) => /\.exe$/i.test(f)) : out[0]) || null;
+    } catch {}
+  }
+  return RTK.bin;
+}
+// 這位成員實際會不會用 rtk：Claude、不是獨立成員、沒有限制工具（獨立成員的最小權限不受任何 hook 影響）
+const rtkWanted = (a) => !!a && a.engine === 'claude' && !!a.rtk && !a.standalone && !a.tools && !(a.allowedTools || []).length;
+function rtkSettingsFile(bin) {
+  const fwd = (x) => String(x).replace(/\\/g, '/');
+  const command = '"' + fwd(process.execPath) + '" "' + fwd(path.join(ROOT, 'rtkhook.js')) + '" "' + fwd(bin) + '"';
+  const json = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command, timeout: 15 }] }] } }, null, 2);
+  const file = path.join(DATA_DIR, 'rtk-claude-settings.json');
+  let cur = null; try { cur = fs.readFileSync(file, 'utf8'); } catch {}
+  if (cur !== json) { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(file, json); }
+  return file;
+}
+// 你自己有沒有用 rtk init -g 裝過全域的 hook（那樣你所有的 Claude 都會被壓縮）
+function rtkGlobalHook() {
+  try {
+    const t = fs.readFileSync(path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), '.claude', 'settings.json'), 'utf8');
+    return /rtk hook claude|rtk-rewrite/.test(t);
+  } catch { return false; }
+}
+function rtkRun(args, timeout = 10000) {
+  const bin = rtkBin(); if (!bin) return null;
+  try {
+    return execFileSync(bin, args, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], timeout, env: { ...process.env, NO_COLOR: '1' } })
+      .replace(/\x1b\[[0-9;]*m/g, '').trim();
+  } catch (e) { return e.stdout ? String(e.stdout).replace(/\x1b\[[0-9;]*m/g, '').trim() : null; }
+}
+function rtkStatus(withGain) {
+  const bin = rtkBin(true);
+  if (bin && !RTK.version) RTK.version = rtkRun(['--version'], 5000);
+  return { bin, version: bin ? RTK.version : null, global: rtkGlobalHook(),
+    members: AGENTS.filter((a) => a.rtk).map((a) => ({ id: a.id, name: a.name, active: rtkWanted(a), why: a.engine !== 'claude' ? '只限 Claude 成員' : a.standalone ? '獨立成員不使用' : !rtkWanted(a) ? '有限制工具的成員不使用' : '' })),
+    gain: withGain && bin ? (rtkRun(['gain'], 15000) || '').slice(0, 4000) : null };
+}
+
 // 之前沒找到的話，每次送訊息時再找一次（裝好後不必重啟伺服器）
 function getBin(engine) {
   if (!BIN[engine]) BIN[engine] = resolveBin(engine, engine.toUpperCase() + '_BIN');
@@ -240,7 +297,7 @@ function allowedTargets(agent) {
 
 // 成員可以存取的資料夾（每一輪都告訴它）
 function accessText(agent) {
-  const base = accessBase(agent);
+  const base = accessBase(agent) + (rtkWanted(agent) && rtkBin() ? '\n【指令輸出精簡】你在 Bash 執行的常見指令（git、測試、建置、列出檔案等）輸出會先經過 rtk 精簡。如果需要完整的原始輸出才能判斷，請在回覆中說明，使用者可以暫時關掉這個選項。' : '');
   return agent.engine === 'agy' ? base + '\n' + (agy.access(agent) === 'read' ? agy.READ_ONLY_NOTE : agy.WRITE_NOTE) : base;
 }
 function accessBase(agent) {
@@ -637,6 +694,7 @@ function buildCommand(agent, sid, prompt) {
     if (agent.tools) args.push('--tools', agent.tools);
     if ((agent.allowedTools || []).length) args.push('--allowedTools', ...agent.allowedTools);
     if ((agent.disallowedTools || []).length) args.push('--disallowedTools', ...agent.disallowedTools);
+    if (rtkWanted(agent)) { const rb = rtkBin(); if (rb) args.push('--settings', rtkSettingsFile(rb)); }
     if (sid) args.push('--resume', sid);
     return { cmd: getBin('claude'), args };
   }
@@ -1306,6 +1364,7 @@ function cleanAgent(input, existingId) {
     a.sandbox = SANDBOXES.includes(input.sandbox) ? input.sandbox : 'workspace-write';
   }
   if (input.takeTurns) a.takeTurns = true;
+  if (a.engine === 'claude' && input.rtk === true) a.rtk = true;
   if (typeof input.canInterrupt === 'boolean' && !input.standalone) a.canInterrupt = input.canInterrupt;
   if (Array.isArray(input.extraDirs)) {
     const seen = new Set();
@@ -1461,7 +1520,7 @@ function readBody(req) {
 
 const publicAgent = (a) => ({
   id: a.id, name: a.name, avatar: a.avatar, engine: a.engine, model: a.model || '', effort: a.effort || '', role: a.role || '',
-  extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns, canInterrupt: canUrgent(a), agyAccess: a.engine === 'agy' ? agy.access(a) : undefined, blocked: a.blocked || null,
+  extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns, canInterrupt: canUrgent(a), rtk: !!a.rtk, rtkOn: rtkWanted(a) && !!(process.env.RTK_BIN || RTK.bin), agyAccess: a.engine === 'agy' ? agy.access(a) : undefined, blocked: a.blocked || null,
   team: a.standalone ? null : a.team || null,
   standalone: !!a.standalone, tgPrefix: (a.telegram && a.telegram.prefix) || '', tgBot: !!(a.telegram && a.telegram.botToken),
   canHandoffTo: allowedTargets(a).map((t) => t.id),
@@ -1624,7 +1683,7 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { return send(res, 400, { error: e.message }); }
     }
     // ---- Harness：守則、守則建議、專案記憶、觀測紀錄 ----
-    if (p === '/api/harness' && req.method === 'GET') return send(res, 200, { ...harness.snapshot(), stats: harness.stats(url.searchParams.get('days') || 7), contextLoad: contextLoad(), headerRefresh: headerRefresh() });
+    if (p === '/api/harness' && req.method === 'GET') return send(res, 200, { ...harness.snapshot(), stats: harness.stats(url.searchParams.get('days') || 7), contextLoad: contextLoad(), headerRefresh: headerRefresh(), rtk: AGENTS.some((a) => a.rtk) ? rtkStatus(false) : null });
     if (p.startsWith('/api/harness/') && req.method !== 'GET') {
       const body = req.method === 'DELETE' ? {} : await readBody(req);
       try {
@@ -1835,6 +1894,7 @@ const server = http.createServer(async (req, res) => {
       const cc = userSend(agent, String(text));
       return send(res, 200, { ok: true, queued, cc: cc.map((a) => a.name) });
     }
+    if (p === '/api/rtk' && req.method === 'GET') return send(res, 200, rtkStatus(url.searchParams.get('gain') === '1'));
     if (p === '/api/pause' && req.method === 'GET') return send(res, 200, pauseStatus());
     if (p === '/api/pause' && req.method === 'POST') {
       const b = await readBody(req);
@@ -1900,6 +1960,7 @@ server.listen(PORT, HOST, () => {
   }
   console.log('✅ Agent Chat v' + VERSION + ' 已啟動： http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT);
   for (const a of AGENTS) console.log('   ' + (a.avatar && !a.avatar.startsWith('img:') ? a.avatar : '•') + ' ' + a.name + '（' + [a.engine, a.model || '預設模型', a.effort].filter(Boolean).join(' · ') + '） → ' + a.cwd);
+  if (AGENTS.some((a) => a.rtk)) { const rb = rtkBin(true); console.log('   ' + (rb ? '🗜 rtk：' + rb : '✘ 有成員勾了「壓縮指令輸出」，但找不到 rtk（PowerShell：winget install rtk-ai.rtk）')); }
   for (const [k, v] of Object.entries(BIN)) console.log('   ' + (v ? '✔ ' + k + '：' + v : '✘ 找不到 ' + k + '（這個引擎的 agent 會無法回覆）'));
 });
 

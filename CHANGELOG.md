@@ -1,5 +1,15 @@
 # 更新紀錄
 
+## v3.11.0（2026-11-18）
+- 🗜 **壓縮指令輸出（rtk，只限 Claude 成員）**：成員設定新增勾選。勾了的 Claude 團隊成員在 Bash 執行的 git、測試、建置等指令，輸出會先經過 rtk 精簡再交給它
+  - rtk 要另外裝（PowerShell：`winget install rtk-ai.rtk`）；找得到才生效，成員卡片顯示「🗜 rtk」
+  - 不改你的全域 `~/.claude/settings.json`：只在啟動勾選的成員時用 `--settings` 接上 hook
+  - 安全：hook 經過新的 `rtkhook.js`，只採用 rtk 的指令改寫，拿掉它的「自動核准」，權限仍照 Claude 與 Agent Chat 的設定；rtk 擋下的照樣擋；rtk 出錯就當作不改寫
+  - 獨立成員、有「限制工具」的成員不會使用（保留最小權限）；Codex、agy 成員不適用
+  - 📏 上下文面板顯示 rtk 版本、誰在用、按鈕查看 `rtk gain` 省了多少；偵測到你自己裝了全域 rtk hook 會提醒
+  - 可用 `RTK_BIN` 指定 rtk 位置
+- 新增 tests/rtk.test.js
+
 ## v3.10.0（2026-11-18）
 - ⏸ **暫停／▶ 重啟專案**（側邊欄最上方；Telegram `/pause 原因`、`/pausenow`、`/resume 指示`）
   - 範圍：整個專案或某個小組；獨立成員（記帳員等）不受影響

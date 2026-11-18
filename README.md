@@ -304,6 +304,21 @@ Agent = Model + Harness。模型是大腦，Harness 是圍繞模型的執行系�
 
 自由聊天和任務都適用；換班那一輪不算任務的交接次數。交班筆記會顯示在對話裡，也存在 `data/harness/shifts`。
 
+### 🗜 壓縮指令輸出（rtk，只限 Claude 成員，v3.11）
+
+[rtk](https://github.com/rtk-ai/rtk) 會把 git、測試、建置等指令的輸出精簡後再交給 AI，省 token，對話也不容易被長長的紀錄撐大。
+
+1. 在這台電腦安裝 rtk：PowerShell 執行 `winget install rtk-ai.rtk`（**不用**跑 `rtk init -g`）
+2. 到成員設定勾「🗜 壓縮指令輸出」（只有 Claude 團隊成員有這個選項），卡片出現「🗜 rtk」就是生效了
+3. 「📏 上下文」面板可以按「📊 看 rtk 省了多少」
+
+說明：
+- 只影響勾選的成員：Agent Chat 啟動它時用 `--settings` 額外接上 hook，不改你自己的 `~/.claude/settings.json`
+- hook 經過 `rtkhook.js`：只採用 rtk 的指令改寫，**不讓 rtk 替成員核准指令**（rtk 舊版有自動核准的問題），權限照原本的設定；rtk 出錯就當作不改寫
+- 只壓縮 Bash 執行的指令；Claude 內建的讀檔、搜尋工具不經過 rtk
+- 獨立成員、有限制工具的成員不使用；Codex、agy 成員不適用
+- 如果你之前跑過 `rtk init -g`，你自己的 Claude Code 也會被壓縮，面板會提醒你
+
 ### ⏸ 暫停／▶ 重啟專案（v3.10）
 
 側邊欄最上方的「⏸ 暫停專案」（Telegram：`/pause 原因`、`/pausenow`、`/resume 指示`）：
