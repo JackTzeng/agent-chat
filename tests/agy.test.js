@@ -69,6 +69,21 @@ test('parser: DONE carrying the full text replaces, only result.response, denied
   assert.deepEqual(run([null, 42, { foo: 1 }, { event: 'step_update' }]).filter((x) => x.kind === 'error'), []);
 });
 
+test('parser: real agy 1.5.10 transcript (text arrives in deltas, last DONE delta is just a newline)', () => {
+  const T = 'agy-real';
+  const out = run([
+    { event: 'init', conversation_id: T, init: { model: 'gemini-3.8-flash-high', cwd: 'C:\\agy_test', tools: ['run_command', 'write_to_file'], permission_mode: 'request-review' } },
+    { event: 'step_update', step_update: { conversation_id: T, step_index: 0, state: 'DONE', step_type: 'user_input' } },
+    { event: 'step_update', step_update: { conversation_id: T, step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: '我是由 Google DeepMind 開發的 AI 助理 An' } },
+    { event: 'step_update', step_update: { conversation_id: T, step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'tigravity，' } },
+    { event: 'step_update', step_update: { conversation_id: T, step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: '致力於協助您高效解決問題並完成各項任務。' } },
+    { event: 'step_update', step_update: { conversation_id: T, step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: '\n', duration_seconds: 6.2, usage: { input_tokens: 9759, output_tokens: 336, thinking_tokens: 308, cache_read_tokens: 0, total_tokens: 10095 } } },
+    { event: 'result', result: { conversation_id: T, status: 'SUCCESS', response: '我是由 Google DeepMind 開發的 AI 助理 Antigravity，致力於協助您高效解決問題並完成各項任務。\n', duration_seconds: 6.29, num_turns: 1, usage: { input_tokens: 9759, output_tokens: 336, thinking_tokens: 308, cache_read_tokens: 0, total_tokens: 10095 } } },
+  ]);
+  assert.deepEqual(out.filter((x) => x.kind === 'text').map((x) => x.text), ['我是由 Google DeepMind 開發的 AI 助理 Antigravity，致力於協助您高效解決問題並完成各項任務。']);
+  assert.ok(!out.some((x) => x.kind === 'error'));
+});
+
 test('read-only args can be overridden but never skip permissions', () => {
   assert.deepEqual(agy.readOnlyArgs(), ['--mode', 'plan', '--sandbox']);
   process.env.AGY_READONLY_ARGS = '--mode ask';
