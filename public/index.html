@@ -358,7 +358,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.13.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.13.2'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -776,12 +776,13 @@ const MODELS = {
     ['gemini-4-argon-high', 'Gemini 4 Argon（high，需方案支援）'], ['gemini-4-argon-medium', 'Gemini 4 Argon（medium，需方案支援）'],
   ],
   codex: [
+    ['gpt-6.2-astra', 'GPT-6.2 Astra（旗艦）'], ['gpt-6.2-sol', 'GPT-6.2 Sol（日常）'],
     ['gpt-6.1-sol', 'GPT-6.1 Sol'], ['gpt-6-astra', 'GPT-6 Astra'], ['gpt-6.1-terra', 'GPT-6.1 Terra'],
     ['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6-luna', 'GPT-6 Luna'],
     ['gpt-5.6-sol', 'GPT-5.6 Sol'], ['gpt-5.6-terra', 'GPT-5.6 Terra'], ['gpt-5.6-luna', 'GPT-5.6 Luna'],
   ],
 };
-const DEFAULT_MODEL = { claude: 'claude-opus-5-5', codex: 'gpt-6.1-sol', agy: 'gemini-3.8-flash-high' };
+const DEFAULT_MODEL = { claude: 'claude-opus-5-5', codex: 'gpt-6.2-sol', agy: 'gemini-3.8-flash-high' };
 const AGY_LABEL = {
   read: 'read：只讀、給意見，不改檔案也不執行指令（覆核者建議）',
   write: 'write：可以建立與修改檔案，也會執行指令（⚠️ 範圍是否限在工作資料夾還沒確認）',
@@ -887,7 +888,7 @@ async function openAgentForm(id) {
       <div class="field">
         <label>模型</label>
         <select id="f_model_sel"></select>
-        <input id="f_model" value="${esc(a.model || '')}" placeholder="輸入模型代號，例如 gpt-6.1-sol" style="display:none">
+        <input id="f_model" value="${esc(a.model || '')}" placeholder="輸入模型代號，例如 gpt-6.2-sol" style="display:none">
         <span class="help" id="f_model_help">「預設」= 該 CLI 目前設定的預設模型</span>
       </div>
       <div class="field">

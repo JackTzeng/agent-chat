@@ -98,7 +98,7 @@ AGENT_ALLOWED_ROOTS=C:\EM_reports_copy
 | engine | model 範例 | effort 可用值 |
 |---|---|---|
 | claude | `claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-5-5`、`claude-fable-5-2`，或簡寫 `opus`、`sonnet` | `low`、`medium`、`high`、`xhigh`、`max` |
-| codex | `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6.1-terra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `low`、`medium`、`high`、`xhigh`、`max` |
+| codex | `gpt-6.2-astra`、`gpt-6.2-sol`、`gpt-6.1-sol`、`gpt-6-astra`、`gpt-6.1-terra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `low`、`medium`、`high`、`xhigh`、`max` |
 
 | agy | `gemini-3.8-flash-high`（免費方案可用）、`gemini-3.8-flash-medium` 等；`gemini-4-argon-*` 需方案支援（以 `agy models` 為準；模型代號已包含強度，也可再用 `effort`） | `low`、`medium`、`high`、`xhigh`、`max`（依模型） |
 
