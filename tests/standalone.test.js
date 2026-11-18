@@ -78,6 +78,7 @@ test('standalone ledger member: no tasks, telegram routing, photos, continuity, 
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'agents.example.json'), 'utf8'));
   cfg.telegram = { ...(cfg.telegram || {}), allowedUserIds: [111, 333], defaultAgent: 'hikari' };
+  cfg.harness = { ...(cfg.harness || {}), headerRefresh: 0 }; // 假 CLI 只看這一輪的提示詞，所以每輪都要完整送開頭說明（開頭去重在 context.test.js 測）
   fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify(cfg));
   fs.mkdirSync(path.join(dir, 'workspace', 'ledger', 'agent'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'workspace', 'ledger', 'agent', '記帳員.md'), '你是家庭記帳員，只用 ledger.cmd 記帳。PERSONA-MARK');

@@ -66,6 +66,11 @@ test('task flow with sensors, lessons, memory, budget and observability', { time
     fs.copyFileSync(path.join(source, f), path.join(dir, f));
   fs.mkdirSync(path.join(dir, 'public'));
   fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
+  { // 假 CLI 只看這一輪的提示詞，所以每輪都要完整送開頭說明（開頭去重在 context.test.js 測）
+    const cfg0 = JSON.parse(fs.readFileSync(path.join(dir, 'agents.example.json'), 'utf8'));
+    cfg0.harness = { ...(cfg0.harness || {}), headerRefresh: 0 };
+    fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify(cfg0));
+  }
   const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, 'claude'), MOCK_CLAUDE, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'codex'), MOCK_CODEX, { mode: 0o755 });

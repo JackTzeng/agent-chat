@@ -244,7 +244,7 @@ test('timers through the real server: own session, quiet result, alert, proposal
   };
   const waitFor = async (fn, what) => { for (let i = 0; i < 200; i++) { const v = await fn(); if (v) return v; await sleep(50); } throw new Error('timeout: ' + what + '\n' + JSON.stringify((await api('/api/timers')).timers.map((x) => [x.id, x.last, x.active, x.runs]).slice(0, 3)) + '\n' + JSON.stringify((await api('/api/timers')).runs.slice(0, 4)) + '\n' + stderr); };
 
-  const tm = await api('/api/timers', 'POST', { name: '檢查超標', agentId: 'hikari', prompt: '看 EM 資料', schedule: { kind: 'daily', time: '08:30' } });
+  const tm = await api('/api/timers', 'POST', { name: '檢查超標', agentId: 'hikari', prompt: '看 EM 資料', keepSession: true, schedule: { kind: 'daily', time: '08:30' } });
   assert.equal(tm.desc, undefined);
   const list = await api('/api/timers');
   assert.equal(list.timers[0].desc, '每天 08:30');
@@ -260,7 +260,7 @@ test('timers through the real server: own session, quiet result, alert, proposal
   const mainCall = fs.readFileSync(log, 'utf8').split('=====').find((x) => x.includes('一般問題'));
   assert.doesNotMatch(mainCall, /--resume timer-session/, '主對話不會接到排程的對話');
   await sleep(300);
-  // 排程第二次：接續排程自己的對話
+  // 排程第二次：勾了「記得上次的對話」→ 接續排程自己的對話（沒勾的預設是每次新對話，見 context.test.js）
   await api('/api/timers/' + tm.id + '/run', 'POST');
   await waitFor(async () => (await api('/api/timers')).timers[0].runs === 2, 'second run');
   const timerCalls = fs.readFileSync(log, 'utf8').split('=====').filter((x) => x.includes('【⏰ 排程'));

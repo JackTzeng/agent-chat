@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.8.2';
+const VERSION = '3.9.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -197,6 +197,7 @@ const saveState = () => fs.writeFileSync(STATE_FILE, JSON.stringify(state, null,
 state.ctx = state.ctx || {};       // 每段對話（session）目前大約用了多少 context：{ tokens, window, at }
 state.shifts = state.shifts || {}; // 換班：{ n: 第幾班, due: 下一輪前要換班, note: 交班筆記, pendingNote: 新的一班還沒讀到筆記 }
 state.lastKey = state.lastKey || {}; // 每位成員最近一次用的是哪一段對話
+state.hdr = state.hdr || {};       // 開頭說明去重：每段對話最近完整送過的版本 { hash, n: 之後省略了幾輪, saved: 累計少送的字數 }
 
 const histFile = (id) => path.join(HIST_DIR, id + '.json');
 function loadHistory(id) {
@@ -285,8 +286,25 @@ function freeHeader(agent) {
   return L.join('\n');
 }
 
+// 開頭說明（身分、團隊、守則、記憶…）每一輪都一樣，重複送會讓 CLI 的對話紀錄越堆越長。
+// 同一段對話內容沒變，就只送一行提示；第一輪、內容有變、或每 N 輪（避免被 CLI 自動壓縮掉）才完整送。
+const headerRefresh = () => { const n = Number(harness.cfg().headerRefresh); return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 10; };
+const HEADER_SAME = '【說明沒有變動】你的身分、團隊成員、交接規則、守則與記憶，都和這段對話開頭給你的那一份完全相同，請照那一份做。';
+function fullHeader(agent, opts) { return (opts.taskId ? tasks.promptHeader(agent, opts) : freeHeader(agent)) + '\n' + timers.promptHint(); }
+function dedupHeader(agent, opts, key) {
+  const full = fullHeader(agent, opts), every = headerRefresh();
+  const hash = require('crypto').createHash('sha1').update(full).digest('hex').slice(0, 12);
+  const h = state.hdr[key];
+  if (every > 0 && state.sessions[key] && h && h.hash === hash && h.n < every - 1 && full.length > HEADER_SAME.length * 2) {
+    h.n++; h.saved = (h.saved || 0) + full.length - HEADER_SAME.length; h.skipped = (h.skipped || 0) + 1;
+    return HEADER_SAME;
+  }
+  state.hdr[key] = { hash, n: 0, saved: h ? h.saved || 0 : 0, skipped: h ? h.skipped || 0 : 0, chars: full.length, at: Date.now() };
+  return full;
+}
 function buildPrompt(agent, text, opts = {}) {
-  const header = (opts.taskId ? tasks.promptHeader(agent, opts) : freeHeader(agent)) + '\n' + timers.promptHint();
+  const key0 = sessionKey(agent, opts);
+  const header = dedupHeader(agent, opts, key0);
   let body;
   const fromAgent = opts.from && agentById(opts.from);
   if (opts.shift) return header + '\n\n' + shiftPrompt(agent, opts);
@@ -315,6 +333,19 @@ function buildPrompt(agent, text, opts = {}) {
     body = '【使用者訊息】\n' + note + text;
   }
   return header + handover + '\n\n' + body;
+}
+
+// 📏 上下文用量：每位成員「每一輪固定帶的說明」有多大（字數）、省了多少、目前對話用了多少
+function contextLoad() {
+  return AGENTS.map((a) => {
+    let header = 0, guides = 0, memory = 0, persona = 0;
+    try { header = fullHeader(a, {}).length; } catch {}
+    try { guides = harness.guidesText(a, {}).length; memory = harness.memoryText(a).length; } catch {}
+    persona = (a.persona || '').length + (a.personaFile ? personaFileText(a).length : 0);
+    const key = state.lastKey[a.id] || a.id, h = state.hdr[key] || {};
+    return { id: a.id, name: a.name, header, guides, memory, persona, other: Math.max(0, header - guides - memory - persona),
+      saved: h.saved || 0, skipped: h.skipped || 0, ctx: ctxInfo(key, a.engine) };
+  });
 }
 
 // ---------- 換班：對話太長時，請成員寫交班筆記，再換成全新的一段對話接手 ----------
@@ -606,6 +637,8 @@ function readAudit(agentId, limit = 50) {
 
 function startRun(agent, userText, opts = {}) {
   const key = sessionKey(agent, opts);
+  // 排程（沒勾「記得上次的對話」）每次都開全新的對話，不會一個鐘頭一輪地越堆越長
+  if (opts.fresh && state.sessions[key] && !opts.shift && !opts.resume) { delete state.sessions[key]; delete state.ctx[key]; delete state.hdr[key]; saveState(); }
   // 對話太長：先換班（寫交班筆記），原本的訊息排在換班之後
   if (!opts.shift && !opts.interject && !opts.resume && !agent.blocked && shiftDue(agent, key)) {
     pending.unshift({ agentId: agent.id, text: userText, opts });
@@ -881,7 +914,7 @@ setInterval(() => {
 
 function resetAgent(id) {
   if (runs.has(id)) return false;
-  delete state.sessions[id]; delete state.ctx[id]; delete state.shifts[id]; delete state.lastKey[id]; saveState();
+  delete state.sessions[id]; delete state.ctx[id]; delete state.hdr[id]; delete state.shifts[id]; delete state.lastKey[id]; saveState();
   try { fs.unlinkSync(histFile(id)); } catch {}
   broadcast({ agentId: id, kind: 'reset' });
   return true;
@@ -1446,7 +1479,7 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { return send(res, 400, { error: e.message }); }
     }
     // ---- Harness：守則、守則建議、專案記憶、觀測紀錄 ----
-    if (p === '/api/harness' && req.method === 'GET') return send(res, 200, { ...harness.snapshot(), stats: harness.stats(url.searchParams.get('days') || 7) });
+    if (p === '/api/harness' && req.method === 'GET') return send(res, 200, { ...harness.snapshot(), stats: harness.stats(url.searchParams.get('days') || 7), contextLoad: contextLoad(), headerRefresh: headerRefresh() });
     if (p.startsWith('/api/harness/') && req.method !== 'GET') {
       const body = req.method === 'DELETE' ? {} : await readBody(req);
       try {
@@ -1614,6 +1647,7 @@ const server = http.createServer(async (req, res) => {
         const ct = num(body.harness.checkTimeoutSec, 10, 3600); if (ct != null) hc.checkTimeoutSec = ct;
         const sp = num(body.harness.shiftPercent, 0, 95); if (sp != null) hc.shiftPercent = sp;
         const gc = num(body.harness.guideChars, 200, 8000); if (gc != null) hc.guideChars = gc;
+        const hr = num(body.harness.headerRefresh, 0, 100); if (hr != null) hc.headerRefresh = hr;
       }
       if (Array.isArray(body.takeTurns)) {
         for (const x of teamMembers(team.id)) { if (body.takeTurns.includes(x.id)) x.takeTurns = true; else delete x.takeTurns; }

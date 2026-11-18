@@ -155,6 +155,7 @@ exports.create = function create(ctx) {
       name, prompt, agentId: agent.id, ...sch,
       notify: ['changes', 'always', 'never'].includes(input.notify) ? input.notify : 'changes',
       ownSession: input.ownSession !== false,
+      keepSession: !!input.keepSession,
       precheck: cleanPrecheck(input.precheck),
       allowPause: input.allowPause !== false,
       enabled: input.enabled !== false,
@@ -212,7 +213,7 @@ exports.create = function create(ctx) {
   // ---------- 觸發 ----------
   function header(t, why, checkOut) {
     const lines = ['【⏰ 排程：' + t.name + '】第 ' + (t.runs + 1) + ' 次' + (why ? '（' + why + '）' : '') +
-      (t.last ? '｜上次 ' + fmt(t.last.at) + '：' + (t.last.summary ? short(t.last.summary, 120) : t.last.status) : '')];
+      (t.last ? '｜上次 ' + fmt(t.last.at) + '：' + (t.last.summary ? short(t.last.summary, t.keepSession ? 120 : 400) : t.last.status) : '')];
     lines.push(t.prompt);
     if (checkOut) lines.push('', '【前置檢查 ' + t.precheck + ' 的輸出】', checkOut);
     if (t.notify !== 'never') {
@@ -242,7 +243,7 @@ exports.create = function create(ctx) {
     t.active = { at: Date.now(), key, manual };
     t.firedKey = key;
     const wake = (checkOut) => {
-      const r = ctx.dispatch(agent, header(t, why, checkOut), { via: 'timer', timerId: t.id, sessionTag: t.ownSession ? 'x' + t.id : null, system: false });
+      const r = ctx.dispatch(agent, header(t, why, checkOut), { via: 'timer', timerId: t.id, sessionTag: t.ownSession ? 'x' + t.id : null, fresh: !!t.ownSession && !t.keepSession, system: false });
       logRun({ timerId: t.id, name: t.name, agentId: agent.id, status: r === 'queued' ? 'queued' : 'started', manual, why });
       return r;
     };

@@ -285,7 +285,7 @@
   }
 .warn-line{color:#d97706}
 .hn-load{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}.hn-load span{font-size:12px;padding:2px 8px;border-radius:10px;background:var(--panel2,#eef);}
-.hn-load span.over{background:#fde68a}.hn-item.off{opacity:.55}.hn-item .acts select{max-width:180px}
+.hn-load span.over{background:#fde68a}.hn-ctx>div{font-size:13px;padding:4px 8px;margin:3px 0;border-radius:8px;background:var(--panel2,#eef)}.hn-ctx>div.over{background:#fde68a}.hn-ctx small{opacity:.75}.hn-item.off{opacity:.55}.hn-item .acts select{max-width:180px}
 .warn-box{background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 10px;margin:8px 0;font-size:13px}.warn-box button{margin-left:8px}
 .rp-ok{background:#ecfdf5;border:1px solid #10b981;border-radius:8px;padding:8px 10px;margin:10px 0;font-size:13px;line-height:1.7}.up-list{margin:6px 0 0 18px;padding:0;font-size:13px}
 .tmr-h{margin:12px 0 6px;font-size:14px}.tmr-prompt{color:var(--muted,#6b7280);font-size:12px}.tmr-runs{margin-top:10px;font-size:12px;line-height:1.7}.tmr-runs summary{cursor:pointer;font-size:13px}
@@ -345,7 +345,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.8.2'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.9.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -428,7 +428,7 @@ function agentCard(a, extraClass = '') {
         ${a.blocked ? `<div class="role stall" title="${esc(a.blocked)}">⛔ 設定需修正，暫停使用</div>` : ''}
         ${a.standalone ? `<div class="role" title="不進工作流程、不建立任務，訊息直接交給它處理">🧍 獨立成員${a.tgPrefix ? '｜Telegram ' + esc(a.tgPrefix) : ''}${a.tgBot ? '｜專屬 bot' : ''}</div>` : ''}
         ${a.shifting ? '<div class="role">🔄 換班中：正在寫交班筆記</div>' : a.busy && a.runningSince ? `<div class="role ${a.stalled ? 'stall' : ''}">${a.stalled ? '⚠️ 可能卡住 · ' : '⏱ '}工作中 ${esc(ago(a.runningSince))}</div>` : ''}
-        ${a.ctx || a.shiftNo > 1 ? `<div class="role ${a.ctx && CFG_H && CFG_H.shiftPercent && a.ctx.pct >= CFG_H.shiftPercent ? 'stall' : ''}" title="這段對話大約用了 ${a.ctx ? Math.round(a.ctx.tokens / 1000) + 'k / ' + Math.round(a.ctx.window / 1000) + 'k tokens' : '—'}；超過 ${CFG_H ? CFG_H.shiftPercent : 60}% 會自動換班">🧠 ${a.ctx ? a.ctx.pct + '%' : '新對話'}${a.shiftNo > 1 ? ' · 第 ' + a.shiftNo + ' 班' : ''}${a.ctx && CFG_H && CFG_H.shiftPercent && a.ctx.pct >= CFG_H.shiftPercent && !a.busy ? ' · 下一輪先換班' : ''}</div>` : ''}
+        ${a.ctx || a.shiftNo > 1 ? `<div class="role ${a.ctx && CFG_H && CFG_H.shiftPercent && a.ctx.pct >= CFG_H.shiftPercent ? 'stall' : ''}" title="這段對話大約用了 ${a.ctx ? Math.round(a.ctx.tokens / 1000) + 'k / ' + Math.round(a.ctx.window / 1000) + 'k tokens' : '—'}；超過 ${CFG_H ? CFG_H.shiftPercent : 40}% 會自動換班">🧠 ${a.ctx ? a.ctx.pct + '%' : '新對話'}${a.shiftNo > 1 ? ' · 第 ' + a.shiftNo + ' 班' : ''}${a.ctx && CFG_H && CFG_H.shiftPercent && a.ctx.pct >= CFG_H.shiftPercent && !a.busy ? ' · 下一輪先換班' : ''}</div>` : ''}
         ${a.queued ? `<div class="qline">🕒 排隊中${a.waitingOn === a.id ? '（等它這輪做完）' : a.waitingOn && agentOf(a.waitingOn) ? '（等 ' + esc(agentOf(a.waitingOn).name) + ' 做完）' : ''}</div>` : ''}
       </div>
       <span class="unread"></span>
@@ -1181,7 +1181,8 @@ async function openTeamForm() {
       <div class="field"><label>🔁 同一階段最多重做幾次</label><input id="h_rework" type="number" min="1" max="20" value="${CFG.harness.maxReworks}"><span class="help">被退回或自動檢查失敗超過這個次數，就暫停交給你決定</span></div>
       <div class="field"><label>⏱ 每件任務時間上限（分鐘，0 = 不限）</label><input id="h_minutes" type="number" min="0" max="1440" value="${CFG.harness.maxTaskMinutes}"><span class="help">超過會暫停；回覆後會再給一次同樣的時間</span></div>
       <div class="field"><label>🧪 每個自動檢查最多跑幾秒</label><input id="h_timeout" type="number" min="10" max="3600" value="${CFG.harness.checkTimeoutSec}"></div>
-      <div class="field"><label>🔄 對話用到幾 % 就換班（0 = 不自動換班）</label><input id="h_shift" type="number" min="0" max="95" value="${CFG.harness.shiftPercent}"><span class="help">成員先寫交班筆記，再換成全新的對話接手，避免被自動壓縮而忘記細節</span></div>
+      <div class="field"><label>🔄 對話用到幾 % 就換班（0 = 不自動換班）</label><input id="h_shift" type="number" min="0" max="95" value="${CFG.harness.shiftPercent}"><span class="help">建議 40：對話越長越容易漏掉細節、也越花額度。成員先寫交班筆記，再換成全新的對話接手，避免被自動壓縮而忘記細節</span></div>
+      <div class="field"><label>📦 開頭說明每幾輪完整重送一次（0 = 每輪都送）</label><input id="h_hdr" type="number" min="0" max="100" value="${CFG.harness.headerRefresh == null ? 10 : CFG.harness.headerRefresh}"><span class="help">身分、團隊、守則、記憶沒變時，同一段對話只送一行「說明沒有變動」，省下每輪重複的字數；每隔這麼多輪、或內容有變就完整重送</span></div>
       <div class="field"><label>📏 每輪最多放多少字的守則</label><input id="h_gchars" type="number" min="200" max="8000" value="${CFG.harness.guideChars || 1200}"><span class="help">只放和這位成員有關的守則，📌 必讀與越具體的越優先；放不下的留在 GUIDES.md</span></div>
       <div class="field full"><label>🔁 輪流工作的成員</label>
         <div class="checks" id="w_turns">${members.map((m) => `<label><input type="checkbox" value="${esc(m.id)}" ${m.takeTurns ? 'checked' : ''}> ${esc(label(m))}</label>`).join('') || '<span class="help">這個小組還沒有成員：按左邊「＋ 新增成員」，小組選這一組</span>'}</div>
@@ -1300,7 +1301,7 @@ async function openTeamForm() {
     if (missing.length && !confirm('這些階段還沒指定負責成員：' + missing.join('、') + '\n還是要儲存嗎？')) return;
     try {
       const takeTurns = [...document.querySelectorAll('#w_turns input:checked')].map((x) => x.value);
-      const harness = { maxReworks: $('h_rework').value, maxTaskMinutes: $('h_minutes').value, checkTimeoutSec: $('h_timeout').value, shiftPercent: $('h_shift').value, guideChars: $('h_gchars').value };
+      const harness = { maxReworks: $('h_rework').value, maxTaskMinutes: $('h_minutes').value, checkTimeoutSec: $('h_timeout').value, shiftPercent: $('h_shift').value, guideChars: $('h_gchars').value, headerRefresh: $('h_hdr').value };
       await api('/api/team', { method: 'PUT', body: JSON.stringify({ teamId: team.id, name: $('tm_name').value, icon: $('tm_icon').value, cwd: $('tm_cwd').value, moveMembers: !!($('tm_move') && $('tm_move').checked), workflow: wf, maxRelayHops: $('t_hops').value, urgentCooldownMin: $('t_urgent').value, takeTurns, approveWritableHandoffs: $('w_strict').checked, harness }) });
       await loadWorkflow(); closeModal(); renderAgents(); updateTop(); toast('✅ ' + $('tm_name').value + ' 的工作流程已儲存');
     } catch (e) { toast(e.message); }
@@ -1402,6 +1403,20 @@ async function loadHarness(debounce) {
 }
 const fmtMs = (ms) => ms >= 3600000 ? (ms / 3600000).toFixed(1) + ' 小時' : ms >= 60000 ? Math.round(ms / 60000) + ' 分' : Math.round(ms / 1000) + ' 秒';
 const fmtTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n || 0);
+
+// 📏 上下文用量：每位成員每一輪固定帶的說明有多大、省了多少、目前的對話用了多少
+function ctxLoadHtml(H) {
+  const rows = H.contextLoad || [];
+  if (!rows.length) return '';
+  const kc = (n) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+  return `<h3 style="margin:14px 0 6px;font-size:15px">📏 上下文用量（每輪固定帶的說明）</h3>
+    <p class="help">每一輪都會附給成員的開頭說明：身分、團隊、守則、記憶。內容沒變時，同一段對話只在第一輪、有變動、或每 ${H.headerRefresh || '（已關閉）'} 輪完整送一次，其餘只送一行，不會讓對話越堆越長。超過 4k 字會標黃，可以到下面精簡守則或記憶。</p>
+    <div class="hn-ctx">${rows.map((r) => `<div class="${r.header > 4000 ? 'over' : ''}"><b>${esc(r.name)}</b>　每輪 ${kc(r.header)} 字
+      <small>（角色 ${kc(r.persona)}・守則 ${kc(r.guides)}・記憶 ${kc(r.memory)}・其他 ${kc(r.other)}）</small>
+      ${r.skipped ? `<small>｜已省略 ${r.skipped} 輪、少送約 ${kc(r.saved)} 字</small>` : ''}
+      ${r.ctx ? `<small>｜🧠 對話 ${r.ctx.pct}%（${Math.round(r.ctx.tokens / 1000)}k）</small>` : ''}</div>`).join('')}</div>`;
+}
+
 async function openHarness(tab) {
   if (tab) hnTab = tab;
   let cfg;
@@ -1438,7 +1453,7 @@ async function openHarness(tab) {
       <div class="hn-item prop" data-p="${p.id}"><div class="grow"><input data-ptext value="${esc(p.text)}" style="width:100%">
         <small>${esc(p.from ? who(p.from) + ' 提出' : p.reason || '使用者意見')}${p.taskId ? '｜任務 #' + p.taskId : ''}｜${fmtTime(p.createdAt)}</small></div>
         <div class="acts">${scopeSel(p.scope || 'all', 'data-pscope')}<button class="primary" data-pacc>✅ 變成守則</button><button data-pdis>略過</button></div></div>`).join('')}</div>` : '') +
-      `<h3 style="margin:14px 0 6px;font-size:15px">📏 守則（只告訴適用範圍內的成員）</h3>
+      ctxLoadHtml(H) + `<h3 style="margin:14px 0 6px;font-size:15px">📏 守則（只告訴適用範圍內的成員）</h3>
       <p class="help">每一輪只放和那位成員有關的守則：👤 指定給他的、🧩 他現在負責的階段、他的小組、🌐 全體；📌 必讀和越具體的越優先，最多 ${H.config.guideChars || 1200} 字，放不下的留在他工作資料夾的 GUIDES.md（別的小組的資料夾不會有）。</p>
       <div class="hn-load">${(H.load || []).filter((l) => l.total).map((l) => `<span class="${l.shown < l.total ? 'over' : ''}">${esc(l.name)}：${l.shown}${l.shown < l.total ? '/' + l.total : ''} 條・${l.chars} 字</span>`).join('') || '<span>目前沒有成員會收到守則</span>'}</div>
       <div class="hn-list">${H.guides.length ? H.guides.map((g) => `
@@ -1958,7 +1973,8 @@ function openTimerForm(t, fromProposal) {
         <option value="changes" ${t.notify === 'changes' ? 'selected' : ''}>只在有異常或失敗時（建議）</option>
         <option value="always" ${t.notify === 'always' ? 'selected' : ''}>每次都通知</option>
         <option value="never" ${t.notify === 'never' ? 'selected' : ''}>不通知（只記錄）</option></select></div>
-      <div class="field"><label class="opt"><input type="checkbox" id="tf_own" ${t.ownSession !== false ? 'checked' : ''}> 用獨立的對話</label><span class="help">建議勾選：排程有自己的對話，會記得上次檢查的結果，也不會把你和成員的主對話越拉越長</span></div>
+      <div class="field"><label class="opt"><input type="checkbox" id="tf_own" ${t.ownSession !== false ? 'checked' : ''}> 用獨立的對話</label><span class="help">建議勾選：排程有自己的對話，不會把你和成員的主對話越拉越長</span></div>
+      <div class="field"><label class="opt"><input type="checkbox" id="tf_keep" ${t.keepSession ? 'checked' : ''}> 記得上次的對話</label><span class="help">預設不勾：每次都開全新的對話，只帶上次結果的摘要，不會一個鐘頭一輪地越堆越長、越花額度。勾了會一直接著同一段對話（要靠它記住很多細節才勾）</span></div>
       <div class="field full"><label>🔍 前置檢查（選填，不花 AI 額度）</label><input id="tf_pre" maxlength="500" value="${esc(t.precheck || '')}" placeholder="例如 node pm/check_dispatch.mjs">
         <span class="help">到點先在成員的工作資料夾跑這個指令：<b>沒有輸出 = 沒事，直接跳過、不叫醒成員</b>；有輸出才叫醒成員並把輸出給他看。腳本可以請成員幫你寫（沒有待辦時不要印任何東西）。手動「▶ 執行」不會先檢查。</span></div>
       <div class="field full"><label class="opt"><input type="checkbox" id="tf_pause" ${t.allowPause !== false ? 'checked' : ''}> 事情都做完時，讓成員可以先暫停這個排程（有新任務開始時自動恢復）</label></div>
@@ -1990,7 +2006,7 @@ function openTimerForm(t, fromProposal) {
   $('tf_cancel').onclick = () => openTimers();
   $('tf_save').onclick = async () => {
     const k = $('tf_kind').value;
-    const body = { name: $('tf_name').value, agentId: $('tf_agent').value, prompt: $('tf_prompt').value, notify: $('tf_notify').value, ownSession: $('tf_own').checked, precheck: $('tf_pre').value, allowPause: $('tf_pause').checked,
+    const body = { name: $('tf_name').value, agentId: $('tf_agent').value, prompt: $('tf_prompt').value, notify: $('tf_notify').value, ownSession: $('tf_own').checked, keepSession: $('tf_keep').checked, precheck: $('tf_pre').value, allowPause: $('tf_pause').checked,
       schedule: k === 'every' ? { kind: k, minutes: Number($('tf_min').value) } : k === 'daily' ? { kind: k, time: $('tf_time').value } : { kind: k, at: new Date($('tf_at').value).getTime() },
       days: [...document.querySelectorAll('[data-day]:checked')].map((e) => Number(e.dataset.day)),
       hours: k === 'every' && $('tf_from').value && $('tf_to').value ? { from: $('tf_from').value, to: $('tf_to').value } : null };

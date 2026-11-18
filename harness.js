@@ -10,7 +10,7 @@ const short = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); retur
 const pad = (n) => String(n).padStart(2, '0');
 const fmtDate = (ts) => { const d = new Date(ts); return d.getFullYear() + '/' + pad(d.getMonth() + 1) + '/' + pad(d.getDate()); };
 
-const DEFAULTS = { maxReworks: 3, maxTaskMinutes: 0, checkTimeoutSec: 300, shiftPercent: 60, guideChars: 1200 };
+const DEFAULTS = { maxReworks: 3, maxTaskMinutes: 0, checkTimeoutSec: 300, shiftPercent: 40, guideChars: 1200, headerRefresh: 10 };
 const MAX_GUIDES = 60, MAX_MEMORY = 300, MAX_PROPOSALS = 50;
 
 // 回覆裡另起一行的標記：【守則建議】… / 【決策】…
