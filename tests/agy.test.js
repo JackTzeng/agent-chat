@@ -178,11 +178,12 @@ test('agy member through the real server: stdin prompt, resume, read-only args, 
   await waitFor(() => calls().length === 2, 'second call');
   assert.match(calls()[1], /--conversation conv-\d+/, '接續同一段對話');
 
-  // 2) 可寫成員：不加唯讀參數、說明不能執行指令
+  // 2) 可寫成員：不加唯讀參數、說明可以執行指令但只在工作資料夾內
   await api('/api/chat/gw', 'POST', { text: '寫個檔案' });
   await waitFor(() => calls().length === 3, 'gw call');
   assert.doesNotMatch(calls()[2], /--mode plan|--sandbox/);
-  assert.match(calls()[2], /不能執行指令/);
+  assert.match(calls()[2], /也可以執行指令/);
+  assert.doesNotMatch(calls()[2], /不能執行指令/);
   await waitFor(async () => !(await agentOf('gw')).busy, 'gw idle');
 
   // 3) 唯讀成員偷偷改了檔案 → 這一輪出現警告、成員被暫停；在設定按儲存才解除

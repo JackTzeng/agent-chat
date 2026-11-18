@@ -8,7 +8,7 @@
 
 const READ_ONLY_DEFAULT = ['--mode', 'plan', '--sandbox'];
 
-// 成員的存取等級：read＝只讀、給意見（預設）；write＝可以在工作資料夾寫檔，但不能執行指令
+// 成員的存取等級：read＝只讀、給意見（預設）；write＝agy 預設模式：可以寫檔，也會真的執行指令（Windows 實測 run_command 結束碼 0）
 const access = (agent) => (agent.agyAccess === 'write' ? 'write' : 'read');
 // 唯讀要用的參數；可以用環境變數 AGY_READONLY_ARGS 換掉（例如 CLI 改版後參數名稱變了）
 function readOnlyArgs() {
@@ -106,6 +106,6 @@ const stdinMessage = (prompt) => JSON.stringify({ event: 'user', message: { cont
 
 // 唯讀成員的提示詞：不能只靠 CLI 擋，也要明講
 const READ_ONLY_NOTE = '【唯讀】你的角色是閱讀與評論：只能讀取檔案、用文字回覆意見；不要建立、修改、刪除或移動任何檔案，也不要執行任何指令。需要改動的地方，請在回覆中具體寫出建議，由其他成員動手。';
-const WRITE_NOTE = '【權限】你可以在工作資料夾內建立與修改檔案，但不能執行指令（會被系統拒絕，不要反覆嘗試）。需要執行或測試時，請在回覆中說明，由其他成員動手。';
+const WRITE_NOTE = '【權限】你可以建立與修改檔案，也可以執行指令。只在工作資料夾內動作，不要讀寫工作資料夾以外的地方；不要執行刪除大量檔案、改系統設定、安裝軟體、推送到遠端等有風險或不可回復的指令，需要時請在回覆中說明，由使用者決定。';
 
 module.exports = { access, readOnlyArgs, makeParser, describeTool, stdinMessage, mergeDelta, READ_ONLY_NOTE, WRITE_NOTE, READ_ONLY_DEFAULT };

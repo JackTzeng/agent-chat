@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.11.0';
+const VERSION = '3.11.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -716,7 +716,7 @@ function buildCommand(agent, sid, prompt) {
     const args = argMode ? ['--output-format', 'stream-json'] : ['--input-format', 'stream-json', '--output-format', 'stream-json'];
     if (agent.model) args.push('--model', agent.model);
     if (agent.effort) args.push('--effort', agent.effort);
-    // 唯讀（預設）：計畫模式＋終端機沙箱；可寫：預設的 request-review（工作資料夾內可寫檔，執行指令一律被拒絕）。永遠不使用 --dangerously-skip-permissions。
+    // 唯讀（預設）：計畫模式＋終端機沙箱；可寫：agy 的預設模式（可以寫檔，也會真的執行指令；是否限制在工作資料夾內尚待實測）。永遠不使用 --dangerously-skip-permissions。
     if (agy.access(agent) === 'read') args.push(...agy.readOnlyArgs());
     for (const d of agent.extraDirs || []) args.push('--add-dir', d.path);
     if (sid) args.push('--conversation', sid);

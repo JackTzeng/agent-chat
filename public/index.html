@@ -348,7 +348,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.11.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.11.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -772,7 +772,7 @@ const MODELS = {
 const DEFAULT_MODEL = { claude: 'claude-opus-5-5', codex: 'gpt-6.1-sol', agy: 'gemini-3.8-flash-high' };
 const AGY_LABEL = {
   read: 'read：只讀、給意見，不改檔案也不執行指令（覆核者建議）',
-  write: 'write：可以在工作資料夾建立與修改檔案，但不能執行指令',
+  write: 'write：可以建立與修改檔案，也會執行指令（⚠️ 範圍是否限在工作資料夾還沒確認）',
 };
 const CUSTOM = '__custom';
 const EFFORT_LABEL = { '': '預設', low: 'low：最快', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max：最強、最慢' };

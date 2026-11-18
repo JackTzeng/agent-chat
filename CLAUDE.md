@@ -33,7 +33,7 @@ v3.4 小組＋多房間辦公室、v3.5 守則分範圍、v3.6 問題回報與�
 - **預設模式（不加 --mode）可以寫檔，也真的能執行 `run_command`**（結束碼 0）——之前依文件寫的「可寫等級不能執行指令」是錯的。
 
 ## 待辦
-1. **agy 可寫等級**：尚待實測「預設模式＋`--sandbox`」能否把寫檔／指令限制在工作資料夾內，以及 plan 模式能否擋住 `run_command`（要在 PowerShell 跑 E／F 兩組測試）。定案後修正 `agy.js` 的 `WRITE_NOTE`、`README.md`、`public/index.html` 的 `AGY_LABEL`、`CHANGELOG.md` 裡「不能執行指令」的說法，必要時給 `write` 等級加 `--sandbox`（可用 `AGY_WRITE_ARGS` 覆寫，比照 `AGY_READONLY_ARGS`）。
+1. **agy 可寫等級**：「不能執行指令」的錯誤說法已在 v3.11.1 更正（`WRITE_NOTE`、`AGY_LABEL`、README、CHANGELOG）。尚待實測「預設模式＋`--sandbox`」能否把寫檔／指令限制在工作資料夾內，以及 plan 模式能否擋住 `run_command`（要在 cmd 跑 E／F 兩組測試）；定案後必要時給 `write` 等級加 `--sandbox`（可用 `AGY_WRITE_ARGS` 覆寫，比照 `AGY_READONLY_ARGS`），並更新說明。
 2. 工具結果的結束碼判斷：agy 的輸出是 `Command exited with code N`，目前 server.js 的 regex 只認 `exit code N`，要補。
 3. 還沒在真實 Windows 環境完整驗證：rtk hook 經 `--settings` 在 Windows 上是否生效（Claude 用 Git Bash 或 PowerShell 工具時 matcher 是否要加 PowerShell）、一鍵更新、排程配真實 CLI、Codex rollout token 解析、`--allowedTools` 比對。
 4. 路線圖：Telegram 連續訊息合併成一個提示；通知去重／outbox；唯讀的「🧰 能力一覽」（各成員實際用得到的 MCP／Skill，不做編輯介面）；不可改寫的執行紀錄（雜湊串接）與機密保管遮蔽。

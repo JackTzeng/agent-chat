@@ -22,14 +22,15 @@
    - E：預設模式＋`--sandbox`，請它在工作資料夾外寫檔、執行指令，看會不會被擋。
    - F：`--mode plan`（不加 `--sandbox`）能不能擋住 `run_command`。
    - 手動測試要用 `cmd /c "type x.json | agy ..."`（PowerShell 管線會加 BOM）。
-   - 定案後：修 `agy.js` 的 `WRITE_NOTE`、`public/index.html` 的 `AGY_LABEL`、README／CHANGELOG 裡「可寫等級不能執行指令」的錯誤說法；必要時 write 等級加 `--sandbox`，比照 `AGY_READONLY_ARGS` 提供 `AGY_WRITE_ARGS` 覆寫。在那之前建議使用者不要建 write 等級的 agy 成員。
+   - 錯誤說法已在 v3.11.1 更正（`WRITE_NOTE`、`AGY_LABEL`、README、CHANGELOG 都改成「可以寫檔，也會執行指令」）。
+   - 定案後：必要時 write 等級加 `--sandbox`，比照 `AGY_READONLY_ARGS` 提供 `AGY_WRITE_ARGS` 覆寫，並更新說明。在那之前建議使用者不要建 write 等級的 agy 成員。
 2. **rtk**：`winget install rtk-ai.rtk` 後勾一位 Claude 成員，請它跑 `git status`，用 🔍 診斷確認指令變成 `rtk git status` 且沒被擋。Windows 上 Claude 可能用 PowerShell 工具而不是 Bash → 目前 matcher 只有 `Bash`，若沒生效再評估加 `PowerShell`（rtk 有 issue #1319 在處理 PowerShell）。也要確認 `--settings` 的 hook 在他的 Claude Code 版本有載入。
 3. **開頭說明去重**：真實 CLI 下，成員在只收到「說明沒有變動」那一行時是否仍照守則與交接規則做事；看 📏 面板的數字。
 4. **暫停／重啟**：真實成員寫交班筆記、重啟接手是否順利；程式重新啟動（⬆️ 更新）後暫停狀態與排隊訊息是否保留。
 5. CLAUDE.md 待辦 3 列的其他項目（一鍵更新、排程配真實 CLI、Codex rollout token、`--allowedTools` 比對）。
 
 ## 待辦（依優先順序建議）
-1. 上面的實測回報與修正（尤其 agy write 等級的說法是錯的，要改）。
+1. 上面的實測回報與修正（agy write 等級的錯誤說法已在 v3.11.1 更正，剩 E／F 實測）。
 2. 工具結果結束碼：agy 輸出是 `Command exited with code N`，server.js 的 regex（`/exit code[:\s]+(\d+)/i`）要也認得 `exited with code N`。
 3. 守則／記憶精簡建議：依 📏 面板數字，產生合併建議給使用者核准（**只有使用者核准才改**；可考慮用免費的 Gemini 成員做摘要）。舊工具輸出遮蔽（OpenHands 的 observation masking 概念）等量測後再決定。
 4. 路線圖：唯讀「🧰 能力一覽」（各成員實際用得到的 MCP／Skill，不做編輯介面）；Telegram 連續訊息合併成一個提示；通知去重／outbox；不可改寫的執行紀錄（雜湊串接）與機密保管遮蔽。
