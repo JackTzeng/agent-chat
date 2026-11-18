@@ -1,5 +1,8 @@
 # 更新紀錄
 
+## v3.8.2（2026-11-18）
+- agy 成員的預設模型改成免費方案實際可用的 gemini-3.8-flash-high（`agy models` 實測：免費方案有 Gemini 3.8 Flash、Claude 4.6、GPT-OSS 120B）
+
 ## v3.8.1（2026-11-18）
 - 修正：Windows 上 agy 的安裝位置是 %LOCALAPPDATA%\agy\bin\agy.exe，PATH 還沒更新（沒重開終端機）時也找得到
 

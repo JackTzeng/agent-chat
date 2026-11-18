@@ -345,7 +345,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.8.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.8.2'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -755,16 +755,15 @@ const MODELS = {
   ],
   // Antigravity：實際可用的模型請在 PowerShell 輸入 agy models 查看；要和 Claude／Codex 交叉檢查，請選 gemini 開頭的
   agy: [
-    ['gemini-4-argon-high', 'Gemini 4 Argon（high）'], ['gemini-4-argon-medium', 'Gemini 4 Argon（medium）'], ['gemini-4-argon-low', 'Gemini 4 Argon（low）'],
     ['gemini-3.8-flash-high', 'Gemini 3.8 Flash（high）'], ['gemini-3.8-flash-medium', 'Gemini 3.8 Flash（medium）'], ['gemini-3.8-flash-low', 'Gemini 3.8 Flash（low）'],
-  ],
-  codex: [
+    ['gemini-4-argon-high', 'Gemini 4 Argon（high，需方案支援）'], ['gemini-4-argon-medium', 'Gemini 4 Argon（medium，需方案支援）'],
+  ],  codex: [
     ['gpt-6.1-sol', 'GPT-6.1 Sol'], ['gpt-6-astra', 'GPT-6 Astra'], ['gpt-6.1-terra', 'GPT-6.1 Terra'],
     ['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6-luna', 'GPT-6 Luna'],
     ['gpt-5.6-sol', 'GPT-5.6 Sol'], ['gpt-5.6-terra', 'GPT-5.6 Terra'], ['gpt-5.6-luna', 'GPT-5.6 Luna'],
   ],
 };
-const DEFAULT_MODEL = { claude: 'claude-opus-5-5', codex: 'gpt-6.1-sol', agy: 'gemini-4-argon-high' };
+const DEFAULT_MODEL = { claude: 'claude-opus-5-5', codex: 'gpt-6.1-sol', agy: 'gemini-3.8-flash-high' };
 const AGY_LABEL = {
   read: 'read：只讀、給意見，不改檔案也不執行指令（覆核者建議）',
   write: 'write：可以在工作資料夾建立與修改檔案，但不能執行指令',
