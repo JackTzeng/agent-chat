@@ -36,7 +36,7 @@
   .agent .name { font-weight: 600; }
   .agent .role { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .badge { font-size: 10px; padding: 1px 6px; border-radius: 6px; color: #fff; margin-left: 6px; vertical-align: 1px; }
-  .badge.claude { background: var(--claude); } .badge.codex { background: var(--codex); }
+  .badge.claude { background: var(--claude); } .badge.codex { background: var(--codex); } .badge.agy { background: #4285f4; }
   .dot { position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; border-radius: 50%;
     border: 2px solid var(--panel); background: #9aa39a; }
   .agent.busy .dot { background: #e2a72e; animation: pulse 1s infinite; }
@@ -345,7 +345,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.7.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.8.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -753,13 +753,22 @@ const MODELS = {
     ['claude-opus-5-5', 'Opus 5.5'], ['claude-sonnet-5-5', 'Sonnet 5.5'], ['claude-haiku-5-5', 'Haiku 5.5'],
     ['claude-fable-5-2', 'Fable 5.2（需方案支援）'],
   ],
+  // Antigravity：實際可用的模型請在 PowerShell 輸入 agy models 查看；要和 Claude／Codex 交叉檢查，請選 gemini 開頭的
+  agy: [
+    ['gemini-4-argon-high', 'Gemini 4 Argon（high）'], ['gemini-4-argon-medium', 'Gemini 4 Argon（medium）'], ['gemini-4-argon-low', 'Gemini 4 Argon（low）'],
+    ['gemini-3.8-flash-high', 'Gemini 3.8 Flash（high）'], ['gemini-3.8-flash-medium', 'Gemini 3.8 Flash（medium）'], ['gemini-3.8-flash-low', 'Gemini 3.8 Flash（low）'],
+  ],
   codex: [
     ['gpt-6.1-sol', 'GPT-6.1 Sol'], ['gpt-6-astra', 'GPT-6 Astra'], ['gpt-6.1-terra', 'GPT-6.1 Terra'],
     ['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6-luna', 'GPT-6 Luna'],
     ['gpt-5.6-sol', 'GPT-5.6 Sol'], ['gpt-5.6-terra', 'GPT-5.6 Terra'], ['gpt-5.6-luna', 'GPT-5.6 Luna'],
   ],
 };
-const DEFAULT_MODEL = { claude: 'claude-opus-5-5', codex: 'gpt-6.1-sol' };
+const DEFAULT_MODEL = { claude: 'claude-opus-5-5', codex: 'gpt-6.1-sol', agy: 'gemini-4-argon-high' };
+const AGY_LABEL = {
+  read: 'read：只讀、給意見，不改檔案也不執行指令（覆核者建議）',
+  write: 'write：可以在工作資料夾建立與修改檔案，但不能執行指令',
+};
 const CUSTOM = '__custom';
 const EFFORT_LABEL = { '': '預設', low: 'low：最快', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max：最強、最慢' };
 const PERM_LABEL = {
@@ -850,7 +859,7 @@ async function openAgentForm(id) {
       </div>
       <div class="field">
         <label>引擎</label>
-        <select id="f_engine">${opts(['claude', 'codex'], { claude: 'Claude Code', codex: 'Codex' }, a.engine)}</select>
+        <select id="f_engine">${opts(['claude', 'codex', 'agy'], { claude: 'Claude Code', codex: 'Codex', agy: 'Google Antigravity（agy）' }, a.engine)}</select>
       </div>
       <div class="field">
         <label>模型</label>
@@ -866,6 +875,12 @@ async function openAgentForm(id) {
       <div class="field">
         <label>權限</label>
         <select id="f_perm"></select>
+      </div>
+      <div class="field full agy-only" style="display:none">
+        <span class="help">🔑 第一次使用前，要在這台電腦的 PowerShell 輸入 <code>agy</code>，用 Google 帳號登入一次。想看有哪些模型：<code>agy models</code>。<br>
+        🔍 要「不同模型互相檢查」，模型請選 gemini 開頭的（agy 也能跑 Claude／GPT，但那就不是不同家了）。<br>
+        ⚠️ 免費方案的資料可能被 Google 人工審閱，並有每週用量上限。<br>
+        🛡 「read」成員每一輪結束後，系統會檢查資料夾有沒有檔案被改；有的話會自動暫停這位成員並通知你。</span>
       </div>
       <div class="field full">
         <label class="opt"><input type="checkbox" id="f_standalone" ${a.standalone ? 'checked' : ''}> 🧍 獨立成員（不進工作流程）</label>
@@ -911,6 +926,10 @@ async function openAgentForm(id) {
       <div class="field full team-only">
         <label class="opt"><input type="checkbox" id="f_turns" ${a.takeTurns ? 'checked' : ''}> 🔁 和團隊輪流工作</label>
         <span class="help">勾選的成員之間，同一時間只有一位在動手，其他的排隊（適合 PM / Coder / QA 這種會改同一批檔案的團隊）。不勾就不受限制，隨時都能和任何人同時工作。</span>
+      </div>
+      <div class="field full team-only">
+        <label class="opt"><input type="checkbox" id="f_urgent" ${(a.canInterrupt !== undefined ? a.canInterrupt : /\bPM\b|專案經理/i.test(a.role || '')) ? 'checked' : ''}> ⚡ 可以緊急插話同事</label>
+        <span class="help">派工訊息寫「【緊急】」時，會立刻中斷正在工作的同事，先處理這件事，再回頭做原本的工作。預設只有角色寫了 PM 的成員有；同一位同事冷卻時間內只能被插話一次（在「⚙️ 工作流程」設定）。</span>
       </div>
       <div class="field full">
         <label>工作資料夾</label>
@@ -1014,7 +1033,9 @@ async function openAgentForm(id) {
     }
     $('f_perm').innerHTML = eng === 'claude'
       ? opts(CFG.options.permissionModes, PERM_LABEL, a.permissionMode || 'auto')
+      : eng === 'agy' ? opts(CFG.options.agyAccess || ['read', 'write'], AGY_LABEL, a.agyAccess || 'read')
       : opts(CFG.options.sandboxes, SANDBOX_LABEL, a.sandbox || 'workspace-write');
+    document.querySelectorAll('.agy-only').forEach((x) => (x.style.display = eng === 'agy' ? '' : 'none'));
   }
   syncEngine(false);
   const syncKind = () => {
@@ -1067,12 +1088,12 @@ async function openAgentForm(id) {
       model: $('f_model').value, effort: $('f_effort').value, cwd: $('f_cwd').value, persona: $('f_persona').value,
       canHandoffTo: $('f_unres').checked ? null : [...document.querySelectorAll('#f_handoff input:checked')].map((x) => x.value),
       extraDirs: dirs.filter((d) => d.path),
-      takeTurns: $('f_turns').checked && !$('f_standalone').checked, team: $('f_team').value,
+      takeTurns: $('f_turns').checked && !$('f_standalone').checked, canInterrupt: $('f_urgent').checked && !$('f_standalone').checked, team: $('f_team').value,
       standalone: $('f_standalone').checked, personaFile: $('f_pfile').value, env: $('f_env').value,
       tools: $('f_tools').value, allowedTools: $('f_allow').value, disallowedTools: $('f_deny').value,
       telegram: { prefix: $('f_tgprefix').value, botToken: $('f_tgtoken').value, userIds: $('f_tgusers').value, clearBotToken: !!($('f_tgclear') && $('f_tgclear').checked) },
     };
-    if (engineSel.value === 'claude') body.permissionMode = $('f_perm').value; else body.sandbox = $('f_perm').value;
+    if (engineSel.value === 'claude') body.permissionMode = $('f_perm').value; else if (engineSel.value === 'agy') body.agyAccess = $('f_perm').value; else body.sandbox = $('f_perm').value;
     // 名稱若改了，人設裡的舊名字也一起換
     if (editing && editing.name && body.name.trim() && editing.name !== body.name.trim()) body.persona = body.persona.split(editing.name).join(body.name.trim());
     $('f_save').disabled = true;
@@ -1156,6 +1177,7 @@ async function openTeamForm() {
         ${(team.sharedWith || []).length ? `<span class="help warn-line">⚠️ 和「${esc(team.sharedWith.join('、'))}」用同一個資料夾。系統會把任務檔分開命名（例如 TASK-${esc(team.name)}.md），不會互相覆蓋，但兩組的檔案會混在一起，建議分開。</span>` : ''}</div>
       <div class="field"><label>流程名稱</label><input id="w_name" value="${esc(wf.name)}" maxlength="40"></div>
       <div class="field"><label>每件任務最多交接幾次</label><input id="t_hops" type="number" min="1" max="50" value="${CFG.maxRelayHops}"><span class="help">超過會暫停，請你決定下一步</span></div>
+      <div class="field"><label>緊急插話冷卻（分鐘）</label><input id="t_urgent" type="number" min="0" max="240" value="${CFG.urgentCooldownMin == null ? 5 : CFG.urgentCooldownMin}"><span class="help">PM 用【緊急】插話同事後，同一位同事要隔這麼久才能再被插話；填 0 ＝ 關閉這個功能</span></div>
       <div class="field"><label>🔁 同一階段最多重做幾次</label><input id="h_rework" type="number" min="1" max="20" value="${CFG.harness.maxReworks}"><span class="help">被退回或自動檢查失敗超過這個次數，就暫停交給你決定</span></div>
       <div class="field"><label>⏱ 每件任務時間上限（分鐘，0 = 不限）</label><input id="h_minutes" type="number" min="0" max="1440" value="${CFG.harness.maxTaskMinutes}"><span class="help">超過會暫停；回覆後會再給一次同樣的時間</span></div>
       <div class="field"><label>🧪 每個自動檢查最多跑幾秒</label><input id="h_timeout" type="number" min="10" max="3600" value="${CFG.harness.checkTimeoutSec}"></div>
@@ -1279,7 +1301,7 @@ async function openTeamForm() {
     try {
       const takeTurns = [...document.querySelectorAll('#w_turns input:checked')].map((x) => x.value);
       const harness = { maxReworks: $('h_rework').value, maxTaskMinutes: $('h_minutes').value, checkTimeoutSec: $('h_timeout').value, shiftPercent: $('h_shift').value, guideChars: $('h_gchars').value };
-      await api('/api/team', { method: 'PUT', body: JSON.stringify({ teamId: team.id, name: $('tm_name').value, icon: $('tm_icon').value, cwd: $('tm_cwd').value, moveMembers: !!($('tm_move') && $('tm_move').checked), workflow: wf, maxRelayHops: $('t_hops').value, takeTurns, approveWritableHandoffs: $('w_strict').checked, harness }) });
+      await api('/api/team', { method: 'PUT', body: JSON.stringify({ teamId: team.id, name: $('tm_name').value, icon: $('tm_icon').value, cwd: $('tm_cwd').value, moveMembers: !!($('tm_move') && $('tm_move').checked), workflow: wf, maxRelayHops: $('t_hops').value, urgentCooldownMin: $('t_urgent').value, takeTurns, approveWritableHandoffs: $('w_strict').checked, harness }) });
       await loadWorkflow(); closeModal(); renderAgents(); updateTop(); toast('✅ ' + $('tm_name').value + ' 的工作流程已儲存');
     } catch (e) { toast(e.message); }
   };
@@ -1395,7 +1417,7 @@ async function openHarness(tab) {
     const groups = teamsAll.map((t) => o('team:' + t.id, (t.icon || '👥') + ' ' + t.name + '（整組）')).join('');
     return `<select ${attr}><optgroup label="成員">${people}</optgroup>${stages ? `<optgroup label="階段（只在這個階段）">${stages}</optgroup>` : ''}<optgroup label="小組">${groups}</optgroup><optgroup label="全體">${o('all', '🌐 所有小組的成員')}</optgroup></select>`;
   };
-  const writable = (m) => m.engine === 'codex' ? (m.sandbox || 'workspace-write') !== 'read-only' : ['acceptEdits', 'auto', 'bypassPermissions'].includes(m.permissionMode);
+  const writable = (m) => m.engine === 'agy' ? m.agyAccess === 'write' : m.engine === 'codex' ? (m.sandbox || 'workspace-write') !== 'read-only' : ['acceptEdits', 'auto', 'bypassPermissions'].includes(m.permissionMode);
   const checkedStages = wf.stages.filter((s) => (s.checks || []).length);
   const S = H.stats, turns = S.agents.reduce((n, a) => n + a.turns, 0), errs = S.agents.reduce((n, a) => n + a.errors, 0);
   const tabs = [['overview', '總覽'], ['guides', '📏 守則' + (H.proposals.length ? '<span class="hn-dot">' + H.proposals.length + '</span>' : '')],
@@ -1432,7 +1454,7 @@ async function openHarness(tab) {
   } else if (hnTab === 'perm') {
     body = `<table class="hn-t"><tr><th>成員</th><th>引擎</th><th>寫入權限</th><th>額外資料夾</th><th>輪流</th><th>狀態</th></tr>${members.map((m) => `<tr>
       <td>${esc(m.name)}</td><td>${esc(m.engine)}${m.model ? '<br><small>' + esc(m.model) + '</small>' : ''}</td>
-      <td>${writable(m) ? '✏️ 可修改檔案' : '👀 唯讀'}<br><small>${esc(m.engine === 'codex' ? 'sandbox: ' + (m.sandbox || 'workspace-write') : 'mode: ' + (m.permissionMode || '預設'))}</small></td>
+      <td>${writable(m) ? '✏️ 可修改檔案' : '👀 唯讀'}<br><small>${esc(m.engine === 'agy' ? 'access: ' + (m.agyAccess || 'read') : m.engine === 'codex' ? 'sandbox: ' + (m.sandbox || 'workspace-write') : 'mode: ' + (m.permissionMode || '預設'))}</small></td>
       <td>${(m.extraDirs || []).map((d) => esc(d.path) + (d.mode === 'ro' ? '（唯讀）' : '（可寫）')).join('<br>') || '—'}</td>
       <td>${m.takeTurns ? '🔁' : '—'}</td><td>${(agentOf(m.id) || {}).blocked ? '⛔ 暫停使用' : '✅'}</td></tr>`).join('')}</table>
       <p class="help">核准關卡：${wf.stages.filter((s) => s.approval).map((s) => '🔒 ' + esc(s.name)).join('、') || '沒有 🔒 階段'}${cfg.approveWritableHandoffs ? '；交給可寫入的成員一律要核准' : ''}。工作資料夾以外的位置要在 local-settings.txt 的 AGENT_ALLOWED_ROOTS 核准。權限在每位成員的「⚙️ 設定」修改。</p>`;
@@ -1790,6 +1812,7 @@ function connectEvents() {
     if (ev.kind === 'timers') { refreshTimerBadge(); if ($('tmr_list')) openTimers(true); return; }
     if (ev.kind === 'update-available') { if (!UPD_BADGE) { UPD_BADGE = true; renderUsage(); } return; }
     if (ev.kind === 'queue') { refreshQueue(); return; }
+    if (ev.kind === 'urgent') { toast(ev.status === 'interrupted' ? '⚡ ' + ev.from + ' 緊急插話給 ' + ev.to : '⚡ ' + ev.from + ' 想緊急插話給 ' + ev.to + '，但改為排隊（' + ev.reason + '）'); return; }
     const a = agentOf(ev.agentId); if (!a) return;
     if (ev.kind === 'busy') { a.busy = ev.busy; refreshAgents().then(updateThinking); return; }
     if (ev.kind === 'reset') { if (shown(ev.agentId)) selectAgent(current); return; }

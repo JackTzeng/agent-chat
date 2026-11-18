@@ -20,6 +20,7 @@ const HELP =
   '同時有好幾件任務時，在訊息或指令後面加 #編號 指定任務，例如 /approve #12、#12 改用 CSV\n\n' +
   '⚡ 插話\n' +
   '成員正在工作時直接打字，會中斷它這一輪，帶著你的指示接著做\n' +
+  'PM 派工寫了【緊急】也會中斷同事（冷卻時間內只能一次），之後同事會回頭做原本的事\n' +
   '/later 訊息　不中斷，等它這輪做完再給\n\n' +
   '💬 自由聊天\n' +
   '直接打字：交給目前的對象\n' +
@@ -31,7 +32,7 @@ const HELP =
   '/to 名字　切換對象\n' +
   '/stop　全部停止\n' +
   '/new　目前對象開新對話\n' +
-  '/usage　Claude / Codex 用量額度\n' +
+  '/usage　Claude / Codex 用量額度（Google agy 的額度請在 agy 裡查）\n' +
   '/timers　⏰ 看所有排程；/timer 編號 run／on／off／ok／no\n' +
   '/report 描述　🐞 產生問題回報檔傳給你（轉給 Claude 排查）\n' +
   '/update　⬆️ 檢查更新，有新版就更新並重新啟動\n' +
@@ -408,6 +409,17 @@ exports.start = function start(ctx) {
     if (!chatId) return;
     if (failed && failed.failedAt && Date.now() - failed.failedAt < 300000) await say(chatId, '⚠️ 新版本無法啟動，已自動退回原本的版本 v' + (failed.fromVersion || version) + '。可以傳 /report 產生問題回報給 Claude 看。');
     else await say(chatId, '✅ ' + (text || '重新啟動') + '完成，現在是 v' + version);
+  });
+  // ⚡ 緊急派工
+  listen('urgent', async ({ from, to, status, reason }) => {
+    const text = status === 'interrupted' ? '⚡ ' + label(from) + ' 緊急插話給 ' + label(to) + '，它先暫停手上的事處理，之後會回頭做原本的工作'
+      : '⚡ ' + label(from) + ' 想緊急插話給 ' + label(to) + '，但改為排隊：' + reason;
+    for (const id of pushRecipients()) await say(id, text);
+  });
+  // 🚨 唯讀成員（agy）竟然改了檔案：已自動暫停
+  listen('readonly-violation', async ({ agent, changes }) => {
+    const list = changes.slice(0, 8).map((c) => (c.kind === 'add' ? '＋' : c.kind === 'del' ? '－' : '～') + c.path).join('、');
+    for (const id of pushRecipients()) await say(id, '🚨 ' + label(agent) + ' 是唯讀成員，但資料夾裡有檔案被改了：' + list + '\n唯讀限制沒有擋住，已先暫停這位成員。請確認檔案後，到網頁「⚙️ 設定」按儲存解除。');
   });
   // ⏰ 排程：只有異常、失敗（或設定為每次都通知）才會到這裡
   listen('timer-alert', async ({ timer, agent, status, summary }) => {

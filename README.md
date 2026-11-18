@@ -19,6 +19,7 @@
    codex       ← 照畫面登入 ChatGPT 帳號，完成後 Ctrl+C 離開
    ```
    **一定要先在終端機確認這兩個指令能正常用**，聊天介面只是在背後呼叫它們。
+4. （選用）想讓 Google 的模型也加入「互相檢查」：到 https://antigravity.google/download 安裝 Antigravity CLI，在 PowerShell 輸入 `agy` 用 Google 帳號登入一次，再參考下方「Google Antigravity 成員」。
 
 ## 2. 啟動
 
@@ -82,7 +83,7 @@ AGENT_ALLOWED_ROOTS=C:\EM_reports_copy
   "name": "許代書",             ← 顯示名稱，也是 @ 的名字
   "avatar": "📜",              ← 頭像（emoji）
   "role": "Coder · 實作",       ← 職稱，會告訴其他成員
-  "engine": "codex",           ← "claude" 或 "codex"
+  "engine": "codex",           ← "claude"、"codex" 或 "agy"（Google Antigravity）
   "model": "gpt-6-luna",       ← 模型，留空 = 該 CLI 的預設
   "effort": "max",             ← 推理強度，留空 = 預設
   "sandbox": "workspace-write",← 權限，見下方表格
@@ -98,6 +99,8 @@ AGENT_ALLOWED_ROOTS=C:\EM_reports_copy
 |---|---|---|
 | claude | `claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-5-5`、`claude-fable-5-2`，或簡寫 `opus`、`sonnet` | `low`、`medium`、`high`、`xhigh`、`max` |
 | codex | `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6.1-terra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `low`、`medium`、`high`、`xhigh`、`max` |
+
+| agy | `gemini-4-argon-high`、`gemini-3.8-flash-medium` 等（以 `agy models` 為準；模型代號已包含強度，也可再用 `effort`） | `low`、`medium`、`high`、`xhigh`、`max`（依模型） |
 
 - 強度越高，想得越久，也越耗用量額度
 - 能用哪些模型取決於你的訂閱方案；填了方案不支援的模型，聊天室會顯示錯誤訊息
@@ -357,6 +360,27 @@ Agent = Model + Harness。模型是大腦，Harness 是圍繞模型的執行系�
 
 角色與場景都是用程式畫的原創造型，構想參考了 Pixel Agents、pixtuoid、Agency HQ 等開源專案（沒有使用它們的程式碼或美術素材）。
 
+### Google Antigravity 成員（engine: "agy"）
+
+用來讓**不同家的模型互相檢查**（例如 Claude 寫、Gemini 覆核）。免費個人方案就能用，不需要訂閱高級方案，但有每週用量上限。
+
+```
+{ "id": "gem", "name": "小覆核", "role": "覆核 · 挑毛病", "engine": "agy",
+  "model": "gemini-4-argon-high", "agyAccess": "read", "cwd": "./workspace" }
+```
+
+| agyAccess | 做得到 | 做不到 |
+|---|---|---|
+| `read`（預設） | 讀檔、搜尋、用文字回覆意見 | 改檔案、執行指令（用計畫模式＋沙箱，並在每一輪之後檢查檔案） |
+| `write` | 在工作資料夾建立與修改檔案 | 執行指令（無人值守時會被拒絕） |
+
+- 不使用 `--dangerously-skip-permissions`，也不提供這個選項
+- **唯讀保險**：`read` 成員每一輪結束後，系統會比對資料夾；只要有檔案被改，就會自動暫停這位成員、在網頁與 Telegram 通知你，到「⚙️ 設定」按儲存才解除
+- 提示詞用 stdin 傳給 agy（避免 Windows 引號問題）；如果你的 agy 版本不吃，在 `local-settings.txt` 加一行 `AGY_PROMPT_MODE=arg` 改用 `-p`（要直接執行 `agy.exe`）
+- 唯讀參數可用 `AGY_READONLY_ARGS` 換掉（預設 `--mode plan --sandbox`；不能包含略過權限的參數）；找不到指令時用 `AGY_BIN` 指定路徑
+- ⚠️ Google 免費方案的資料可能被人工審閱；請自行確認送進去的內容可以交給 Google
+- 沒有用量額度顯示（額度請在 agy 裡查）；Telegram `/usage` 只顯示 Claude／Codex
+
 ## 9. 成員工作時插話
 
 成員正在工作時，輸入框上方會出現送出方式可以選：
@@ -371,6 +395,16 @@ Agent = Model + Harness。模型是大腦，Harness 是圍繞模型的執行系�
 - ⏹ 按鈕可以停止這位成員（全員頁是全部停止）
 - 排隊中的成員卡片會顯示「🕒 排隊中（等某某做完）」，排隊中的訊息也會先出現在對話窗
 - Telegram：成員工作時直接打字就是插話；`/later 訊息` 不中斷；`/note 指示` 加入任務指示
+
+### ⚡ 緊急派工：PM 也能插話同事
+
+PM（被授權的成員）在派工訊息裡寫 **【緊急】**，正在工作的同事會立刻暫停手上的事、先處理這件事，處理完系統會讓他**回頭繼續原本的工作**（同一段對話）。
+
+- 授權：成員設定的「⚡ 可以緊急插話同事」；沒設定時，角色寫了 PM 的成員預設有，其他人沒有
+- 只能插話同一小組的成員；對方正在寫交班筆記時不打斷
+- 防止互相打斷：同一位對象在冷卻時間內（預設 5 分鐘，「⚙️ 工作流程」可改，0＝關閉）只會被緊急插話一次，也不能反過來插話剛插話過自己的人；不符合條件就改成一般排隊
+- 被中斷的那一輪，檔案變更和中斷紀錄會記進任務；網頁和 Telegram 都會通知
+- 代價：被中斷那一輪還沒說出口的思考會丟掉（檔案與對話紀錄不會），所以 PM 的提示詞會要求只在「方向改變、或會擋住別人」時才用
 
 ## 10. 使用小技巧
 
@@ -425,6 +459,7 @@ launcher.js      啟動器：執行 server.js，負責重新啟動與更新失�
 start.bat        Windows 啟動檔（只用英文：cmd 讀中文會出錯）
 localsettings.js 讀取你的 local-settings.txt
 proctree.js      關子程式時連整串一起關（避免殘留的 CLI 佔記憶體）
+agy.js           Google Antigravity（agy）：參數、權限對應、stream-json 解析
 timers.js        ⏰ 排程（data/timers.json、data/timer-runs.jsonl）
 local-settings.example.txt  個人設定範本（複製成 local-settings.txt，不會進 git）
 public/          前端聊天介面（office.js 是辦公室畫面；vendor/ 裡是 Markdown 套件 marked、DOMPurify）

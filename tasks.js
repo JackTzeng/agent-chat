@@ -223,6 +223,7 @@ exports.create = function create(ctx) {
     });
     if (w.notes) lines.push('其他規則：' + w.notes);
     if (ctx.harness) { const hb = ctx.harness.promptBlock(agent, { stageId: st ? st.id : null }); if (hb) lines.push('', hb); }
+    if (ctx.urgentHint) { const uh = ctx.urgentHint(agent); if (uh) lines.push('', uh); }
     if (st) {
       lines.push('', '【你現在負責的階段：' + st.name + '】');
       if (st.goal) lines.push('要做什麼：' + st.goal);
@@ -553,6 +554,9 @@ exports.create = function create(ctx) {
 
   return {
     promptHeader, snapshotFor, onTurnDone, docName,
+    // 唯讀成員的檢查：工作資料夾與所有額外資料夾一輪前後有沒有檔案被改
+    snapshotAll: (agent) => snapshot([{ dir: agent.cwd, prefix: '' }, ...(agent.extraDirs || []).map((d) => ({ dir: d.path, prefix: '[' + path.basename(d.path) + ']' }))]),
+    diffSnapshots,
     taskDocName: (id) => { const t = get(id); return t ? taskDocName(t) : 'TASK.md'; }, noteInterrupt, addNote, start, approve, reject, reply, stop, workflowSaved, writeWorkflowDocs,
     // 相容舊介面：active() 是最近更新的一件；actives() 是所有小組進行中的任務
     active: () => summary(actives().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0]),

@@ -223,6 +223,8 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
       assertAllowedDir(d.path, { mustExist: true });
       if (agent.engine === 'claude' && d.mode === 'ro')
         throw new Error('Claude 的 --add-dir 不會強制唯讀；請改用 OS 權限控制或唯讀副本：' + d.path);
+      if (agent.engine === 'agy' && agent.agyAccess === 'write' && d.mode === 'ro')
+        throw new Error('agy 的可寫成員無法強制資料夾唯讀；請改用 OS 權限控制或唯讀副本：' + d.path);
     }
   }
   function redact(input, secrets = []) {

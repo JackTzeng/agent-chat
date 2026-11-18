@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.7.1';
+const VERSION = '3.8.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -10,6 +10,7 @@ const { spawn, execFileSync } = require('child_process');
 const EventEmitter = require('events');
 const hooks = new EventEmitter(); // 給 Telegram 等外掛監聽：user / done / task
 const taskLib = require('./tasks');
+const agy = require('./agy');
 const harnessLib = require('./harness');
 const { createSecurity, inside, isProtectedEnvKey } = require('./security');
 
@@ -36,6 +37,7 @@ function resolveBin(name, envVar) {
   const appdata = process.env.APPDATA || '';
   const candidates = [
     path.join(home, '.local', 'bin', name + '.exe'), // Claude Code 官方安裝程式
+    path.join(home, '.gemini', 'bin', name + '.exe'), // Google Antigravity CLI（agy）
     path.join(appdata, 'npm', name + '.cmd'),        // npm i -g 安裝（預設位置）
     path.join(path.dirname(process.execPath), name + '.cmd'), // npm 全域裝在 Node.js 資料夾
     path.join(process.env.LOCALAPPDATA || '', 'Programs', name, name + '.exe'),
@@ -51,6 +53,7 @@ function resolveBin(name, envVar) {
 const BIN = {
   claude: resolveBin('claude', 'CLAUDE_BIN'),
   codex: resolveBin('codex', 'CODEX_BIN'),
+  agy: resolveBin('agy', 'AGY_BIN'),
 };
 // 之前沒找到的話，每次送訊息時再找一次（裝好後不必重啟伺服器）
 function getBin(engine) {
@@ -109,6 +112,8 @@ function blockedHelp(reason) {
     return '怎麼處理：到這位成員的「⚙️ 設定」→ 額外資料夾，把這個資料夾改成「可讀寫」後儲存（如果是副本資料夾通常沒關係）；需要真的唯讀的話，改用 Codex 成員讀它，或在 Windows 資料夾內容的「安全性」設成唯讀。';
   if (/不在核准的工作根目錄內|不存在，先略過/.test(reason))
     return '怎麼處理：在程式資料夾的 local-settings.txt 加一行 AGENT_ALLOWED_ROOTS=那個資料夾（或它的上層），再按左下角「⬆️ 更新／重新啟動」→「🔄 只重新啟動」。';
+  if (/唯讀限制沒有擋住/.test(reason))
+    return '怎麼處理：先確認資料夾裡被改的檔案；沒問題的話，到這位成員的「⚙️ 設定」按儲存就會解除暫停。要讓它改檔案，請把存取等級改成「可寫入」。';
   if (/完整權限模式/.test(reason))
     return '怎麼處理：到這位成員的「⚙️ 設定」把權限改成 auto、acceptEdits 或 Codex 的 workspace-write。';
   return '怎麼處理：到這位成員的「⚙️ 設定」修改，或按左下角「🐞 問題回報」把檔案給 Claude 看。';
@@ -225,6 +230,10 @@ function allowedTargets(agent) {
 
 // 成員可以存取的資料夾（每一輪都告訴它）
 function accessText(agent) {
+  const base = accessBase(agent);
+  return agent.engine === 'agy' ? base + '\n' + (agy.access(agent) === 'read' ? agy.READ_ONLY_NOTE : agy.WRITE_NOTE) : base;
+}
+function accessBase(agent) {
   const dirs = agent.extraDirs || [];
   if (!dirs.length) return '【可以存取的資料夾】只有你的工作資料夾：' + agent.cwd + '（可讀寫）。其他位置的檔案請使用者用附件傳給你。';
   return ['【可以存取的資料夾】', '- 工作資料夾：' + agent.cwd + '（可讀寫）']
@@ -270,6 +279,8 @@ function freeHeader(agent) {
   }
   const hb = harness.promptBlock(agent);
   if (hb) L.push('', hb);
+  const uh = urgentHint(agent);
+  if (uh && others.length) L.push('', uh);
   return L.join('\n');
 }
 
@@ -283,7 +294,10 @@ function buildPrompt(agent, text, opts = {}) {
     ? '\n\n【換班：你是接手的第 ' + sh.n + ' 班】前一班的對話太長，換成你接手；你看不到前一班的對話。以下是前一班留下的交班筆記，先讀完，再處理下面的訊息' +
       (opts.taskId ? '（也可以看工作資料夾的 ' + tasks.taskDocName(opts.taskId) + '）' : '') + '：\n' + (sh.note || '（前一班沒有留下筆記，請從工作資料夾的檔案判斷進度）') + '\n【交班筆記結束】'
     : '';
-  if (opts.interject) {
+  if (opts.resume) {
+    body = '【系統訊息：你原本的工作被同事的緊急派工打斷了，緊急的事已經處理完】\n' + text +
+      '\n\n請接著完成原本的工作（做到哪裡，可以從對話紀錄與工作資料夾的檔案判斷）；如果緊急的事改變了方向，依最新狀況調整。';
+  } else if (opts.interject) {
     body = '【使用者插話：你剛才的工作被暫停了】\n' + text +
       '\n\n請依照這個指示調整，然後繼續完成你原本的工作（之前做到哪裡，可以從對話紀錄與工作資料夾的檔案判斷）。';
   } else if (opts.taskId) {
@@ -303,7 +317,7 @@ function buildPrompt(agent, text, opts = {}) {
 }
 
 // ---------- 換班：對話太長時，請成員寫交班筆記，再換成全新的一段對話接手 ----------
-const CTX_DEFAULT = { claude: 200000, codex: 272000 };
+const CTX_DEFAULT = { claude: 200000, codex: 272000, agy: 1000000 };
 function ctxInfo(key, engine) {
   const c = state.ctx[key]; if (!c || !c.tokens) return null;
   const window = c.window || CTX_DEFAULT[engine] || 200000;
@@ -371,7 +385,48 @@ function userSend(agent, text, via) {
 // 沒勾的成員不受限制，隨時都能和任何人同時工作。
 const turnBlocker = (agent) => (agent.takeTurns ? [...runs.entries()].find(([id, r]) => id !== agent.id && r.takeTurns && r.team === agent.team) : null);
 const mustWait = (agent) => runs.has(agent.id) || !!turnBlocker(agent);
+// ---------- 緊急派工：PM 等被授權的成員，可以中斷正在工作的同事 ----------
+// 訊息裡寫「【緊急】」才會觸發；只有被授權的成員（成員設定的「可緊急插話」，沒設定時預設是角色有 PM 的成員）有效。
+// 防止互相打斷：同一位對象在冷卻時間內只會被插話一次，也不能反過來插話剛插話過自己的人。冷卻時間 0 分鐘＝整個功能關閉。
+const URGENT_RE = /【緊急】/;
+const urgentCooldownMs = () => { const m = CONFIG.urgentCooldownMin; return (m === undefined || m === null || m === '' ? 5 : Math.max(0, Number(m) || 0)) * 60000; };
+const canUrgent = (a) => !!a && !a.standalone && (a.canInterrupt !== undefined ? !!a.canInterrupt : /\bPM\b|專案經理/i.test(a.role || ''));
+const urgentHint = (agent) => canUrgent(agent) && urgentCooldownMs() > 0
+  ? '【緊急派工】你被授權可以中斷正在工作的同事：在派給他的訊息裡寫「【緊急】」，他會立刻暫停手上的事先處理你的訊息，處理完再回頭做原本的工作。' +
+    '只有「方向改變、或他正在做的事會擋住別人／做白工」才用；一般派工不要寫，會排隊等他做完這一輪。同一位同事 ' + urgentCooldownMs() / 60000 + ' 分鐘內只能被緊急插話一次。'
+  : '';
+const urgentLog = new Map(); // 'from>to' → 上次緊急插話的時間
+function tryUrgent(target, text, opts) {
+  if (!URGENT_RE.test(text)) return null;
+  const sender = agentById(opts.from);
+  if (!sender || sender.id === target.id) return null;
+  const run = runs.get(target.id);
+  const say = (status, reason) => {
+    hooks.emit('urgent', { from: sender, to: target, status, reason });
+    broadcast({ agentId: '*', kind: 'urgent', from: sender.name, to: target.name, status, reason });
+    return null;
+  };
+  const cd = urgentCooldownMs(), now = Date.now();
+  if (!run || !run.proc) return null;
+  if (!cd) return say('queued', '緊急插話功能已關閉');
+  if (!canUrgent(sender)) return say('queued', sender.name + ' 沒有緊急插話的授權');
+  if (target.standalone || sender.team !== target.team) return say('queued', '只能插話給同一小組的成員');
+  if (run.interrupt) return say('queued', target.name + ' 已經在被插話了');
+  if (run.opts && run.opts.shift) return say('queued', target.name + ' 正在寫交班筆記，不能打斷');
+  if (now - (urgentLog.get(sender.id + '>' + target.id) || 0) < cd) return say('queued', target.name + ' 剛被緊急插話過（冷卻 ' + cd / 60000 + ' 分鐘）');
+  if (now - (urgentLog.get(target.id + '>' + sender.id) || 0) < cd) return say('queued', target.name + ' 剛緊急插話過 ' + sender.name + '，不能反過來打斷');
+  urgentLog.set(sender.id + '>' + target.id, now);
+  const note = '⚡【緊急派工：' + sender.name + '】你手上的工作已經被暫停，請先處理這件事；處理完系統會讓你接著做原本的工作。\n\n' + text;
+  run.interrupt = { urgent: { text: note, opts: { ...opts, urgent: true } }, via: opts.via };
+  proctree.killTree(run.proc);
+  say('interrupted', '');
+  return 'interrupted';
+}
 function dispatch(agent, text, opts = {}) {
+  if (opts.from && !opts.urgent && runs.has(agent.id)) {
+    const r = tryUrgent(agent, text, opts);
+    if (r) return r;
+  }
   if (mustWait(agent)) {
     pending.push({ agentId: agent.id, text, opts });
     broadcast({ agentId: '*', kind: 'queue' });
@@ -407,7 +462,7 @@ function cancelTask(taskId) {
 // 任務、排程（ownSession）各用自己的對話，不會擠在和你的主對話裡
 const sessionKey = (agent, opts) => (opts.taskId ? 't' + opts.taskId + ':' + agent.id : opts.sessionTag ? opts.sessionTag + ':' + agent.id : agent.id);
 
-function buildCommand(agent, sid) {
+function buildCommand(agent, sid, prompt) {
   security.checkAgent(agent);
   if (sid && !/^[a-zA-Z0-9_-]{1,128}$/.test(sid)) throw new Error('不合法的 CLI Session ID');
   if (agent.engine === 'claude') {
@@ -433,6 +488,20 @@ function buildCommand(agent, sid) {
     // 提示詞一律用 stdin 傳（"-"），避免 Windows 命令列的引號/換行問題
     const args = sid ? ['exec', 'resume', ...opts, sid, '-'] : ['exec', ...opts, '-'];
     return { cmd: getBin('codex'), args };
+  }
+  if (agent.engine === 'agy') {
+    // 預設用 stdin 傳提示（一行 JSON 的 user 事件），避免 Windows 命令列的引號／換行問題；
+    // AGY_PROMPT_MODE=arg 時改用 -p（直接執行 agy.exe 才安全）
+    const argMode = process.env.AGY_PROMPT_MODE === 'arg';
+    const args = argMode ? ['--output-format', 'stream-json'] : ['--input-format', 'stream-json', '--output-format', 'stream-json'];
+    if (agent.model) args.push('--model', agent.model);
+    if (agent.effort) args.push('--effort', agent.effort);
+    // 唯讀（預設）：計畫模式＋終端機沙箱；可寫：預設的 request-review（工作資料夾內可寫檔，執行指令一律被拒絕）。永遠不使用 --dangerously-skip-permissions。
+    if (agy.access(agent) === 'read') args.push(...agy.readOnlyArgs());
+    for (const d of agent.extraDirs || []) args.push('--add-dir', d.path);
+    if (sid) args.push('--conversation', sid);
+    if (argMode) args.push('-p', prompt || '');
+    return { cmd: getBin('agy'), args, stdinPrompt: !argMode };
   }
   throw new Error('未知的 engine：' + agent.engine);
 }
@@ -537,18 +606,19 @@ function readAudit(agentId, limit = 50) {
 function startRun(agent, userText, opts = {}) {
   const key = sessionKey(agent, opts);
   // 對話太長：先換班（寫交班筆記），原本的訊息排在換班之後
-  if (!opts.shift && !opts.interject && !agent.blocked && shiftDue(agent, key)) {
+  if (!opts.shift && !opts.interject && !opts.resume && !agent.blocked && shiftDue(agent, key)) {
     pending.unshift({ agentId: agent.id, text: userText, opts });
     return startRun(agent, '（換班）', { taskId: opts.taskId, stageId: opts.stageId, sessionTag: opts.sessionTag, shift: true, system: true });
   }
   state.lastKey[agent.id] = key;
   const sid = state.sessions[key];
-  let cmd = null, args = [], blocked = agent.blocked || null;
-  if (!blocked) {
-    try { ({ cmd, args } = buildCommand(agent, sid)); } catch (e) { blocked = e.message; }
-  }
+  let cmd = null, args = [], stdinPrompt = false, blocked = agent.blocked || null;
   const hops = opts.hops || 0;
   const prompt = buildPrompt(agent, userText, opts);
+  if (!blocked && agent.engine === 'agy' && state.agyHold && state.agyHold[agent.id]) blocked = '唯讀限制沒有擋住（上一輪有檔案被改），已暫停這位成員';
+  if (!blocked) {
+    try { ({ cmd, args, stdinPrompt } = buildCommand(agent, sid, prompt)); } catch (e) { blocked = e.message; }
+  }
   const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system, interject: opts.interject, shift: opts.shift, timerId: opts.timerId };
 
   const shownText = opts.shift ? '🔄 換班：' + (opts.manualShift ? '你要求換班' : '對話已經很長') + '，請成員寫交班筆記，之後換成全新的對話接手' : userText;
@@ -584,7 +654,7 @@ function startRun(agent, userText, opts = {}) {
     return;
   }
   if (!cmd) {
-    const how = agent.engine === 'claude' ? 'npm.cmd i -g @anthropic-ai/claude-code' : 'npm.cmd i -g @openai/codex';
+    const how = agent.engine === 'claude' ? 'npm.cmd i -g @anthropic-ai/claude-code' : agent.engine === 'agy' ? '到 https://antigravity.google/download 安裝 Antigravity CLI，然後在 PowerShell 輸入 agy 登入一次' : 'npm.cmd i -g @openai/codex';
     run.segments.push({ type: 'error', text: '找不到 ' + agent.engine + ' 指令。\n' +
       '還沒安裝的話，在 PowerShell 輸入：' + how + '\n' +
       '已經安裝了，請在 PowerShell 輸入「where.exe ' + agent.engine + '」，把顯示的路徑填進 start.bat 的 ' +
@@ -599,6 +669,8 @@ function startRun(agent, userText, opts = {}) {
 
   // 任務模式：記下工作資料夾目前的樣子，結束後比對出實際變更的檔案
   const before = opts.taskId && !opts.shift ? tasks.snapshotFor(agent) : null;
+  // agy 唯讀成員：記下所有資料夾目前的樣子，結束後確認真的沒有任何檔案被改（CLI 的唯讀限制還沒有被實測證明可靠，所以這裡再檢查一次）
+  const roBefore = agent.engine === 'agy' && agy.access(agent) === 'read' && !opts.shift ? tasks.snapshotAll(agent) : null;
 
   // .exe 直接執行；.cmd（npm 安裝的）要透過 cmd.exe，路徑有空白時要加引號
   const needShell = IS_WIN && !/\.exe$/i.test(cmd);
@@ -632,7 +704,7 @@ function startRun(agent, userText, opts = {}) {
       const m = /exit code[:\s]+(\d+)/i.exec(e.text || '');
       c.isError = e.isError; c.exitCode = e.exitCode != null ? e.exitCode : m ? Number(m[1]) : e.isError ? null : 0;
       c.output = security.redact(String(e.text || '').slice(0, 2000));
-      if (e.isError && agent.engine === 'claude') {
+      if (e.isError && (agent.engine === 'claude' || agent.engine === 'agy')) {
         const seg = { type: 'tool', text: '⛔ ' + short(e.text || '工具執行失敗', 160) };
         run.segments.push(seg); broadcast({ agentId: agent.id, kind: 'segment', segment: seg });
       }
@@ -642,7 +714,7 @@ function startRun(agent, userText, opts = {}) {
     run.segments.push({ type: e.kind, text: e.text });
     broadcast({ agentId: agent.id, kind: 'segment', segment: { type: e.kind, text: e.text } });
   };
-  const parse = agent.engine === 'claude' ? parseClaude : parseCodex;
+  const parse = agent.engine === 'claude' ? parseClaude : agent.engine === 'agy' ? agy.makeParser(short) : parseCodex;
 
   let buf = '';
   proc.stdout.setEncoding('utf8');
@@ -667,17 +739,27 @@ function startRun(agent, userText, opts = {}) {
   proc.on('close', (code) => {
     if (run.interrupt) {
       // 使用者插話：結束這一輪（不轉交、不判斷任務交接），馬上帶著指示接著做同一段對話
-      emit({ kind: 'tool', text: '⚡ 使用者插話，這一輪先暫停' });
+      const urgent = run.interrupt.urgent;
+      emit({ kind: 'tool', text: urgent ? '⚡ 收到 ' + ((agentById(urgent.opts.from) || {}).name || '同事') + ' 的緊急派工，這一輪先暫停' : '⚡ 使用者插話，這一輪先暫停' });
       finish();
       hooks.emit('done', { agent, timerId: null, stopped: false, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
-      if (opts.taskId) tasks.noteInterrupt(agent, opts, before, run.interrupt.text);
+      if (opts.taskId) tasks.noteInterrupt(agent, opts, before, urgent ? urgent.text : run.interrupt.text);
       if (agent.engine === 'codex') setTimeout(readCodexUsage, 500);
+      if (urgent) {
+        // 先做緊急的事（照它自己的任務與對話），做完再接著原本被打斷的工作
+        const back = { taskId: opts.taskId, stageId: opts.stageId, hops: opts.hops, via: opts.via, resume: true, system: true, timerId: opts.timerId, sessionTag: opts.sessionTag };
+        pending.unshift({ agentId: agent.id, text: (run.interrupt.text ? run.interrupt.text + '\n\n' : '') + '（緊急的事處理完了，請繼續原本的工作）', opts: back });
+        pending.unshift({ agentId: agent.id, text: urgent.text, opts: urgent.opts });
+        pump();
+        return;
+      }
       startRun(agentById(agent.id) || agent, run.interrupt.text,
         { taskId: opts.taskId, stageId: opts.stageId, hops: opts.hops, via: run.interrupt.via, interject: true, timerId: opts.timerId, sessionTag: opts.sessionTag });
       pump();
       return;
     }
     run.exitCode = code;
+    if (agent.engine === 'agy' && !run.stopped) agyAfter(agent, run, emit, code, roBefore);
     if (run.stopped) emit({ kind: 'error', text: '⏹ 已手動停止' });
     else if (code && !run.finished && !run.segments.some((s) => s.type === 'error')) {
       const tail = decodeOutput(run.stderr).trim().split(/\r?\n/).slice(-6).join('\n');
@@ -712,7 +794,26 @@ function startRun(agent, userText, opts = {}) {
   });
 
   proc.stdin.on('error', () => {});
-  proc.stdin.end(prompt);
+  proc.stdin.end(agent.engine === 'agy' ? (stdinPrompt ? agy.stdinMessage(prompt) : '') : prompt);
+}
+
+// agy 一輪結束後：登入問題提示、被擋下的動作、唯讀成員有沒有改到檔案
+function agyAfter(agent, run, emit, code, roBefore) {
+  const err = decodeOutput(run.stderr);
+  if (code && /auth|login|credential|sign.?in|unauthenticated/i.test(err))
+    emit({ kind: 'error', text: '🔑 agy 還沒登入或登入過期：請在這台電腦的 PowerShell 執行 agy，用 Google 帳號登入一次，之後這裡就能用了。' });
+  const denied = err.split(/\r?\n/).map((l) => l.trim()).filter((l) => /denied|not permitted|requires approval|permission/i.test(l)).slice(0, 3);
+  for (const l of denied) emit({ kind: 'tool', text: '⛔ ' + short(l, 160) });
+  if (!roBefore) return;
+  let changes = [];
+  try { changes = tasks.diffSnapshots(roBefore, tasks.snapshotAll(agent)); } catch {}
+  if (!changes.length) return;
+  const list = changes.slice(0, 8).map((c) => (c.kind === 'add' ? '＋' : c.kind === 'del' ? '－' : '～') + c.path).join('、');
+  state.agyHold = state.agyHold || {};
+  state.agyHold[agent.id] = { at: Date.now(), files: changes.slice(0, 20).map((c) => c.kind + ':' + c.path) };
+  saveState();
+  emit({ kind: 'error', text: '🚨 ' + agent.name + ' 是唯讀成員，但這一輪之後資料夾裡有檔案被改了：' + list + '\n唯讀限制沒有擋住，已先暫停這位成員。請確認那些檔案，再到「⚙️ 設定」按儲存解除暫停（或改用可寫入的存取等級）。' });
+  hooks.emit('readonly-violation', { agent, changes });
 }
 
 // silent：任務被整個停止時，不再觸發任務的後續判斷
@@ -731,7 +832,7 @@ function stopRun(id, silent) {
 function interruptRun(id, text, via) {
   const run = runs.get(id);
   if (!run || !run.proc) return false;
-  if (run.interrupt) { run.interrupt.text += '\n' + text; return true; }
+  if (run.interrupt) { run.interrupt.text = (run.interrupt.text ? run.interrupt.text + '\n' : '') + text; return true; }
   run.interrupt = { text, via };
   proctree.killTree(run.proc);
   return true;
@@ -794,7 +895,7 @@ const harness = harnessLib.create({
 
 // ---------- 任務與工作流程（tasks.js）----------
 const tasks = taskLib.create({
-  CONFIG, AGENTS, agentById, DATA_DIR, hooks, broadcast, dispatch, cancelTask, accessText, harness,
+  CONFIG, AGENTS, agentById, DATA_DIR, hooks, broadcast, dispatch, cancelTask, accessText, urgentHint, harness,
   teams: () => CONFIG.teams, teamById,
 });
 tasks.writeWorkflowDocs();
@@ -985,7 +1086,8 @@ function usageSnapshot() {
 }
 
 // ---------- 成員設定（網頁上新增 / 編輯 / 刪除）----------
-const ENGINES = ['claude', 'codex'];
+const ENGINES = ['claude', 'codex', 'agy'];
+const AGY_ACCESS = ['read', 'write'];
 const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
 const PERMISSION_MODES = ['default', 'plan', 'acceptEdits', 'auto'];
 const SANDBOXES = ['read-only', 'workspace-write'];
@@ -1014,15 +1116,18 @@ function cleanAgent(input, existingId) {
       ['bypassPermissions', 'danger-full-access'].includes(input.sandbox)) throw new Error('Web/Telegram 禁止完整權限模式');
   const dup = AGENTS.find((x) => x.id !== existingId && x.name.toLowerCase() === a.name.toLowerCase());
   if (dup) throw new Error('已經有叫「' + a.name + '」的成員了');
-  if (!ENGINES.includes(a.engine)) throw new Error('引擎只能是 claude 或 codex');
+  if (!ENGINES.includes(a.engine)) throw new Error('引擎只能是 claude、codex 或 agy');
   if (!EFFORTS.includes(a.effort)) throw new Error('強度不正確');
   if (/[\s"'`$&|;<>]/.test(a.model)) throw new Error('模型名稱不能有空白或特殊符號');
   if (a.engine === 'claude') {
     a.permissionMode = PERMISSION_MODES.includes(input.permissionMode) ? input.permissionMode : 'auto';
+  } else if (a.engine === 'agy') {
+    a.agyAccess = AGY_ACCESS.includes(input.agyAccess) ? input.agyAccess : 'read';
   } else {
     a.sandbox = SANDBOXES.includes(input.sandbox) ? input.sandbox : 'workspace-write';
   }
   if (input.takeTurns) a.takeTurns = true;
+  if (typeof input.canInterrupt === 'boolean' && !input.standalone) a.canInterrupt = input.canInterrupt;
   if (Array.isArray(input.extraDirs)) {
     const seen = new Set();
     a.extraDirs = [];
@@ -1035,7 +1140,7 @@ function cleanAgent(input, existingId) {
       let st; try { st = fs.statSync(full); } catch { throw new Error('找不到這個資料夾：' + full); }
       if (!st.isDirectory()) throw new Error('這不是資料夾：' + full);
       security.assertAllowedDir(full, { mustExist: true });
-      if (a.engine === 'claude' && d.mode === 'ro') throw new Error('Claude --add-dir 無法強制唯讀；請使用 OS ACL 或唯讀副本');
+      if ((a.engine === 'claude' || (a.engine === 'agy' && a.agyAccess === 'write')) && d.mode === 'ro') throw new Error((a.engine === 'claude' ? 'Claude --add-dir' : 'agy 的可寫成員額外資料夾') + ' 無法強制唯讀；請使用 OS ACL 或唯讀副本（agy 的「唯讀」存取等級則所有資料夾都只讀）');
       if (seen.has(full.toLowerCase())) continue;
       seen.add(full.toLowerCase());
       a.extraDirs.push({ path: full, mode: d.mode === 'ro' ? 'ro' : 'rw' });
@@ -1177,7 +1282,7 @@ function readBody(req) {
 
 const publicAgent = (a) => ({
   id: a.id, name: a.name, avatar: a.avatar, engine: a.engine, model: a.model || '', effort: a.effort || '', role: a.role || '',
-  extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns, blocked: a.blocked || null,
+  extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns, canInterrupt: canUrgent(a), agyAccess: a.engine === 'agy' ? agy.access(a) : undefined, blocked: a.blocked || null,
   team: a.standalone ? null : a.team || null,
   standalone: !!a.standalone, tgPrefix: (a.telegram && a.telegram.prefix) || '', tgBot: !!(a.telegram && a.telegram.botToken),
   canHandoffTo: allowedTargets(a).map((t) => t.id),
@@ -1369,9 +1474,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/usage/refresh' && req.method === 'POST') { probeUsage(); return send(res, 200, { ok: true }); }
     if (p === '/api/config' && req.method === 'GET') {
       return send(res, 200, {
-        agents: CONFIG.agents.map(maskAgent), teams: CONFIG.teams.map((t) => ({ ...t, sharedWith: sharedWith(t) })), workflow: CONFIG.teams[0].workflow, maxRelayHops: maxHops(), approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
+        agents: CONFIG.agents.map(maskAgent), teams: CONFIG.teams.map((t) => ({ ...t, sharedWith: sharedWith(t) })), workflow: CONFIG.teams[0].workflow, maxRelayHops: maxHops(), urgentCooldownMin: urgentCooldownMs() / 60000, approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
         harness: harness.cfg(),
-        options: { engines: ENGINES, efforts: EFFORTS, permissionModes: PERMISSION_MODES, sandboxes: SANDBOXES },
+        options: { engines: ENGINES, efforts: EFFORTS, permissionModes: PERMISSION_MODES, sandboxes: SANDBOXES, agyAccess: AGY_ACCESS },
       });
     }
     if (p === '/api/agents' && req.method === 'POST') {
@@ -1407,6 +1512,7 @@ const server = http.createServer(async (req, res) => {
           dropSessions(a.id);
         }
         CONFIG.agents[idx] = a;
+        if (state.agyHold && state.agyHold[a.id]) { delete state.agyHold[a.id]; saveState(); } // 在設定按儲存＝確認過了，解除唯讀違規的暫停
         normalizeTeams();
       }
       saveConfig(); reloadAgents(); tasks.writeWorkflowDocs(); harness.docs(); agentsChanged(); pump();
@@ -1497,6 +1603,7 @@ const server = http.createServer(async (req, res) => {
       if (body.workflow && typeof body.workflow === 'object') team.workflow = taskLib.cleanWorkflow(body.workflow, teamMembers(team.id));
       const h = Math.round(Number(body.maxRelayHops));
       if (h >= 1 && h <= 50) CONFIG.maxRelayHops = h;
+      if (body.urgentCooldownMin !== undefined && body.urgentCooldownMin !== '') { const u = Math.round(Number(body.urgentCooldownMin)); if (u >= 0 && u <= 240) CONFIG.urgentCooldownMin = u; }
       if (typeof body.approveWritableHandoffs === 'boolean') team.approveWritableHandoffs = body.approveWritableHandoffs;
       if (body.harness && typeof body.harness === 'object') {
         const hc = CONFIG.harness = CONFIG.harness || {};
