@@ -1,5 +1,14 @@
 # 更新紀錄
 
+## v3.13.0（2026-11-18）
+- 🧰 **CLI 狀態頁**（左下「🧰 CLI 狀態」，只看不改）
+  - 🔑 登入：Claude Code、Codex、agy 各自有沒有安裝、版本、是否已登入（email 只顯示前兩個字）；沒登入時顯示要在 PowerShell 打的指令
+  - 🔌 MCP：每個 CLI 設定了哪些 MCP 與連線狀態（Claude 用 `claude mcp list`，會實際連線檢查；Codex 用 `codex mcp list` 或 config.toml），以及**每位成員實際用得到哪些**（最小權限成員只算允許清單裡的、排除清單會扣掉）
+  - 只跑不耗額度的查詢指令（`--version`、`mcp list`、`codex login status`），結果快取，按「🔄 重新檢查」才再跑
+  - 不顯示任何 MCP 的指令參數、網址或金鑰；不改任何 CLI 的設定檔（要新增 MCP 請用各 CLI 自己的 `mcp add`）
+  - 判斷方式：Claude 的登入看設定檔（不跑 `claude auth status`，舊版可能把它當成提示送出）；agy 沒有查登入的指令，用最近一次成員執行的結果判斷；agy 的 MCP 設定位置還沒實測確認
+- 新增 clistatus.js、tests/clistatus.test.js
+
 ## v3.12.2（2026-11-18）
 - 修正：左下「用量額度」的 agy 區塊，成員名字和用量黏在一起（例如「CoderNo20 輪」）
 

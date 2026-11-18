@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.12.2';
+const VERSION = '3.13.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -11,6 +11,7 @@ const EventEmitter = require('events');
 const hooks = new EventEmitter(); // 給 Telegram 等外掛監聽：user / done / task
 const taskLib = require('./tasks');
 const agy = require('./agy');
+const cliStatusLib = require('./clistatus');
 const harnessLib = require('./harness');
 const { createSecurity, inside, isProtectedEnvKey } = require('./security');
 
@@ -271,6 +272,7 @@ state.shifts = state.shifts || {}; // 換班：{ n: 第幾班, due: 下一輪前
 state.lastKey = state.lastKey || {}; // 每位成員最近一次用的是哪一段對話
 state.agyQuota = state.agyQuota || {}; // agy 額度用完：{ [成員 id]: { at, until, estimated, msg, notified: [已通知的派工者] } }
 state.agyUsage = state.agyUsage || {}; // agy 本週用量：{ [成員 id]: { week: 週一 0 點, runs, tokens, quotaHits, lastQuotaAt } }
+state.cliSeen = state.cliSeen || {}; // 🧰 每個 CLI 最近一次成員執行的結果：{ claude|codex|agy: { ok, at, login, err } }
 state.hdr = state.hdr || {};       // 開頭說明去重：每段對話最近完整送過的版本 { hash, n: 之後省略了幾輪, saved: 累計少送的字數 }
 state.pause = state.pause || {};   // ⏸ 專案暫停：範圍（'all' 或小組 id）→ { at, reason, mode, phase, restart: [被中途停下的工作], notes: 份數 }
 for (const k of Object.keys(state.pause)) if (state.pause[k].phase === 'pausing') state.pause[k].phase = 'paused'; // 重新啟動時正在跑的都已經停了
@@ -1014,6 +1016,7 @@ function startRun(agent, userText, opts = {}) {
       return;
     }
     run.exitCode = code;
+    if (!run.stopped) noteCliRun(agent, run, code);
     if (agent.engine === 'agy' && !run.stopped) agyAfter(agent, run, emit, code, roBefore);
     if (run.stopped) emit({ kind: 'error', text: '⏹ 已手動停止' });
     else if (code && !run.finished && !run.segments.some((s) => s.type === 'error')) {
@@ -1385,6 +1388,33 @@ function runQuiet(cmd, args, input, timeoutMs, onLine) {
     proc.stdin.on('error', () => {}); proc.stdin.end(input);
   });
 }
+// 執行一個查詢指令並收下全部輸出（🧰 CLI 狀態用；stdin 直接關閉，逾時連子程式一起關）
+function runCapture(cmd, args, { cwd, timeoutMs = 30000 } = {}) {
+  return new Promise((resolve) => {
+    const dir = cwd || path.join(DATA_DIR, 'probe'); try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+    const needShell = IS_WIN && !/\.exe$/i.test(cmd);
+    let proc;
+    try { proc = proctree.track(spawn(needShell && /\s/.test(cmd) ? '"' + cmd + '"' : cmd, args, { cwd: dir, shell: needShell, env: security.safeEnvironment(), windowsHide: true, ...proctree.groupOpts() })); }
+    catch (e) { return resolve({ code: null, out: '', err: e.message }); }
+    const outB = [], errB = []; let n = 0;
+    const timer = setTimeout(() => proctree.killTree(proc), timeoutMs);
+    proc.stdout.on('data', (c) => { if (n < 200000) { outB.push(c); n += c.length; } });
+    proc.stderr.on('data', (c) => { errB.push(c); });
+    const text = () => ({ out: decodeOutput(Buffer.concat(outB)), err: decodeOutput(Buffer.concat(errB)).slice(-4000) });
+    proc.on('error', (e) => { clearTimeout(timer); resolve({ code: null, out: text().out, err: e.message }); });
+    proc.on('close', (code) => { clearTimeout(timer); resolve({ code, ...text() }); });
+    proc.stdin.on('error', () => {}); proc.stdin.end();
+  });
+}
+// 每個 CLI 最近一次成員執行的結果（給 🧰 CLI 狀態判斷登入；agy 沒有查登入的指令，只能靠這個）
+function noteCliRun(agent, run, code) {
+  const errs = run.segments.filter((x) => x.type === 'error').map((x) => x.text).join('\n');
+  const err = errs + '\n' + decodeOutput(run.stderr);
+  const login = /auth|login|credential|sign.?in|unauthenticated|not logged in|401/i.test(err) && (!!code || !!errs);
+  state.cliSeen[agent.engine] = { ok: !code && !errs, at: Date.now(), login, err: !code && !errs ? '' : short(security.redact(errs || err, []).trim(), 160) };
+}
+const cliStatus = cliStatusLib.create({ getBin, run: runCapture, agents: () => AGENTS.filter((a) => !a.blocked), seen: () => state.cliSeen, broadcast: (e) => broadcast(e) });
+
 let probing = false;
 async function probeUsage() {
   if (probing) return; probing = true;
@@ -1793,6 +1823,8 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { records: readAudit(m0[1], Math.min(200, Number(url.searchParams.get('limit')) || 50)) });
     }
     if (p === '/api/usage' && req.method === 'GET') return send(res, 200, usageSnapshot());
+    if (p === '/api/clistatus' && req.method === 'GET') { const snap = cliStatus.snapshot(); if (!snap.at && !snap.running) { cliStatus.refresh().catch((e) => console.error('CLI 狀態檢查失敗：' + e.message)); snap.running = true; } return send(res, 200, snap); }
+    if (p === '/api/clistatus/refresh' && req.method === 'POST') { cliStatus.refresh().catch((e) => console.error('CLI 狀態檢查失敗：' + e.message)); return send(res, 200, { ok: true }); }
     if (p === '/api/usage/refresh' && req.method === 'POST') { probeUsage(); return send(res, 200, { ok: true }); }
     if (p === '/api/config' && req.method === 'GET') {
       return send(res, 200, {

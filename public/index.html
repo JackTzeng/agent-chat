@@ -105,6 +105,10 @@
   .usage .sub2 { grid-column: 2; color: var(--muted); font-size: 11px; }
   .usage .none { color: var(--muted); font-size: 11px; }
   @media (max-width: 760px) { .usage { display: none; } }
+  .cli-tabs { display: flex; gap: 6px; align-items: center; margin: 6px 0 10px; } .cli-tabs .spacer { flex: 1; } .cli-tabs small { color: var(--muted); }
+  .cli-body { max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; } .cli-ver { color: var(--muted); font-size: 12px; margin-left: 4px; }
+  .cli-chip { display: inline-block; padding: 1px 8px; margin: 2px 0; border: 1px solid var(--line); border-radius: 10px; font-size: 12px; }
+  .cli-tbl { width: 100%; border-collapse: collapse; font-size: 13px; } .cli-tbl th, .cli-tbl td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
   .av-img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
   .av-inline { display: inline-block; width: 22px; height: 22px; vertical-align: -5px; margin-right: 4px; }
   .empty .big .av-img { width: 64px; height: 64px; margin: 0 auto; }
@@ -348,7 +352,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.12.2'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.13.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1670,12 +1674,14 @@ function renderUsage() {
     block('Claude', USAGE && USAGE.claude) + block('Codex', USAGE && USAGE.codex) + agyBlock(USAGE && USAGE.agy) + tgLineHTML() +
     `<div class="tg-line" id="timerLine" title="定時叫成員做事，例如每小時檢查、每天早上整理">⏰ 排程${TIMER_BADGE ? ' <span class="hn-dot">' + TIMER_BADGE + '</span>' : ''}</div>` +
     `<div class="tg-line" id="updLine" title="檢查新版本、一鍵更新並重新啟動">⬆️ 更新／重新啟動${UPD_BADGE ? ' <span class="hn-dot">新</span>' : ''}</div>` +
+    '<div class="tg-line" id="cliLine" title="三個 CLI 的登入狀態、MCP 串接，以及每位成員用得到哪些 MCP（只看不改）">🧰 CLI 狀態</div>' +
     '<div class="tg-line" id="repLine" title="出問題時產生一個回報檔，帶給 Claude 排查">🐞 問題回報</div>' +
     '<div class="tg-line" id="logoutLine" title="登出這個瀏覽器；可以選擇登出所有裝置">🔒 登出</div>';
   $('tgLine').onclick = openTelegramForm;
   $('updLine').onclick = () => openUpdate();
   $('timerLine').onclick = () => openTimers();
   $('repLine').onclick = () => openReport();
+  $('cliLine').onclick = () => openCliStatus();
   $('logoutLine').onclick = openLogout;
   $('usageBtn').onclick = async () => {
     $('usageBtn').textContent = '查詢中…';
@@ -1877,6 +1883,7 @@ function connectEvents() {
     if (window.Office && ev.agentId !== '*') Office.event(ev);
     if (ev.kind === 'agents-changed') { refreshAgents(); loadWorkflow().then(() => current === ALL && updateTop()); return; }
     if (ev.kind === 'usage') { loadUsage(); return; }
+    if (ev.kind === 'clistatus') { if (CLI_OPEN && $('cli_close') && $('modalBg').classList.contains('open')) openCliStatus(CLI_TAB); return; }
     if (ev.kind === 'telegram') { loadTelegram(); return; }
     if (ev.kind === 'task') { loadTasks(); return; }
     if (ev.kind === 'harness' || ev.kind === 'harness-run') { loadHarness(ev.kind === 'harness-run'); return; }
@@ -1972,6 +1979,45 @@ function openResume(scope) {
   };
 }
 // ---------- 🐞 問題回報 ----------
+// ---------- 🧰 CLI 狀態（只看不改）----------
+let CLI_OPEN = false, CLI_TAB = 'login';
+const CLI_ICON = { ok: '✅', no: '❌', warn: '⚠️', unknown: '❔', fail: '❌', configured: '⚙️', off: '⏸' };
+async function openCliStatus(tab) {
+  CLI_TAB = tab || CLI_TAB; CLI_OPEN = true;
+  let S = { engines: [], members: [] };
+  try { S = await api('/api/clistatus'); } catch (e) { toast(e.message); }
+  const tabs = [['login', '🔑 登入'], ['mcp', '🔌 MCP']].map(([k, t]) => `<button data-ctab="${k}" class="${CLI_TAB === k ? 'primary' : ''}">${t}</button>`).join('');
+  const when = S.running ? '檢查中…（第一次可能要一分鐘，MCP 會實際連線檢查）' : S.at ? '上次檢查：' + fmtTime(S.at) : '還沒檢查過';
+  let body = '';
+  if (!S.engines.length) body = `<p class="help">${S.running ? '⏳ 檢查中，完成後會自動更新…' : '按「🔄 重新檢查」開始。'}</p>`;
+  else if (CLI_TAB === 'login') {
+    body = S.engines.map((e) => {
+      const l = e.login || {};
+      const st = !e.installed ? '❌ 找不到這個 CLI（沒安裝，或路徑沒設定）' : `${CLI_ICON[l.state] || '❔'} ${esc(l.detail || '無法判斷')}${l.email ? '｜' + esc(l.email) : ''}${l.org ? '｜' + esc(l.org) : ''}`;
+      const lr = l.lastRun ? `<small>最近一次成員執行：${l.lastRun.ok ? '✅ 正常' : '⚠️ ' + esc(l.lastRun.err || '失敗')}・${fmtTime(l.lastRun.at)}</small>` : '';
+      const help = e.installed && l.state !== 'ok' ? `<small>👉 ${esc(e.loginHelp)}</small>` : '';
+      return `<div class="hn-item"><div class="grow"><b>${esc(e.name)}</b> <span class="cli-ver">${e.version ? esc(e.version) : e.installed ? '版本不明' : ''}</span><div>${st}</div>${l.source ? ` <small>（依據：${esc(l.source)}）</small>` : ''}${lr}${help}</div></div>`;
+    }).join('') + '<p class="help">登入要在這台電腦的 PowerShell 做（網頁無法替你登入）；登入後按「🔄 重新檢查」。</p>';
+  } else {
+    const srv = (list) => list.length ? list.map((x) => `<span class="cli-chip" title="${esc(x.detail || '')}">${CLI_ICON[x.status] || '❔'} ${esc(x.name)}</span>`).join(' ') : '<small>（沒有設定 MCP）</small>';
+    body = S.engines.filter((e) => e.installed).map((e) => `<h3 style="margin:12px 0 4px;font-size:14px">${esc(e.name)}</h3>` + e.mcp.map((m) =>
+      `<div class="hn-item"><div class="grow">${m.cwd ? `<small>📁 ${esc(m.cwd)}</small>` : ''}<div>${m.unknown ? '❔ 無法判斷' : srv(m.servers)}</div><small>來源：${esc(m.source)}</small></div></div>`).join('')).join('') +
+      `<h3 style="margin:14px 0 4px;font-size:14px">每位成員實際用得到的 MCP</h3>
+      <table class="cli-tbl"><tr><th>成員</th><th>MCP</th><th>說明</th></tr>${S.members.map((m) => `<tr><td>${esc(m.name)} <span class="badge ${esc(m.engine)}">${esc(m.engine)}</span></td>
+        <td>${m.servers.length ? m.servers.map(esc).join('、') : '—'}</td><td><small>${esc(m.note || '')}</small></td></tr>`).join('')}</table>
+      <p class="help">✅ 連線正常　❌ 連不上　⚠️ 需要登入或核准　⚙️ 已設定（沒有連線檢查）　⏸ 已停用。<br>只看不改：要新增或修改 MCP，請在 PowerShell 用各 CLI 自己的指令（例如 <code>claude mcp add</code>、<code>codex mcp add</code>），改完按「🔄 重新檢查」。這裡不顯示任何指令參數、網址或金鑰。</p>`;
+  }
+  openModal(`<h2>🧰 CLI 狀態</h2>
+    <p class="lead">三個 CLI 的登入與 MCP 串接，以及每位成員實際用得到哪些 MCP。只用不耗額度的查詢指令，不會改任何設定。</p>
+    <div class="cli-tabs">${tabs}<span class="spacer"></span><small>${esc(when)}</small></div>
+    <div class="cli-body">${body}</div>
+    <div class="modal-actions"><span class="spacer"></span><button id="cli_close">關閉</button><button class="primary" id="cli_refresh" ${S.running ? 'disabled' : ''}>${S.running ? '檢查中…' : '🔄 重新檢查'}</button></div>`);
+  $('modal').classList.add('wide');
+  document.querySelectorAll('[data-ctab]').forEach((b) => (b.onclick = () => openCliStatus(b.dataset.ctab)));
+  $('cli_close').onclick = () => { CLI_OPEN = false; closeModal(); };
+  $('cli_refresh').onclick = async () => { $('cli_refresh').disabled = true; $('cli_refresh').textContent = '檢查中…'; try { await api('/api/clistatus/refresh', { method: 'POST' }); } catch (e) { toast(e.message); } };
+}
+
 async function openReport(preset) {
   let list = { reports: [], dir: '' };
   try { list = await api('/api/diag/reports'); } catch {}
