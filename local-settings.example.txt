@@ -14,5 +14,9 @@
 # HOST=0.0.0.0
 # ALLOWED_HOSTS=你的Tailscale-IP
 
+# Google agy 成員的額外參數（不能包含略過權限的參數）
+# AGY_READONLY_ARGS 是唯讀成員用的（預設 --mode plan --sandbox）；AGY_WRITE_ARGS 是可寫成員用的（預設不加）
+# AGY_WRITE_ARGS=--sandbox
+
 # 換連接埠（預設 3939；換了之後瀏覽器網址也要跟著換）
 # PORT=3939

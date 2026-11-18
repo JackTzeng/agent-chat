@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.12.0';
+const VERSION = '3.12.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -188,6 +188,16 @@ const prepAgent = (a) => {
     return { ...a, cwd: path.resolve(ROOT, 'workspace'), blocked: e.message };
   }
 };
+// agy 可寫成員的工作資料夾在 Agent Chat 程式資料夾裡面：它會執行指令，範圍限制還沒確認，可能動到程式本身與 agents.json
+function insideApp(dir) {
+  const rel = path.relative(ROOT, path.resolve(ROOT, String(dir || '')));
+  return !rel || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+function agyWriteRisk(a) {
+  if (!a || a.engine !== 'agy' || agy.access(a) !== 'write') return null;
+  const dirs = [a.cwd || './workspace', ...(a.extraDirs || []).filter((d) => d.mode !== 'ro').map((d) => d.path)].filter(insideApp);
+  return dirs.length ? '這位 agy 可寫成員會執行指令，而它的資料夾（' + dirs.join('、') + '）在 Agent Chat 程式資料夾（' + ROOT + '）裡面。agy 能不能被限制在資料夾內還沒確認，它可能動到 Agent Chat 本身或 agents.json。建議把工作資料夾改到 Agent Chat 外面（同小組成員一起改），或先改用 read 等級。' : null;
+}
 // AGENTS 是執行中使用的清單（cwd 已轉成完整路徑）；CONFIG.agents 是原始設定。
 // 修改時就地更新陣列，其他模組（Telegram）拿到的參照才會跟著變。
 const AGENTS = CONFIG.agents.map(prepAgent);
@@ -719,7 +729,7 @@ function buildCommand(agent, sid, prompt) {
     if (agent.model) args.push('--model', agent.model);
     if (agent.effort) args.push('--effort', agent.effort);
     // 唯讀（預設）：計畫模式＋終端機沙箱；可寫：agy 的預設模式（可以寫檔，也會真的執行指令；是否限制在工作資料夾內尚待實測）。永遠不使用 --dangerously-skip-permissions。
-    if (agy.access(agent) === 'read') args.push(...agy.readOnlyArgs());
+    args.push(...(agy.access(agent) === 'read' ? agy.readOnlyArgs() : agy.writeArgs()));
     for (const d of agent.extraDirs || []) args.push('--add-dir', d.path);
     if (sid) args.push('--conversation', sid);
     if (argMode) args.push('-p', prompt || '');
@@ -1594,7 +1604,7 @@ function readBody(req) {
 
 const publicAgent = (a) => ({
   id: a.id, name: a.name, avatar: a.avatar, engine: a.engine, model: a.model || '', effort: a.effort || '', role: a.role || '',
-  extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns, canInterrupt: canUrgent(a), rtk: !!a.rtk, rtkOn: rtkWanted(a) && !!(process.env.RTK_BIN || RTK.bin), agyAccess: a.engine === 'agy' ? agy.access(a) : undefined, agyOut: a.engine === 'agy' && agyQuotaHold(a) ? agyQuotaHold(a).until : null, blocked: a.blocked || null,
+  extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns, canInterrupt: canUrgent(a), rtk: !!a.rtk, rtkOn: rtkWanted(a) && !!(process.env.RTK_BIN || RTK.bin), agyAccess: a.engine === 'agy' ? agy.access(a) : undefined, agyRisk: agyWriteRisk(a), agyOut: a.engine === 'agy' && agyQuotaHold(a) ? agyQuotaHold(a).until : null, blocked: a.blocked || null,
   team: a.standalone ? null : a.team || null,
   standalone: !!a.standalone, tgPrefix: (a.telegram && a.telegram.prefix) || '', tgBot: !!(a.telegram && a.telegram.botToken),
   canHandoffTo: allowedTargets(a).map((t) => t.id),
@@ -1789,6 +1799,7 @@ const server = http.createServer(async (req, res) => {
         agents: CONFIG.agents.map(maskAgent), teams: CONFIG.teams.map((t) => ({ ...t, sharedWith: sharedWith(t) })), workflow: CONFIG.teams[0].workflow, maxRelayHops: maxHops(), urgentCooldownMin: urgentCooldownMs() / 60000, approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
         harness: harness.cfg(),
         options: { engines: ENGINES, efforts: EFFORTS, permissionModes: PERMISSION_MODES, sandboxes: SANDBOXES, agyAccess: AGY_ACCESS },
+        appRoot: ROOT,
       });
     }
     if (p === '/api/agents' && req.method === 'POST') {

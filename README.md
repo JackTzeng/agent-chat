@@ -426,7 +426,8 @@ Agent Chat 不內建它（不加 Python 相依），做法是裝在這台電腦�
 - 不使用 `--dangerously-skip-permissions`，也不提供這個選項
 - **唯讀保險**：`read` 成員每一輪結束後，系統會比對資料夾；只要有檔案被改，就會自動暫停這位成員、在網頁與 Telegram 通知你，到「⚙️ 設定」按儲存才解除
 - 提示詞用 stdin 傳給 agy（避免 Windows 引號問題）；如果你的 agy 版本不吃，在 `local-settings.txt` 加一行 `AGY_PROMPT_MODE=arg` 改用 `-p`（要直接執行 `agy.exe`）
-- 唯讀參數可用 `AGY_READONLY_ARGS` 換掉（預設 `--mode plan --sandbox`；不能包含略過權限的參數）；找不到指令時用 `AGY_BIN` 指定路徑
+- 唯讀參數可用 `AGY_READONLY_ARGS` 換掉（預設 `--mode plan --sandbox`）；可寫成員可用 `AGY_WRITE_ARGS` 加參數（預設不加，例如 `AGY_WRITE_ARGS=--sandbox`）；兩者都不能包含略過權限的參數。找不到指令時用 `AGY_BIN` 指定路徑
+- ⚠️ `write` 成員的工作資料夾在 Agent Chat 程式資料夾裡面（例如預設的 `./workspace`）時，成員卡片會警告：它會執行指令，可能動到 Agent Chat 本身。建議把**整個小組**的工作資料夾改到外面，例如 `C:\agent-workspace`，並在 `local-settings.txt` 加 `AGENT_ALLOWED_ROOTS=C:\agent-workspace`（改完「🔄 只重新啟動」），再到各成員設定改工作資料夾
 - ⚠️ Google 免費方案的資料可能被人工審閱；請自行確認送進去的內容可以交給 Google
 - **用量**：agy 不提供剩餘額度。左下「用量額度」的 agy 區塊是 Agent Chat 自己統計的本週（週一起）輪數與 tokens，Telegram `/usage` 也有
 - **🪫 額度用完**：agy 回報額度用完時，成員卡片顯示預計恢復時間（取自錯誤訊息，沒寫就先等 1 小時）。在那之前同事轉交、任務、排程不會交給它，派工的同事會收到通知請他改派；網頁與 Telegram 會通知你。你直接傳訊息給它會再試一次，成功就自動解除；到「⚙️ 設定」按儲存也能手動解除

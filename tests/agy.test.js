@@ -91,6 +91,12 @@ test('read-only args can be overridden but never skip permissions', () => {
   process.env.AGY_READONLY_ARGS = '--dangerously-skip-permissions';
   assert.throws(() => agy.readOnlyArgs(), /不能包含/);
   delete process.env.AGY_READONLY_ARGS;
+  assert.deepEqual(agy.writeArgs(), [], '可寫成員預設不加參數');
+  process.env.AGY_WRITE_ARGS = '--sandbox';
+  assert.deepEqual(agy.writeArgs(), ['--sandbox']);
+  process.env.AGY_WRITE_ARGS = '--always-proceed';
+  assert.throws(() => agy.writeArgs(), /AGY_WRITE_ARGS 不能包含/);
+  delete process.env.AGY_WRITE_ARGS;
   assert.equal(agy.access({}), 'read');
   assert.equal(agy.access({ agyAccess: 'write' }), 'write');
   assert.deepEqual(JSON.parse(agy.stdinMessage('你好\n世界')), { event: 'user', message: { content: '你好\n世界' } });
@@ -205,6 +211,8 @@ test('agy member through the real server: stdin prompt, resume, read-only args, 
   await api('/api/chat/gw', 'POST', { text: '寫個檔案' });
   await waitFor(() => calls().length === 3, 'gw call');
   assert.doesNotMatch(calls()[2], /--mode plan|--sandbox/);
+  assert.match((await agentOf('gw')).agyRisk || '', /Agent Chat 程式資料夾/, './workspace 在程式資料夾裡 → 警告');
+  assert.equal((await agentOf('gem')).agyRisk, null, '唯讀成員不警告');
   assert.match(calls()[2], /也可以執行指令/);
   assert.doesNotMatch(calls()[2], /不能執行指令/);
   await waitFor(async () => !(await agentOf('gw')).busy, 'gw idle');

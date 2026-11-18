@@ -348,7 +348,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.12.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.12.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -430,6 +430,7 @@ function agentCard(a, extraClass = '') {
         ${a.rtk ? `<div class="role" title="${a.rtkOn ? '這位 Claude 成員的指令輸出會經過 rtk 精簡' : '已勾選，但還沒找到 rtk（請先安裝），或這位成員不適用'}">🗜 rtk${a.rtkOn ? '' : '（未生效）'}</div>` : ''}
         ${a.extraDirs && a.extraDirs.length ? `<div class="role" title="${esc(a.extraDirs.map((d) => d.path + (d.mode === 'ro' ? '（唯讀）' : '（可讀寫）')).join('\n'))}">📁 +${a.extraDirs.length} 個資料夾</div>` : ''}
         ${a.blocked ? `<div class="role stall" title="${esc(a.blocked)}">⛔ 設定需修正，暫停使用</div>` : ''}
+        ${a.agyRisk ? `<div class="role stall" title="${esc(a.agyRisk)}">⚠️ 會執行指令，資料夾在 Agent Chat 裡</div>` : ''}
         ${a.agyOut && a.agyOut > Date.now() ? `<div class="role stall" title="同事轉交、任務、排程暫不交給它；你直接傳訊息會再試一次">🪫 額度用完 · 預計 ${esc(fmtTime(a.agyOut))} 恢復</div>` : ''}
         ${a.standalone ? `<div class="role" title="不進工作流程、不建立任務，訊息直接交給它處理">🧍 獨立成員${a.tgPrefix ? '｜Telegram ' + esc(a.tgPrefix) : ''}${a.tgBot ? '｜專屬 bot' : ''}</div>` : ''}
         ${a.paused ? `<div class="role stall" title="專案暫停中：同事轉交、任務交接、排程都先排隊；你直接傳給它的訊息照樣會處理">⏸ 專案暫停中</div>` : ''}
@@ -887,6 +888,7 @@ async function openAgentForm(id) {
       <div class="field">
         <label>權限</label>
         <select id="f_perm"></select>
+        <span class="help" id="f_permNote" style="color:var(--err)"></span>
       </div>
       <div class="field full agy-only" style="display:none">
         <span class="help">🔑 第一次使用前，要在這台電腦的 PowerShell 輸入 <code>agy</code>，用 Google 帳號登入一次。想看有哪些模型：<code>agy models</code>。<br>
@@ -1052,7 +1054,20 @@ async function openAgentForm(id) {
       : eng === 'agy' ? opts(CFG.options.agyAccess || ['read', 'write'], AGY_LABEL, a.agyAccess || 'read')
       : opts(CFG.options.sandboxes, SANDBOX_LABEL, a.sandbox || 'workspace-write');
     document.querySelectorAll('.agy-only').forEach((x) => (x.style.display = eng === 'agy' ? '' : 'none'));
+    syncPermNote();
   }
+  // agy 可寫：提醒它會執行指令；工作資料夾在 Agent Chat 程式資料夾裡面時特別警告
+  function syncPermNote() {
+    const el = $('f_permNote'); if (!el) return;
+    if (engineSel.value !== 'agy' || $('f_perm').value !== 'write') { el.textContent = ''; return; }
+    const cwd = ($('f_cwd') ? $('f_cwd').value : '').trim() || './workspace', root = String(CFG.appRoot || '');
+    const norm = (s) => s.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const inside = !/^([a-zA-Z]:)?[\\/]/.test(cwd) ? !/^\.\.([\\/]|$)/.test(cwd) : !!root && (norm(cwd) === norm(root) || norm(cwd).startsWith(norm(root) + '/'));
+    el.textContent = '⚠️ write 等級會真的執行指令，能不能限制在工作資料夾內還沒確認。' +
+      (inside ? '目前的工作資料夾在 Agent Chat 程式資料夾裡面，它可能動到 Agent Chat 本身；建議把工作資料夾改到 Agent Chat 外面，或先用 read。' : '');
+  }
+  $('f_perm').onchange = syncPermNote;
+  $('f_cwd').addEventListener('input', syncPermNote);
   syncEngine(false);
   const syncKind = () => {
     const sa = $('f_standalone').checked, cl = engineSel.value === 'claude';

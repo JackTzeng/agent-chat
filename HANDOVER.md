@@ -23,7 +23,8 @@
    - F：`--mode plan`（不加 `--sandbox`）能不能擋住 `run_command`。
    - 手動測試要用 `cmd /c "type x.json | agy ..."`（PowerShell 管線會加 BOM）。
    - 錯誤說法已在 v3.11.1 更正（`WRITE_NOTE`、`AGY_LABEL`、README、CHANGELOG 都改成「可以寫檔，也會執行指令」）。
-   - 定案後：必要時 write 等級加 `--sandbox`，比照 `AGY_READONLY_ARGS` 提供 `AGY_WRITE_ARGS` 覆寫，並更新說明。在那之前建議使用者不要建 write 等級的 agy 成員。
+   - v3.12.1 已加 `AGY_WRITE_ARGS`（預設空）與資料夾警告。定案後：決定 `agy.js` 的 `WRITE_DEFAULT` 是否改成 `['--sandbox']`，並更新說明。使用者的 CoderNo2 是 write 等級、工作資料夾在 `agent-chat-git\workspace`（程式資料夾內），建議搬出去。
+   - 測試做法：建 `C:\agy_ef\work`、`C:\agy_ef\outside`，同一個英文提示（node -v、資料夾內外寫檔、用 node -e 在內外寫檔）分別跑 E0（預設）、E1（--sandbox）、F1（--mode plan）、F2（--mode plan --sandbox），每組前清空、後列出建出的檔案，並從 stream-json 抽出 tool 步驟的 state 與 result 的 denied_actions。
 2. **rtk**：`winget install rtk-ai.rtk` 後勾一位 Claude 成員，請它跑 `git status`，用 🔍 診斷確認指令變成 `rtk git status` 且沒被擋。Windows 上 Claude 可能用 PowerShell 工具而不是 Bash → 目前 matcher 只有 `Bash`，若沒生效再評估加 `PowerShell`（rtk 有 issue #1319 在處理 PowerShell）。也要確認 `--settings` 的 hook 在他的 Claude Code 版本有載入。
 3. **開頭說明去重**：真實 CLI 下，成員在只收到「說明沒有變動」那一行時是否仍照守則與交接規則做事；看 📏 面板的數字。
 4. **暫停／重啟**：真實成員寫交班筆記、重啟接手是否順利；程式重新啟動（⬆️ 更新）後暫停狀態與排隊訊息是否保留。

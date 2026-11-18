@@ -11,12 +11,18 @@ const READ_ONLY_DEFAULT = ['--mode', 'plan', '--sandbox'];
 // 成員的存取等級：read＝只讀、給意見（預設）；write＝agy 預設模式：可以寫檔，也會真的執行指令（Windows 實測 run_command 結束碼 0）
 const access = (agent) => (agent.agyAccess === 'write' ? 'write' : 'read');
 // 唯讀要用的參數；可以用環境變數 AGY_READONLY_ARGS 換掉（例如 CLI 改版後參數名稱變了）
-function readOnlyArgs() {
-  const v = String(process.env.AGY_READONLY_ARGS || '').trim();
-  const args = v ? v.split(/\s+/) : READ_ONLY_DEFAULT;
-  if (args.some((a) => /dangerously|skip-permissions|always-proceed/i.test(a))) throw new Error('AGY_READONLY_ARGS 不能包含會略過權限的參數');
+const UNSAFE_RE = /dangerously|skip-permissions|always-proceed/i;
+function envArgs(name, def) {
+  const v = String(process.env[name] || '').trim();
+  const args = v ? v.split(/\s+/) : def;
+  if (args.some((a) => UNSAFE_RE.test(a))) throw new Error(name + ' 不能包含會略過權限的參數');
   return args;
 }
+function readOnlyArgs() { return envArgs('AGY_READONLY_ARGS', READ_ONLY_DEFAULT); }
+// 可寫成員額外加的參數（預設不加＝agy 預設模式）；E／F 實測後若 --sandbox 能把它關在工作資料夾內，
+// 在 local-settings.txt 加一行 AGY_WRITE_ARGS=--sandbox 就能套用，不用等新版
+const WRITE_DEFAULT = [];
+function writeArgs() { return envArgs('AGY_WRITE_ARGS', WRITE_DEFAULT); }
 
 const str = (v) => (typeof v === 'string' ? v : '');
 // 工具參數的名稱各版本不一定相同：依序找幾個常見的
@@ -128,4 +134,4 @@ function quotaReset(text, now = Date.now()) {
 }
 const quotaHit = (text) => QUOTA_RE.test(String(text || ''));
 
-module.exports = { access, readOnlyArgs, makeParser, describeTool, stdinMessage, mergeDelta, quotaHit, quotaReset, READ_ONLY_NOTE, WRITE_NOTE, READ_ONLY_DEFAULT };
+module.exports = { access, readOnlyArgs, writeArgs, makeParser, describeTool, stdinMessage, mergeDelta, quotaHit, quotaReset, READ_ONLY_NOTE, WRITE_NOTE, READ_ONLY_DEFAULT };
