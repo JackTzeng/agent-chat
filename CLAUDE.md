@@ -2,6 +2,8 @@
 
 本機執行的 Node.js 網頁介面（零相依套件），在背後呼叫 Claude Code、Codex、Google Antigravity（agy）三種 CLI，讓多位成員分工、互相 @、走工作流程，並可用 Telegram 遙控。使用者用**繁體中文**溝通，主要環境是 **Windows**（PowerShell）。回覆與 UI 文字請用繁體中文。
 
+**接手時先讀 `HANDOVER.md`**：最近一段升級（v3.8～v3.11）的狀態、哪些還沒在 Windows 實測、設計地雷與使用者偏好。
+
 ## 檔案地圖
 - `server.js` 後端：啟動 CLI、解析輸出、SSE 推送、API；`tasks.js` 工作流程；`harness.js` 守則／檢查／預算／記憶；`timers.js` 排程；`telegram.js` 遙控
 - `rtkhook.js` rtk 的 Claude hook 外層（只採用改寫、拿掉自動核准；由 `--settings` 檔呼叫，server.js 不 require 它）
