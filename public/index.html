@@ -348,7 +348,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.11.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.11.2'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -775,6 +775,12 @@ const AGY_LABEL = {
   write: 'write：可以建立與修改檔案，也會執行指令（⚠️ 範圍是否限在工作資料夾還沒確認）',
 };
 const CUSTOM = '__custom';
+// Harness 守則面板的常用範本：只填進輸入框，使用者確認後按「新增」才會變成守則
+const GUIDE_TEMPLATES = [
+  { name: '📄 附件先轉 Markdown（markitdown）',
+    text: '收到 PDF／Word／Excel／PowerPoint 附件時，先執行 markitdown "檔名" -o "檔名.md" 轉成 Markdown，再讀轉出來的 .md；表格、數字以原檔為準，轉檔結果有疑問時說明並回頭核對原檔。',
+    note: '要先在這台電腦安裝：pip install "markitdown[all]"。只有能執行指令的成員做得到（Claude 的 auto、Codex 的 workspace-write、agy 的 write）；唯讀成員請把範圍設給負責轉檔的人。' },
+];
 const EFFORT_LABEL = { '': '預設', low: 'low：最快', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max：最強、最慢' };
 const PERM_LABEL = {
   default: 'default：只做允許清單裡的事，其他一律拒絕（獨立成員建議）',
@@ -1478,7 +1484,9 @@ async function openHarness(tab) {
       <div class="hn-list">${H.guides.length ? H.guides.map((g) => `
       <div class="hn-item ${g.off ? 'off' : ''}" data-g="${g.id}"><div class="grow">${g.pinned ? '📌 ' : ''}${esc(g.text)}<small>${g.off ? '⏸ 已停用｜' : ''}${g.source === 'lesson' ? '來自成員的經驗' : g.source === 'feedback' ? '來自你的退回意見' : '你新增的'}｜${fmtTime(g.createdAt)}</small></div>
         <div class="acts">${scopeSel(g.scope || 'all', 'data-gscope title="適用範圍"')}<button data-gpin title="${g.pinned ? '取消必讀' : '設為必讀（優先放進提示詞）'}">${g.pinned ? '📌' : '📍'}</button><button data-goff title="${g.off ? '恢復' : '暫停使用（保留但不告訴成員）'}">${g.off ? '▶️' : '⏸'}</button><button data-gedit>✏️</button><button data-gdel>🗑</button></div></div>`).join('') : '<p class="help">還沒有守則。可以自己新增，或核准成員提出的建議。</p>'}</div>
-      <div class="hn-add"><input id="hn_gtext" maxlength="300" placeholder="新增守則，例如：改程式前先讀 PLAN.md；報表日期一律用 YYYY/MM/DD">${scopeSel(TEAM_SEL ? 'team:' + TEAM_SEL : 'all', 'id="hn_gscope"')}<button class="primary" id="hn_gadd">新增</button></div>`;
+      <div class="hn-add"><input id="hn_gtext" maxlength="300" placeholder="新增守則，例如：改程式前先讀 PLAN.md；報表日期一律用 YYYY/MM/DD">${scopeSel(TEAM_SEL ? 'team:' + TEAM_SEL : 'all', 'id="hn_gscope"')}<button class="primary" id="hn_gadd">新增</button></div>
+      <div class="hn-add"><select id="hn_gtpl"><option value="">📋 常用守則範本（選了先填進上面，確認後再按新增）</option>${GUIDE_TEMPLATES.map((t, i) => `<option value="${i}">${esc(t.name)}</option>`).join('')}</select></div>
+      <p class="help" id="hn_gtplnote"></p>`;
   } else if (hnTab === 'memory') {
     const KIND = { decision: '決策', result: '任務成果', note: '備註' };
     body = `<p class="help">模型本身不記得上次做了什麼；這裡保存跨任務的決策與成果，每一輪附上同一小組最近 10 筆，完整內容在工作資料夾的 MEMORY.md（只有同小組的紀錄）。成員寫的記憶只當參考，不會被當成指令。</p>
@@ -1533,6 +1541,7 @@ async function openHarness(tab) {
   document.querySelectorAll('[data-m]').forEach((el) => {
     el.querySelector('[data-mdel]').onclick = () => { if (confirm('刪除這筆記憶？')) act('/api/harness/memory/' + el.dataset.m, 'DELETE'); };
   });
+  if ($('hn_gtpl')) $('hn_gtpl').onchange = (e) => { const t = GUIDE_TEMPLATES[e.target.value]; if (!t) return; $('hn_gtext').value = t.text; $('hn_gtplnote').textContent = t.note || ''; $('hn_gtext').focus(); };
   if ($('hn_gadd')) $('hn_gadd').onclick = () => { const v = $('hn_gtext').value.trim(); if (v) act('/api/harness/guides', 'POST', { text: v, scope: $('hn_gscope').value }); };
   if ($('hn_madd')) $('hn_madd').onclick = () => { const v = $('hn_mtext').value.trim(); if (v) act('/api/harness/memory', 'POST', { text: v }); };
 }

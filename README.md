@@ -319,6 +319,23 @@ Agent = Model + Harness。模型是大腦，Harness 是圍繞模型的執行系�
 - 獨立成員、有限制工具的成員不使用；Codex、agy 成員不適用
 - 如果你之前跑過 `rtk init -g`，你自己的 Claude Code 也會被壓縮，面板會提醒你
 
+### 📄 附件先轉 Markdown（markitdown，選用）
+
+[markitdown](https://github.com/microsoft/markitdown)（Microsoft，MIT）把 PDF、Word、Excel、PowerPoint 轉成 Markdown。成員直接讀 PDF／Office 檔常常讀不全或很耗 token，先轉成 Markdown 比較省也比較準，適合 GMP 文件、規格書、報表。
+
+Agent Chat 不內建它（不加 Python 相依），做法是裝在這台電腦，再用一條守則請成員自己轉：
+
+1. 安裝（需要 Python 3.10 以上）：PowerShell 執行 `pip install "markitdown[all]"`，再執行 `markitdown --help` 確認找得到
+2. 「🧭 Harness → 守則」最下方的「📋 常用守則範本」選「📄 附件先轉 Markdown」，內容會填進輸入框；選好適用範圍後按「新增」
+3. 守則內容（也可以自己改）：
+   > 收到 PDF／Word／Excel／PowerPoint 附件時，先執行 markitdown "檔名" -o "檔名.md" 轉成 Markdown，再讀轉出來的 .md；表格、數字以原檔為準，轉檔結果有疑問時說明並回頭核對原檔。
+
+注意：
+- 轉檔要執行指令，只有能執行指令的成員做得到（Claude `auto`、Codex `workspace-write`、agy `write`）。Claude `acceptEdits`／`plan`、agy `read` 的成員做不到；請把守則的範圍設給負責轉檔的成員，讓他轉好再交給其他人
+- 有「限制工具」的 Claude 成員，要在允許清單加上 `Bash(markitdown:*)`
+- 掃描成圖片的 PDF 沒有文字可轉（markitdown 不做 OCR），轉出來會是空的或很少字
+- 轉檔結果是給 AI 讀的輔助；正式的數字、簽核內容仍以原始文件為準
+
 ### ⏸ 暫停／▶ 重啟專案（v3.10）
 
 側邊欄最上方的「⏸ 暫停專案」（Telegram：`/pause 原因`、`/pausenow`、`/resume 指示`）：
