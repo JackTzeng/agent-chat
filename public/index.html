@@ -243,6 +243,12 @@
   /* Telegram */
   .tg-line { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); cursor: pointer; display: flex; gap: 6px; align-items: center; }
   .tg-line:hover { color: var(--accent); }
+  .usage .utoggle { cursor: pointer; user-select: none; } .usage .utoggle:hover { color: var(--accent); }
+  .usage .umini { display: flex; gap: 6px; align-items: baseline; margin: 3px 0; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+  .usage .umini b { color: var(--text, inherit); min-width: 46px; font-weight: 600; }
+  .usage .umini .warn { color: #c98a12; font-weight: 600; } .usage .umini .crit { color: var(--err); font-weight: 600; }
+  .usage .ulinks { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+  .usage .ulink { cursor: pointer; padding: 3px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .usage .ulink:hover { color: var(--accent); }
   .tg-dot { width: 8px; height: 8px; border-radius: 50%; background: #9aa39a; flex: none; }
   .tg-dot.connected { background: #4f9a6b; } .tg-dot.error { background: var(--err); } .tg-dot.connecting { background: #e2a72e; }
   .tg-step { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
@@ -352,7 +358,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.13.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.13.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1655,6 +1661,9 @@ function agyBlock(list) {
   }
   return h + '<div class="none">agy 不提供剩餘額度，這裡是 Agent Chat 自己統計的</div>';
 }
+// 用量額度展開／收合：記在這台瀏覽器（讀不到就預設展開）
+function usageOpen() { try { return localStorage.getItem('agentchat.usageOpen') !== '0'; } catch { return true; } }
+function setUsageOpen(v) { try { localStorage.setItem('agentchat.usageOpen', v ? '1' : '0'); } catch {} }
 function renderUsage() {
   const el = $('usage'); if (!el) return;
   const block = (title, u) => {
@@ -1670,13 +1679,32 @@ function renderUsage() {
     }
     return h;
   };
-  el.innerHTML = `<div class="uh">用量額度<button id="usageBtn" title="送出一個極小的請求，取得最新額度">${USAGE && USAGE.probing ? '查詢中…' : '🔄 查詢'}</button></div>` +
-    block('Claude', USAGE && USAGE.claude) + block('Codex', USAGE && USAGE.codex) + agyBlock(USAGE && USAGE.agy) + tgLineHTML() +
-    `<div class="tg-line" id="timerLine" title="定時叫成員做事，例如每小時檢查、每天早上整理">⏰ 排程${TIMER_BADGE ? ' <span class="hn-dot">' + TIMER_BADGE + '</span>' : ''}</div>` +
-    `<div class="tg-line" id="updLine" title="檢查新版本、一鍵更新並重新啟動">⬆️ 更新／重新啟動${UPD_BADGE ? ' <span class="hn-dot">新</span>' : ''}</div>` +
-    '<div class="tg-line" id="cliLine" title="三個 CLI 的登入狀態、MCP 串接，以及每位成員用得到哪些 MCP（只看不改）">🧰 CLI 狀態</div>' +
-    '<div class="tg-line" id="repLine" title="出問題時產生一個回報檔，帶給 Claude 排查">🐞 問題回報</div>' +
-    '<div class="tg-line" id="logoutLine" title="登出這個瀏覽器；可以選擇登出所有裝置">🔒 登出</div>';
+  // 收合時每家只留一行摘要（剩餘 %），省出空間給成員列表
+  const mini = (title, u) => {
+    const wins = Object.entries((u && u.windows) || {}).sort(([a], [b]) => (a === '5h' ? -1 : b === '5h' ? 1 : a.localeCompare(b)));
+    if (!wins.length) return '';
+    const parts = wins.map(([k, w]) => {
+      const reset = w.resetsAt && w.resetsAt * 1000 < Date.now(), left = Math.round(100 - (reset ? 0 : Math.min(100, Math.max(0, w.pct))));
+      return `<span class="${left <= 10 ? 'crit' : left <= 30 ? 'warn' : ''}" title="${esc(WIN_LABEL[k] || k)}${w.resetsAt && !reset ? '・' + esc(fmtReset(w.resetsAt)) : ''}">${esc(k === '5h' ? '5h' : k === 'week' ? '週' : WIN_LABEL[k] || k)} ${left}%</span>`;
+    });
+    return `<div class="umini"><b>${title}</b>${parts.join('・')}</div>`;
+  };
+  const agyMini = (list) => {
+    if (!list || !list.length) return '';
+    const out = list.filter((a) => a.out && a.out.until > Date.now());
+    return `<div class="umini"><b>agy</b>${out.length ? `<span class="crit">🪫 ${esc(out.map((a) => a.name).join('、'))} 額度用完</span>` : '本週 ' + list.reduce((n, a) => n + a.runs, 0) + ' 輪'}</div>`;
+  };
+  const open = usageOpen();
+  el.innerHTML = `<div class="uh"><span class="utoggle" id="usageToggle" title="${open ? '收合' : '展開'}用量額度">${open ? '▾' : '▸'} 用量額度</span><button id="usageBtn" title="送出一個極小的請求，取得最新額度">${USAGE && USAGE.probing ? '查詢中…' : '🔄 查詢'}</button></div>` +
+    (open ? block('Claude', USAGE && USAGE.claude) + block('Codex', USAGE && USAGE.codex) + agyBlock(USAGE && USAGE.agy)
+      : mini('Claude', USAGE && USAGE.claude) + mini('Codex', USAGE && USAGE.codex) + agyMini(USAGE && USAGE.agy)) + tgLineHTML() +
+    '<div class="ulinks">' +
+    `<div class="ulink" id="timerLine" title="定時叫成員做事，例如每小時檢查、每天早上整理">⏰ 排程${TIMER_BADGE ? ' <span class="hn-dot">' + TIMER_BADGE + '</span>' : ''}</div>` +
+    `<div class="ulink" id="updLine" title="檢查新版本、一鍵更新並重新啟動">⬆️ 更新${UPD_BADGE ? ' <span class="hn-dot">新</span>' : ''}</div>` +
+    '<div class="ulink" id="cliLine" title="三個 CLI 的登入狀態、MCP 串接，以及每位成員用得到哪些 MCP（只看不改）">🧰 CLI 狀態</div>' +
+    '<div class="ulink" id="repLine" title="出問題時產生一個回報檔，帶給 Claude 排查">🐞 問題回報</div>' +
+    '<div class="ulink" id="logoutLine" title="登出這個瀏覽器；可以選擇登出所有裝置">🔒 登出</div></div>';
+  $('usageToggle').onclick = () => { setUsageOpen(!usageOpen()); renderUsage(); };
   $('tgLine').onclick = openTelegramForm;
   $('updLine').onclick = () => openUpdate();
   $('timerLine').onclick = () => openTimers();
