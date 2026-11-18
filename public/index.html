@@ -348,7 +348,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.11.2'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.12.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -430,6 +430,7 @@ function agentCard(a, extraClass = '') {
         ${a.rtk ? `<div class="role" title="${a.rtkOn ? '這位 Claude 成員的指令輸出會經過 rtk 精簡' : '已勾選，但還沒找到 rtk（請先安裝），或這位成員不適用'}">🗜 rtk${a.rtkOn ? '' : '（未生效）'}</div>` : ''}
         ${a.extraDirs && a.extraDirs.length ? `<div class="role" title="${esc(a.extraDirs.map((d) => d.path + (d.mode === 'ro' ? '（唯讀）' : '（可讀寫）')).join('\n'))}">📁 +${a.extraDirs.length} 個資料夾</div>` : ''}
         ${a.blocked ? `<div class="role stall" title="${esc(a.blocked)}">⛔ 設定需修正，暫停使用</div>` : ''}
+        ${a.agyOut && a.agyOut > Date.now() ? `<div class="role stall" title="同事轉交、任務、排程暫不交給它；你直接傳訊息會再試一次">🪫 額度用完 · 預計 ${esc(fmtTime(a.agyOut))} 恢復</div>` : ''}
         ${a.standalone ? `<div class="role" title="不進工作流程、不建立任務，訊息直接交給它處理">🧍 獨立成員${a.tgPrefix ? '｜Telegram ' + esc(a.tgPrefix) : ''}${a.tgBot ? '｜專屬 bot' : ''}</div>` : ''}
         ${a.paused ? `<div class="role stall" title="專案暫停中：同事轉交、任務交接、排程都先排隊；你直接傳給它的訊息照樣會處理">⏸ 專案暫停中</div>` : ''}
         ${a.shifting ? '<div class="role">🔄 換班中：正在寫交班筆記</div>' : a.busy && a.runningSince ? `<div class="role ${a.stalled ? 'stall' : ''}">${a.stalled ? '⚠️ 可能卡住 · ' : '⏱ '}工作中 ${esc(ago(a.runningSince))}</div>` : ''}
@@ -1623,6 +1624,18 @@ function fmtReset(sec) {
   const d = new Date(sec * 1000), p = (n) => String(n).padStart(2, '0');
   return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ' 重置';
 }
+// agy 沒有剩餘額度可查：只顯示本週（週一起）各成員用了幾輪、多少 tokens，以及額度用完的狀態
+function agyBlock(list) {
+  if (!list || !list.length) return '';
+  let h = '<div class="eng">agy<small>本週用量（週一起）</small></div>';
+  for (const a of list) {
+    const out = a.out && a.out.until > Date.now();
+    h += `<div class="win"><span title="${esc(a.model)}">${esc(a.name)}</span><span>${a.runs} 輪 · ${fmtTok(a.tokens)} tokens</span>
+      <span class="sub2">${out ? `<b style="color:var(--err)" title="${esc(a.out.msg || '')}">🪫 額度用完 · 預計 ${esc(fmtTime(a.out.until))}${a.out.estimated ? '（推估）' : ''} 恢復</b>`
+        : a.lastQuotaAt ? '上次用完：' + esc(fmtTime(a.lastQuotaAt)) + (a.quotaHits ? `（本週 ${a.quotaHits} 次）` : '') : '本週還沒用完過'}</span></div>`;
+  }
+  return h + '<div class="none">agy 不提供剩餘額度，這裡是 Agent Chat 自己統計的</div>';
+}
 function renderUsage() {
   const el = $('usage'); if (!el) return;
   const block = (title, u) => {
@@ -1639,7 +1652,7 @@ function renderUsage() {
     return h;
   };
   el.innerHTML = `<div class="uh">用量額度<button id="usageBtn" title="送出一個極小的請求，取得最新額度">${USAGE && USAGE.probing ? '查詢中…' : '🔄 查詢'}</button></div>` +
-    block('Claude', USAGE && USAGE.claude) + block('Codex', USAGE && USAGE.codex) + tgLineHTML() +
+    block('Claude', USAGE && USAGE.claude) + block('Codex', USAGE && USAGE.codex) + agyBlock(USAGE && USAGE.agy) + tgLineHTML() +
     `<div class="tg-line" id="timerLine" title="定時叫成員做事，例如每小時檢查、每天早上整理">⏰ 排程${TIMER_BADGE ? ' <span class="hn-dot">' + TIMER_BADGE + '</span>' : ''}</div>` +
     `<div class="tg-line" id="updLine" title="檢查新版本、一鍵更新並重新啟動">⬆️ 更新／重新啟動${UPD_BADGE ? ' <span class="hn-dot">新</span>' : ''}</div>` +
     '<div class="tg-line" id="repLine" title="出問題時產生一個回報檔，帶給 Claude 排查">🐞 問題回報</div>' +

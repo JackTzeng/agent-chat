@@ -108,6 +108,15 @@ let inp = ''; process.stdin.on('data', (d) => (inp += d)).on('end', () => {
   const ci = args.indexOf('--conversation');
   const conv = ci >= 0 ? args[ci + 1] : 'conv-' + process.pid;
   o({ event: 'init', conversation_id: conv, init: { model: 'gemini-4-argon-high', permission_mode: 'request-review', cwd: process.cwd(), tools: [] } });
+  if (prompt.includes('QUOTA')) {
+    o({ event: 'result', result: { conversation_id: conv, status: 'ERROR', error: 'RESOURCE_EXHAUSTED: You have exhausted your quota. Please retry in 2h30m.', num_turns: 0 } });
+    process.exit(1);
+  }
+  if (prompt.includes('MENTION')) {
+    o({ event: 'step_update', step_update: { conversation_id: conv, step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: '@gw 請修正 R19' } });
+    o({ event: 'result', result: { conversation_id: conv, status: 'SUCCESS', response: '', num_turns: 1, usage: { total_tokens: 15 } } });
+    return;
+  }
   if (prompt.includes('SNEAKY')) fs.writeFileSync(path.join(process.cwd(), 'oops.txt'), 'changed by a read-only member');
   o({ event: 'step_update', step_update: { conversation_id: conv, step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: '審查意見：' } });
   o({ event: 'step_update', step_update: { conversation_id: conv, step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: '沒有問題' } });
@@ -115,6 +124,20 @@ let inp = ''; process.stdin.on('data', (d) => (inp += d)).on('end', () => {
   o({ event: 'result', result: { conversation_id: conv, status: 'SUCCESS', response: '', duration_seconds: 1.5, num_turns: 1, usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } });
 });
 `;
+test('quota: detect exhausted errors and parse the reset time', () => {
+  const now = Date.UTC(2026, 10, 18, 10, 0, 0);
+  assert.ok(agy.quotaHit('RESOURCE_EXHAUSTED: quota exceeded'));
+  assert.ok(agy.quotaHit('HTTP 429 Too Many Requests'));
+  assert.ok(agy.quotaHit('You have reached your usage limit'));
+  assert.ok(!agy.quotaHit('invalid model selection'));
+  assert.ok(!agy.quotaHit('Command exited with code 1'));
+  assert.equal(agy.quotaReset('quota exhausted, retry in 2h30m', now), now + 2.5 * 3600000);
+  assert.equal(agy.quotaReset('Usage limit reached. Resets in 3 hours.', now), now + 3 * 3600000);
+  assert.equal(agy.quotaReset('{"retryDelay": "3600s"}', now), now + 3600000);
+  assert.equal(agy.quotaReset('quota resets at 2026-11-19T00:00:00Z', now), Date.UTC(2026, 10, 19));
+  assert.equal(agy.quotaReset('quota exceeded', now), null);
+});
+
 async function freePort() {
   return new Promise((resolve, reject) => {
     const s = net.createServer(); s.once('error', reject);
@@ -201,4 +224,37 @@ test('agy member through the real server: stdin prompt, resume, read-only args, 
   fs.rmSync(path.join(dir, 'workspace', 'oops.txt'), { force: true });
   await api('/api/chat/gem', 'POST', { text: '恢復了' });
   await waitFor(() => calls().length === n + 1, 'resumed after save');
+  await waitFor(async () => !(await agentOf('gem')).busy, 'gem idle 4');
+
+  // 4) 額度用完：成員卡片與用量面板顯示、恢復時間取自錯誤訊息
+  await api('/api/chat/gw', 'POST', { text: 'QUOTA 測試' });
+  await waitFor(async () => (await lastReply('gw')).includes('額度用完'), 'quota noticed');
+  await waitFor(async () => !(await agentOf('gw')).busy, 'gw idle 2');
+  const out = (await agentOf('gw')).agyOut;
+  assert.ok(out > Date.now() + 2 * 3600000 && out < Date.now() + 3 * 3600000, '預計恢復時間 ≈ 2 小時 30 分後');
+  let u = (await api('/api/usage')).agy.find((x) => x.id === 'gw');
+  assert.equal(u.quotaHits, 1); assert.ok(u.runs >= 2); assert.ok(u.out && !u.out.estimated);
+  assert.ok((await api('/api/usage')).agy.find((x) => x.id === 'gem').tokens > 0, '本週 tokens 有累計');
+
+  // 5) 同事派工給額度用完的成員：不呼叫 agy、退回並通知派工的人（同一段期間只通知一次）
+  const m = calls().length;
+  await api('/api/chat/gem', 'POST', { text: 'MENTION 派工' });
+  await waitFor(async () => /額度用完/.test(await lastReply('gw')), 'bounced');
+  await waitFor(() => calls().length === m + 2, 'sender notified');
+  assert.match(calls()[m + 1], /【系統通知】gw 的 agy 額度用完了/);
+  assert.match(calls()[m + 1], /請改派給其他成員/);
+  assert.ok(!calls().slice(m).some((c) => c.includes('@gw 請修正 R19\n') && !c.includes('系統通知')), 'gw 沒有被呼叫');
+  await waitFor(async () => !(await agentOf('gem')).busy, 'gem idle 5');
+  await api('/api/chat/gem', 'POST', { text: 'MENTION 再派一次' });
+  await waitFor(() => calls().length === m + 3, 'second mention');
+  await sleep(500);
+  assert.equal(calls().length, m + 3, '第二次退回不再通知（避免來回）');
+
+  // 6) 你直接傳訊息：照樣試，成功就自動解除
+  await waitFor(async () => !(await agentOf('gw')).busy && !(await agentOf('gem')).busy, 'idle before retry');
+  await api('/api/chat/gw', 'POST', { text: '額度好了嗎' });
+  await waitFor(async () => (await lastReply('gw')).includes('額度恢復了'), 'quota cleared');
+  assert.equal((await agentOf('gw')).agyOut, null);
+  u = (await api('/api/usage')).agy.find((x) => x.id === 'gw');
+  assert.equal(u.out, null); assert.equal(u.quotaHits, 1);
 });

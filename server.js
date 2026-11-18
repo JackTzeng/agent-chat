@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.11.2';
+const VERSION = '3.12.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -259,6 +259,8 @@ const saveState = () => {
 state.ctx = state.ctx || {};       // 每段對話（session）目前大約用了多少 context：{ tokens, window, at }
 state.shifts = state.shifts || {}; // 換班：{ n: 第幾班, due: 下一輪前要換班, note: 交班筆記, pendingNote: 新的一班還沒讀到筆記 }
 state.lastKey = state.lastKey || {}; // 每位成員最近一次用的是哪一段對話
+state.agyQuota = state.agyQuota || {}; // agy 額度用完：{ [成員 id]: { at, until, estimated, msg, notified: [已通知的派工者] } }
+state.agyUsage = state.agyUsage || {}; // agy 本週用量：{ [成員 id]: { week: 週一 0 點, runs, tokens, quotaHits, lastQuotaAt } }
 state.hdr = state.hdr || {};       // 開頭說明去重：每段對話最近完整送過的版本 { hash, n: 之後省略了幾輪, saved: 累計少送的字數 }
 state.pause = state.pause || {};   // ⏸ 專案暫停：範圍（'all' 或小組 id）→ { at, reason, mode, phase, restart: [被中途停下的工作], notes: 份數 }
 for (const k of Object.keys(state.pause)) if (state.pause[k].phase === 'pausing') state.pause[k].phase = 'paused'; // 重新啟動時正在跑的都已經停了
@@ -838,6 +840,12 @@ function startRun(agent, userText, opts = {}) {
   const hops = opts.hops || 0;
   const prompt = buildPrompt(agent, userText, opts);
   if (!blocked && agent.engine === 'agy' && state.agyHold && state.agyHold[agent.id]) blocked = '唯讀限制沒有擋住（上一輪有檔案被改），已暫停這位成員';
+  // 🪫 agy 額度用完：同事轉交、任務、排程直接退回（不浪費一次呼叫）；你自己直接傳的訊息照樣試，成功就自動解除
+  let quotaStop = null;
+  if (!blocked && agent.engine === 'agy' && !userDirect(opts)) {
+    const q = agyQuotaHold(agent);
+    if (q) { quotaStop = '🪫 ' + agent.name + ' 的 agy 額度用完了，預計 ' + fmtUntil(q) + ' 恢復，這則沒有執行。'; blocked = quotaStop; }
+  }
   if (!blocked) {
     try { ({ cmd, args, stdinPrompt } = buildCommand(agent, sid, prompt)); } catch (e) { blocked = e.message; }
   }
@@ -848,7 +856,7 @@ function startRun(agent, userText, opts = {}) {
   broadcast({ agentId: agent.id, kind: 'user', text: shownText, ...meta });
   hooks.emit('user', { agent, text: userText, from: opts.from, via: opts.via });
 
-  const run = { segments: [], calls: [], meta: '', finished: false, stderr: Buffer.alloc(0), cwd: agent.cwd, opts, takeTurns: !!agent.takeTurns && !agent.standalone, team: agent.team || null,
+  const run = { userText, segments: [], calls: [], meta: '', finished: false, stderr: Buffer.alloc(0), cwd: agent.cwd, opts, takeTurns: !!agent.takeTurns && !agent.standalone, team: agent.team || null,
     startedAt: Date.now(), lastActivity: Date.now(), stdoutTail: [], cmdline: '' };
   runs.set(agent.id, run);
   broadcast({ agentId: agent.id, kind: 'busy', busy: true });
@@ -866,8 +874,9 @@ function startRun(agent, userText, opts = {}) {
   };
 
   if (blocked) {
-    run.segments.push({ type: 'error', text: '⛔ 這位成員的設定不符合安全規則，暫停使用：\n' + blocked +
-      '\n' + blockedHelp(blocked) });
+    run.segments.push({ type: 'error', text: quotaStop ? quotaStop + '\n要現在試試看，請你直接傳訊息給它（成功會自動解除）；或到「⚙️ 設定」按儲存解除。'
+      : '⛔ 這位成員的設定不符合安全規則，暫停使用：\n' + blocked + '\n' + blockedHelp(blocked) });
+    if (quotaStop) agyQuotaNotifySender(agent, opts, userText);
     broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
     finish();
     hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
@@ -1036,6 +1045,7 @@ function startRun(agent, userText, opts = {}) {
 // agy 一輪結束後：登入問題提示、被擋下的動作、唯讀成員有沒有改到檔案
 function agyAfter(agent, run, emit, code, roBefore) {
   const err = decodeOutput(run.stderr);
+  agyQuotaCheck(agent, run, emit, code, err);
   if (code && /auth|login|credential|sign.?in|unauthenticated/i.test(err))
     emit({ kind: 'error', text: '🔑 agy 還沒登入或登入過期：請在這台電腦的 PowerShell 執行 agy，用 Google 帳號登入一次，之後這裡就能用了。' });
   const denied = err.split(/\r?\n/).map((l) => l.trim()).filter((l) => /denied|not permitted|requires approval|permission/i.test(l)).slice(0, 3);
@@ -1050,6 +1060,70 @@ function agyAfter(agent, run, emit, code, roBefore) {
   saveState();
   emit({ kind: 'error', text: '🚨 ' + agent.name + ' 是唯讀成員，但這一輪之後資料夾裡有檔案被改了：' + list + '\n唯讀限制沒有擋住，已先暫停這位成員。請確認那些檔案，再到「⚙️ 設定」按儲存解除暫停（或改用可寫入的存取等級）。' });
   hooks.emit('readonly-violation', { agent, changes });
+}
+
+// ---------- 🪫 agy 額度 ----------
+// agy 不提供剩餘額度，只能：從錯誤訊息判斷「用完了」（暫停自動派工並通知），以及自己統計本週用了幾輪、多少 tokens。
+const AGY_QUOTA_RETRY_MS = 60 * 60 * 1000; // 錯誤訊息沒寫恢復時間時，先擋一個鐘頭，之後下一則訊息會再試
+// 你自己直接傳的訊息（網頁／Telegram），不是同事轉交、任務、排程、系統自動送的
+const userDirect = (opts) => !opts.from && !opts.system && !opts.resume && !opts.urgent && !opts.taskId && !opts.shift && !(opts.via === 'timer' && !opts.manual);
+function agyQuotaHold(agent) {
+  const q = state.agyQuota[agent.id];
+  return q && q.until > Date.now() ? q : null;
+}
+const fmtUntil = (q) => { const d = new Date(q.until); return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + (q.estimated ? '（推估）' : ''); };
+function weekStart(t = Date.now()) { const d = new Date(t); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); }
+function agyUsageOf(id) {
+  const w = weekStart(), u = state.agyUsage[id];
+  if (!u || u.week !== w) state.agyUsage[id] = { week: w, runs: 0, tokens: 0, quotaHits: 0, lastQuotaAt: u && u.lastQuotaAt ? u.lastQuotaAt : null };
+  return state.agyUsage[id];
+}
+// 把「額度用完」告訴派工給它的同事，請他改派（同一段額度用完期間，每位同事只通知一次，避免來回）
+function agyQuotaNotifySender(agent, opts, text) {
+  const q = state.agyQuota[agent.id], sender = opts.from && agentById(opts.from);
+  if (!q || !sender || sender.id === agent.id) return;
+  q.notified = q.notified || [];
+  if (q.notified.includes(sender.id)) return;
+  q.notified.push(sender.id); saveState();
+  const hops = (opts.hops || 0) + 1;
+  if (hops > maxHops()) return;
+  dispatch(sender, '【系統通知】' + agent.name + ' 的 agy 額度用完了，預計 ' + fmtUntil(q) + ' 恢復。你剛才交給他的工作沒有執行：\n「' + short(text, 300) + '」\n請改派給其他成員，或等恢復後再交給他；不要再 @ 他。',
+    { system: true, via: 'system', hops });
+}
+function agyQuotaCheck(agent, run, emit, code, err) {
+  const u = agyUsageOf(agent.id), st = run.stats || {};
+  u.runs++; u.tokens += (st.inTok || 0) + (st.outTok || 0);
+  const errs = run.segments.filter((s) => s.type === 'error').map((s) => s.text).join('\n');
+  const failed = !!code || !!errs;
+  const hay = errs + '\n' + (failed ? err : '');
+  if (failed && agy.quotaHit(hay)) {
+    const now = Date.now(), reset = agy.quotaReset(hay, now);
+    const prev = state.agyQuota[agent.id];
+    const q = state.agyQuota[agent.id] = { at: now, until: reset || now + AGY_QUOTA_RETRY_MS, estimated: !reset, msg: short(hay.trim(), 300),
+      notified: prev && prev.until > now ? prev.notified || [] : [] };
+    u.quotaHits++; u.lastQuotaAt = now;
+    saveState();
+    emit({ kind: 'error', text: '🪫 ' + agent.name + ' 的 agy 額度用完了，預計 ' + fmtUntil(q) + ' 恢復。\n在那之前，同事轉交、任務、排程不會再交給它（會退回並通知派工的人改派）；你直接傳訊息給它會再試一次，成功就自動解除。' +
+      (q.estimated ? '\n（錯誤訊息沒寫恢復時間，先等一個鐘頭再試。）' : '') });
+    hooks.emit('agy-quota', { agent, until: q.until, estimated: q.estimated, msg: q.msg, usage: u });
+    broadcast({ agentId: '*', kind: 'usage' });
+    agyQuotaNotifySender(agent, run.opts || {}, run.userText || '');
+    return;
+  }
+  if (!failed && state.agyQuota[agent.id]) {
+    delete state.agyQuota[agent.id];
+    emit({ kind: 'tool', text: '🔋 agy 額度恢復了，' + agent.name + ' 可以正常派工' });
+    hooks.emit('agy-quota-ok', { agent });
+  }
+  saveState();
+  broadcast({ agentId: '*', kind: 'usage' });
+}
+function agyUsageSnapshot() {
+  return CONFIG.agents.filter((a) => a.engine === 'agy').map((a) => {
+    const u = agyUsageOf(a.id), q = state.agyQuota[a.id];
+    return { id: a.id, name: a.name, model: a.model || '', runs: u.runs, tokens: u.tokens, quotaHits: u.quotaHits, lastQuotaAt: u.lastQuotaAt,
+      out: q && q.until > Date.now() ? { until: q.until, estimated: !!q.estimated, msg: q.msg } : null };
+  });
 }
 
 // silent：任務被整個停止時，不再觸發任務的後續判斷
@@ -1319,7 +1393,7 @@ async function probeUsage() {
 
 function usageSnapshot() {
   readCodexUsage(); // Codex 在別處（例如終端機）用過也會更新
-  return { claude: USAGE.claude, codex: USAGE.codex, probing, now: Date.now() };
+  return { claude: USAGE.claude, codex: USAGE.codex, agy: agyUsageSnapshot(), weekStart: weekStart(), probing, now: Date.now() };
 }
 
 // ---------- 成員設定（網頁上新增 / 編輯 / 刪除）----------
@@ -1520,7 +1594,7 @@ function readBody(req) {
 
 const publicAgent = (a) => ({
   id: a.id, name: a.name, avatar: a.avatar, engine: a.engine, model: a.model || '', effort: a.effort || '', role: a.role || '',
-  extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns, canInterrupt: canUrgent(a), rtk: !!a.rtk, rtkOn: rtkWanted(a) && !!(process.env.RTK_BIN || RTK.bin), agyAccess: a.engine === 'agy' ? agy.access(a) : undefined, blocked: a.blocked || null,
+  extraDirs: a.extraDirs || [], takeTurns: !!a.takeTurns, canInterrupt: canUrgent(a), rtk: !!a.rtk, rtkOn: rtkWanted(a) && !!(process.env.RTK_BIN || RTK.bin), agyAccess: a.engine === 'agy' ? agy.access(a) : undefined, agyOut: a.engine === 'agy' && agyQuotaHold(a) ? agyQuotaHold(a).until : null, blocked: a.blocked || null,
   team: a.standalone ? null : a.team || null,
   standalone: !!a.standalone, tgPrefix: (a.telegram && a.telegram.prefix) || '', tgBot: !!(a.telegram && a.telegram.botToken),
   canHandoffTo: allowedTargets(a).map((t) => t.id),
@@ -1751,6 +1825,7 @@ const server = http.createServer(async (req, res) => {
         }
         CONFIG.agents[idx] = a;
         if (state.agyHold && state.agyHold[a.id]) { delete state.agyHold[a.id]; saveState(); } // 在設定按儲存＝確認過了，解除唯讀違規的暫停
+        if (state.agyQuota[a.id]) { delete state.agyQuota[a.id]; saveState(); } // 也解除「額度用完」（例如你知道額度已經恢復）
         normalizeTeams();
       }
       saveConfig(); reloadAgents(); tasks.writeWorkflowDocs(); harness.docs(); agentsChanged(); pump();

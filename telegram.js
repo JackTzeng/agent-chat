@@ -34,7 +34,7 @@ const HELP =
   '/pause 原因　⏸ 暫停專案：成員做完這一輪、寫好交班筆記後停下，新的派工和排程先排隊（/pausenow 立刻停）\n' +
   '/resume 指示　▶ 重啟專案，可以加一句給所有成員的補充指示\n' +
   '/new　目前對象開新對話\n' +
-  '/usage　Claude / Codex 用量額度（Google agy 的額度請在 agy 裡查）\n' +
+  '/usage　Claude / Codex 用量額度、agy 本週用量\n' +
   '/timers　⏰ 看所有排程；/timer 編號 run／on／off／ok／no\n' +
   '/report 描述　🐞 產生問題回報檔傳給你（轉給 Claude 排查）\n' +
   '/update　⬆️ 檢查更新，有新版就更新並重新啟動\n' +
@@ -345,6 +345,7 @@ exports.start = function start(ctx) {
     return out;
   }
 
+  const fmtHm = (t) => { const d = new Date(t); return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false }); };
   function usageText() {
     const u = ctx.usageSnapshot(), now = Date.now();
     const NAMES = { '5h': '5 小時', week: '每週', week_opus: '每週 Opus', week_sonnet: '每週 Sonnet' };
@@ -359,7 +360,9 @@ exports.start = function start(ctx) {
           return '　' + (NAMES[k] || k) + '：剩 ' + Math.round(100 - used) + '%' + (reset ? '（已重置）' : left);
         }).join('\n');
     };
-    return '📊 用量額度\n\n' + block('Claude', u.claude) + '\n\n' + block('Codex', u.codex);
+    const ag = (u.agy || []).map((a) => '　' + a.name + '：' + a.runs + ' 輪、' + a.tokens + ' tokens' +
+      (a.out && a.out.until > now ? '（🪫 額度用完，預計 ' + fmtHm(a.out.until) + (a.out.estimated ? '（推估）' : '') + ' 恢復）' : ''));
+    return '📊 用量額度\n\n' + block('Claude', u.claude) + '\n\n' + block('Codex', u.codex) + (ag.length ? '\n\nagy 本週（週一起，沒有剩餘額度可查）\n' + ag.join('\n') : '');
   }
 
   const teamOfTask = (t) => (ctx.config.teams || []).find((x) => x.id === t.teamId) || (ctx.config.teams || [])[0];
@@ -425,6 +428,13 @@ exports.start = function start(ctx) {
   });
   listen('resume', async ({ label: lb, minutes, restarted, held, text }) => {
     for (const id of pushRecipients()) await say(id, '▶ ' + lb + '已重啟（暫停了 ' + minutes + ' 分鐘）：' + (restarted ? restarted + ' 位成員接著做被停下的工作，' : '') + (held ? '放行 ' + held + ' 則排隊的訊息' : '沒有排隊的訊息') + (text ? '\n補充指示：' + text : ''));
+  });
+  // 🪫 agy 額度用完：暫停自動派工，等恢復
+  listen('agy-quota', async ({ agent, until, estimated, usage }) => {
+    for (const id of pushRecipients()) await say(id, '🪫 ' + label(agent) + ' 的 agy 額度用完了，預計 ' + fmtHm(until) + (estimated ? '（推估）' : '') + ' 恢復。\n本週用了 ' + usage.runs + ' 輪、' + usage.tokens + ' tokens。\n在那之前同事轉交、任務、排程不會交給它（會通知派工的人改派）；你直接傳訊息給它會再試一次，成功就自動解除。');
+  });
+  listen('agy-quota-ok', async ({ agent }) => {
+    for (const id of pushRecipients()) await say(id, '🔋 ' + label(agent) + ' 的 agy 額度恢復了，可以正常派工');
   });
   // 🚨 唯讀成員（agy）竟然改了檔案：已自動暫停
   listen('readonly-violation', async ({ agent, changes }) => {

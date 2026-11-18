@@ -23,7 +23,7 @@
 - 安全底線：永不加入會略過權限的選項（`--dangerously-skip-permissions`、`bypassPermissions`）；使用者資料夾存取由 `security.js` 的允許清單管；機密不寫進回報（diag.js 會遮蔽）。
 
 ## 已完成（近期）
-v3.4 小組＋多房間辦公室、v3.5 守則分範圍、v3.6 問題回報與一鍵更新、v3.7 排程（前置檢查、成員暫停）、v3.8 緊急派工（【緊急】插話，授權＋冷卻）＋ Google agy 引擎（`read`／`write` 存取等級）、v3.9 上下文瘦身（開頭說明去重、📏 上下文用量、排程每次新對話、換班門檻 40%）、v3.10 暫停／重啟專案（`state.pause`、`isHeld` 擋自動派工、交班筆記、重啟接續）＋排隊訊息存檔（`state.queue`）、v3.11 rtk 壓縮指令輸出（只限 Claude 團隊成員，`--settings` ＋ `rtkhook.js`）。
+v3.4 小組＋多房間辦公室、v3.5 守則分範圍、v3.6 問題回報與一鍵更新、v3.7 排程（前置檢查、成員暫停）、v3.8 緊急派工（【緊急】插話，授權＋冷卻）＋ Google agy 引擎（`read`／`write` 存取等級）、v3.9 上下文瘦身（開頭說明去重、📏 上下文用量、排程每次新對話、換班門檻 40%）、v3.10 暫停／重啟專案（`state.pause`、`isHeld` 擋自動派工、交班筆記、重啟接續）＋排隊訊息存檔（`state.queue`）、v3.11 rtk 壓縮指令輸出（只限 Claude 團隊成員，`--settings` ＋ `rtkhook.js`）、v3.11.1 更正 agy write 說明、v3.11.2 常用守則範本（markitdown）、v3.12 agy 額度用完偵測（`state.agyQuota`、`agyQuotaCheck`、退回並通知派工者）＋本週用量（`state.agyUsage`）。偵測規則 `agy.quotaHit`／`quotaReset` 是依常見寫法，待拿到真實 agy 額度錯誤訊息校正。
 
 ## agy 實測事實（Windows，agy 1.5.10，免費 Starter Quota）
 - 安裝位置 `%LOCALAPPDATA%\agy\bin\agy.exe`；免費帳號可用模型：`gemini-3.8-flash-{high,medium,low}`、`claude-sonnet-4-6`、`claude-opus-4-6-thinking`、`gpt-oss-120b-medium`（**沒有** gemini-4-argon）。

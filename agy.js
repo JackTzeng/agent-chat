@@ -108,4 +108,24 @@ const stdinMessage = (prompt) => JSON.stringify({ event: 'user', message: { cont
 const READ_ONLY_NOTE = '【唯讀】你的角色是閱讀與評論：只能讀取檔案、用文字回覆意見；不要建立、修改、刪除或移動任何檔案，也不要執行任何指令。需要改動的地方，請在回覆中具體寫出建議，由其他成員動手。';
 const WRITE_NOTE = '【權限】你可以建立與修改檔案，也可以執行指令。只在工作資料夾內動作，不要讀寫工作資料夾以外的地方；不要執行刪除大量檔案、改系統設定、安裝軟體、推送到遠端等有風險或不可回復的指令，需要時請在回覆中說明，由使用者決定。';
 
-module.exports = { access, readOnlyArgs, makeParser, describeTool, stdinMessage, mergeDelta, READ_ONLY_NOTE, WRITE_NOTE, READ_ONLY_DEFAULT };
+// 額度用完：agy 沒有提供剩餘額度，只能從錯誤訊息判斷。還沒拿到真實的錯誤文字，先認常見寫法（Google API 的 RESOURCE_EXHAUSTED／429 等）
+const QUOTA_RE = /quota|RESOURCE_EXHAUSTED|rate[ _-]?limit|too many requests|\b429\b|usage limit|limit (?:reached|exceeded)|credits? (?:exhausted|depleted)|out of credits/i;
+const UNIT_MS = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
+// 錯誤訊息裡的恢復時間（找不到回傳 null）：「retry in 3h」「resets in 2 hours」「retryDelay: "3600s"」「reset at 2026-11-19T00:00:00Z」
+function quotaReset(text, now = Date.now()) {
+  const t = String(text || '');
+  let m = t.match(/(?:reset|retry|try again|available)[^.\n]{0,30}?(?:at|on)\s*[:"']?\s*(\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)/i);
+  if (m) { const v = Date.parse(m[1]); if (v > now) return v; }
+  m = t.match(/retry[-_ ]?(?:after|delay)["':\s]*(\d+(?:\.\d+)?)\s*(s|sec|seconds?)?\b/i);
+  if (m) return now + Math.round(Number(m[1]) * 1000);
+  m = t.match(/(?:reset|retry|try again|available)[^.\n]{0,30}?(?:in|after)\s*((?:\d+(?:\.\d+)?\s*(?:d|days?|h|hrs?|hours?|m|mins?|minutes?|s|secs?|seconds?)\s*,?\s*(?:and\s*)?)+)/i);
+  if (m) {
+    let ms = 0;
+    for (const p of m[1].matchAll(/(\d+(?:\.\d+)?)\s*([dhms])/gi)) ms += Number(p[1]) * UNIT_MS[p[2].toLowerCase()];
+    if (ms > 0) return now + Math.round(ms);
+  }
+  return null;
+}
+const quotaHit = (text) => QUOTA_RE.test(String(text || ''));
+
+module.exports = { access, readOnlyArgs, makeParser, describeTool, stdinMessage, mergeDelta, quotaHit, quotaReset, READ_ONLY_NOTE, WRITE_NOTE, READ_ONLY_DEFAULT };
