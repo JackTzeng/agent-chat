@@ -1,0 +1,36 @@
+# Agent Chat：給 Claude Code 的專案說明
+
+本機執行的 Node.js 網頁介面（零相依套件），在背後呼叫 Claude Code、Codex、Google Antigravity（agy）三種 CLI，讓多位成員分工、互相 @、走工作流程，並可用 Telegram 遙控。使用者用**繁體中文**溝通，主要環境是 **Windows**（PowerShell）。回覆與 UI 文字請用繁體中文。
+
+## 檔案地圖
+- `server.js` 後端：啟動 CLI、解析輸出、SSE 推送、API；`tasks.js` 工作流程；`harness.js` 守則／檢查／預算／記憶；`timers.js` 排程；`telegram.js` 遙控
+- `agy.js` Google agy 的參數、權限對應、stream-json 解析；`security.js` 路徑與權限檢查
+- `diag.js`／`updater.js`／`launcher.js`／`localsettings.js`／`proctree.js` 問題回報、一鍵更新、啟動器（結束碼 75＝重新啟動）、個人設定、子程式樹關閉
+- `public/index.html` 單檔前端（內嵌 script）、`public/office.js` 辦公室畫面
+- `tests/*.test.js` 每個檔案獨立執行；詳細說明在 README.md、CHANGELOG.md
+
+## 開發慣例
+- 不加任何 npm 相依套件；Node 18+。
+- **跑測試**：逐檔跑 `node --test tests/xxx.test.js`（`node --test tests/` 會失敗）。全部：`for f in tests/*.test.js; do node --test $f; done`。目前 11 檔全過。
+- 新增 `.js` 模組時，要把檔名加進**每個測試檔的 FILES／檔案清單**（它們會把原始碼複製到暫存資料夾跑真的伺服器），否則 `require` 找不到。
+- 測試用「假 CLI」（`tests/*.test.js` 裡的 MOCK_*）加真的伺服器，環境變數：`CLAUDE_BIN`／`CODEX_BIN`／`AGY_BIN`、`AGENTCHAT_NO_UPDATE_CHECK=1`、`AGENT_ENV_ALLOWLIST`。
+- 發版：同步改 `server.js` 的 `VERSION`、`public/index.html` 的 `UI_VERSION`、`CHANGELOG.md`（最上面加一節）、必要時 `README.md`；commit 訊息用「v3.x.y：做了什麼」；推到 `main`。使用者在網頁按「⬆️ 更新／重新啟動」取得新版（updater 遇到已追蹤檔案被改動會拒絕更新，所以**開發請用另一個 clone，不要直接改正在跑的那個資料夾**）。
+- `start.bat` 只能有 ASCII（cmd 讀 UTF-8 中文會出錯）；個人設定放 `local-settings.txt`（不進 git）。
+- 前端沒有建置步驟；改完 `public/index.html` 用抽出 `<script>` 後 `node --check` 檢查語法。
+- 安全底線：永不加入會略過權限的選項（`--dangerously-skip-permissions`、`bypassPermissions`）；使用者資料夾存取由 `security.js` 的允許清單管；機密不寫進回報（diag.js 會遮蔽）。
+
+## 已完成（近期）
+v3.4 小組＋多房間辦公室、v3.5 守則分範圍、v3.6 問題回報與一鍵更新、v3.7 排程（前置檢查、成員暫停）、v3.8 緊急派工（【緊急】插話，授權＋冷卻）＋ Google agy 引擎（`read`／`write` 存取等級）。
+
+## agy 實測事實（Windows，agy 1.5.10，免費 Starter Quota）
+- 安裝位置 `%LOCALAPPDATA%\agy\bin\agy.exe`；免費帳號可用模型：`gemini-3.8-flash-{high,medium,low}`、`claude-sonnet-4-6`、`claude-opus-4-6-thinking`、`gpt-oss-120b-medium`（**沒有** gemini-4-argon）。
+- 用 stdin 傳 `{"event":"user","message":{"content":"..."}}\n` 搭配 `--input-format stream-json --output-format stream-json` 可行；**PowerShell 的管線會加 BOM（`﻿`）導致解碼失敗**，手動測試要用 `cmd /c "type x.json | agy ..."`（Node 直接寫 stdin 沒有 BOM）。
+- 事件：`init`（含 model）→ `step_update`（agent_response 的 `text_delta` 是片段，最後一筆 DONE 只有 `"\n"`；tool 步驟名稱 `read_file`／`write_file`／`run_command`，參數 `Path`／`CommandLine`）→ `result`（status、response、usage）。
+- `--mode plan --sandbox`：請它審查檔案時，意見完整出現在回覆裡、不建檔（唯讀可用）；請它建檔時不會寫到工作資料夾，只會把 `plan.md` 寫到 `~\.gemini\antigravity-cli\brain\...`。
+- **預設模式（不加 --mode）可以寫檔，也真的能執行 `run_command`**（結束碼 0）——之前依文件寫的「可寫等級不能執行指令」是錯的。
+
+## 待辦
+1. **agy 可寫等級**：尚待實測「預設模式＋`--sandbox`」能否把寫檔／指令限制在工作資料夾內，以及 plan 模式能否擋住 `run_command`（要在 PowerShell 跑 E／F 兩組測試）。定案後修正 `agy.js` 的 `WRITE_NOTE`、`README.md`、`public/index.html` 的 `AGY_LABEL`、`CHANGELOG.md` 裡「不能執行指令」的說法，必要時給 `write` 等級加 `--sandbox`（可用 `AGY_WRITE_ARGS` 覆寫，比照 `AGY_READONLY_ARGS`）。
+2. 工具結果的結束碼判斷：agy 的輸出是 `Command exited with code N`，目前 server.js 的 regex 只認 `exit code N`，要補。
+3. 還沒在真實 Windows 環境完整驗證：一鍵更新、排程配真實 CLI、Codex rollout token 解析、`--allowedTools` 比對。
+4. 路線圖：Telegram 連續訊息合併成一個提示；通知去重／outbox，以及排隊中的訊息重啟後保留；唯讀的「🧰 能力一覽」（各成員實際用得到的 MCP／Skill，不做編輯介面）；不可改寫的執行紀錄（雜湊串接）與機密保管遮蔽。
