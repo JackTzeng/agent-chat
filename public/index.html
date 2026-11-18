@@ -348,7 +348,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.12.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.12.2'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1645,7 +1645,7 @@ function agyBlock(list) {
   let h = '<div class="eng">agy<small>本週用量（週一起）</small></div>';
   for (const a of list) {
     const out = a.out && a.out.until > Date.now();
-    h += `<div class="win"><span title="${esc(a.model)}">${esc(a.name)}</span><span>${a.runs} 輪 · ${fmtTok(a.tokens)} tokens</span>
+    h += `<div class="win"><span style="grid-column:1/-1" title="${esc(a.model)}"><b>${esc(a.name)}</b>　${a.runs} 輪 · ${fmtTok(a.tokens)} tokens</span>
       <span class="sub2">${out ? `<b style="color:var(--err)" title="${esc(a.out.msg || '')}">🪫 額度用完 · 預計 ${esc(fmtTime(a.out.until))}${a.out.estimated ? '（推估）' : ''} 恢復</b>`
         : a.lastQuotaAt ? '上次用完：' + esc(fmtTime(a.lastQuotaAt)) + (a.quotaHits ? `（本週 ${a.quotaHits} 次）` : '') : '本週還沒用完過'}</span></div>`;
   }
