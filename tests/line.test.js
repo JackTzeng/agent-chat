@@ -61,7 +61,7 @@ async function freePort() {
 test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
   const TOKEN = 'T'.repeat(30) + 'abc123+/='.repeat(10), SECRET = 'ab12cd34'.repeat(4);
   // 假的 LINE API
-  const calls = []; let hook = '';
+  const calls = []; let hook = '', putCalls = 0;
   const api = http.createServer((req, res) => {
     const bufs = []; req.on('data', (c) => bufs.push(c));
     req.on('end', () => {
@@ -72,7 +72,7 @@ test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
       const k = req.method + ' ' + req.url;
       if (k === 'GET /v2/bot/info') return send(200, { displayName: '測試助理', basicId: '@abc123' });
       if (k === 'GET /v2/bot/channel/webhook/endpoint') return send(200, { endpoint: hook, active: true });
-      if (k === 'PUT /v2/bot/channel/webhook/endpoint') { hook = body.endpoint; return send(200, {}); }
+      if (k === 'PUT /v2/bot/channel/webhook/endpoint') { putCalls++; if (putCalls === 1) return send(400, { message: 'Invalid webhook endpoint URL' }); hook = body.endpoint; return send(200, {}); }
       if (k === 'POST /v2/bot/channel/webhook/test') return send(200, { success: true, statusCode: 200, reason: 'OK' });
       if (k === 'GET /v2/bot/message/quota') return send(200, { type: 'limited', value: 200 });
       if (k === 'GET /v2/bot/message/quota/consumption') return send(200, { totalUsage: 7 });
@@ -104,7 +104,7 @@ test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
   const proc = spawn(process.execPath, ['server.js'], {
     cwd: dir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), ACCESS_TOKEN: 'line-test-password-long', TELEGRAM_BOT_TOKEN: '', CLAUDE_BIN: path.join(bin, 'claude'), CODEX_BIN: '', AGY_BIN: '',
-      LINE_API_BASE: apiBase, LINE_PORT: String(linePort), CLOUDFLARED_BIN: path.join(bin, 'cloudflared'), AGENTCHAT_TIMER_TICK_MS: '300',
+      LINE_API_BASE: apiBase, LINE_PORT: String(linePort), CLOUDFLARED_BIN: path.join(bin, 'cloudflared'), AGENTCHAT_TIMER_TICK_MS: '300', LINE_REACH_CHECK: '0', LINE_RETRY_MS: '100', LINE_REACH_MS: '1500', LINE_ALLOW_HTTP: '1',
       MOCKLOG: log, AGENT_ENV_ALLOWLIST: 'MOCKLOG', AGENTCHAT_NO_UPDATE_CHECK: '1' },
   });
   let stderr = ''; proc.stderr.on('data', (s) => { stderr += s; });
@@ -228,6 +228,7 @@ test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
   st = await waitFor(async () => { const s = await J('/api/line'); return s.tunnel.state === 'on' && s.webhook && s.webhook.tested && s; }, 'tunnel on');
   assert.equal(st.tunnel.url, 'https://fake-test-1.trycloudflare.com'); assert.equal(st.publicUrl, 'https://fake-test-1.trycloudflare.com');
   assert.equal(hook, 'https://fake-test-1.trycloudflare.com/line/webhook');
+  assert.equal(putCalls, 2, '第一次 LINE 回 400（網址還沒生效），自動重試後成功');
   assert.ok(calls.some((c) => c.method === 'POST' && c.url === '/v2/bot/channel/webhook/test'));
   assert.match(fs.readFileSync(log, 'utf8'), new RegExp('CLOUDFLARED tunnel --no-autoupdate --url http://127.0.0.1:' + linePort));
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'agents.json'), 'utf8')).line.tunnel, true, '記住要自動開');
@@ -236,10 +237,16 @@ test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
   await J('/api/line/tunnel', 'POST', { on: false });
   await waitFor(async () => (await J('/api/line')).tunnel.state === 'off', 'tunnel off');
 
+  // 11b) 手動填網址：先確認從這台電腦連得到才告訴 LINE；連不到會說清楚（這裡用本機網址模擬連得到／連不到）
+  const okWh = await J('/api/line/webhook', 'POST', { publicUrl: 'http://127.0.0.1:' + linePort });
+  assert.equal(okWh.url, 'http://127.0.0.1:' + linePort + '/line/webhook'); assert.equal(hook, okWh.url);
+  const bad = await call('/api/line/webhook', 'POST', { publicUrl: 'http://127.0.0.1:9' });
+  assert.equal(bad.status, 400); assert.match(bad.j.error, /還連不上/); assert.equal(hook, okWh.url, '連不上時不會動 LINE 的設定');
+
   // 12) 設定的驗證與清除
   assert.equal((await call('/api/line', 'PUT', { channelSecret: 'too-short' })).status, 400);
   assert.equal((await call('/api/line', 'PUT', { channelAccessToken: 'short' })).status, 400);
-  assert.equal((await call('/api/line', 'PUT', { publicUrl: 'http://insecure.example.com' })).status, 400);
+  assert.equal((await call('/api/line', 'PUT', { publicUrl: 'https://abc.example.com/some/path' })).status, 400);
   assert.equal((await call('/api/line', 'PUT', { agentId: 'nobody' })).status, 400);
   const changedSecret = await J('/api/line', 'PUT', { channelSecret: 'f'.repeat(32) });
   assert.equal(changedSecret.allowedCount, 0, '換了 channel secret，原本的配對作廢');

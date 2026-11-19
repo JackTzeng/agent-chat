@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.19.0';
+const VERSION = '3.19.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');

@@ -359,21 +359,39 @@ function create(ctx) {
     return out;
   }
   // 設定 Webhook 網址並請 LINE 測試
+  const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+  const retryMs = () => (process.env.LINE_RETRY_MS != null ? Number(process.env.LINE_RETRY_MS) : 3000);
+  // 剛開的通道，網址的 DNS 還沒生效時 LINE 會回「Invalid webhook endpoint URL」：先自己從這台電腦連連看，通了才告訴 LINE
+  async function waitReachable(base, maxMs = Number(process.env.LINE_REACH_MS) || 60000) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < maxMs) {
+      try { const ac = new AbortController(), tm = setTimeout(() => ac.abort(), 5000); const r = await fetch(base + '/line/health', { signal: ac.signal }); clearTimeout(tm); if (r.status === 200) return true; } catch {}
+      await sleep(2500);
+    }
+    return false;
+  }
   async function setupWebhook(publicUrl) {
     if (!configured()) throw new Error('還沒設定 Channel secret 與 Channel access token');
     const base = cleanPublicUrl(publicUrl || cfg().publicUrl);
     if (!base) throw new Error('請先填公開網址，或按「一鍵開啟公開通道」');
     startServer();
+    if ((process.env.LINE_REACH_CHECK !== '0' || base.startsWith('http://')) && !(await waitReachable(base)))
+      throw new Error('公開網址 ' + base + ' 還連不上（剛開的通道有時要等一分鐘）。請稍等再按「設定 Webhook 並測試」，或關掉通道再重開；如果一直不行，檢查公司網路或防火牆是不是擋了 Cloudflare');
     const url = base + '/line/webhook';
-    const put = await request('PUT', '/v2/bot/channel/webhook/endpoint', { endpoint: url });
-    if (put.status !== 200) throw new Error('設定 Webhook 失敗：' + explain(put));
+    let put = null;
+    for (let i = 0; i < 4; i++) { // 400 多半是網址還沒生效：等一下再試；token 不對（401／403）就不用重試
+      put = await request('PUT', '/v2/bot/channel/webhook/endpoint', { endpoint: url });
+      if (put.status === 200 || put.status === 401 || put.status === 403 || put.status === 0) break;
+      await sleep(retryMs());
+    }
+    if (put.status !== 200) throw new Error('設定 Webhook 失敗：' + explain(put) + (put.status === 400 ? '（網址：' + url + '。公開通道剛開時 LINE 偶爾會查不到，關掉通道再重開一次通常就好）' : ''));
     cfg().publicUrl = base; ctx.saveConfig();
     let test = null;
     for (let i = 0; i < 3; i++) { // 剛開的通道網址可能還沒生效，多試幾次
       const r = await request('POST', '/v2/bot/channel/webhook/test', { endpoint: url });
       test = r.status === 200 && r.json ? r.json : { success: false, reason: explain(r) };
       if (test.success) break;
-      await new Promise((ok) => setTimeout(ok, 3000));
+      await sleep(retryMs());
     }
     const got = await request('GET', '/v2/bot/channel/webhook/endpoint'); // 「Use webhook」開關 API 改不了，讀回來看有沒有打開
     S().webhook = { endpoint: url, active: got.status === 200 ? !!(got.json && got.json.active) : null, at: Date.now(), tested: !!test.success, reason: test.success ? '' : short(test.reason || test.detail || '測試沒有通過', 200) };
