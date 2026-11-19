@@ -75,6 +75,20 @@ function canonOwner(typed, members) {
   return hit ? { name: hit.name, known: true, email: hit.email } : { name: t.slice(0, 30), known: false };
 }
 
+// Apps Script 網頁應用程式的網址：https://script.google.com/macros/s/…/exec（Workspace 是 /a/macros/網域/s/…/exec）。
+// 常見的貼錯：編輯頁網址（…/home/projects/…/edit）、測試部署（…/dev）。有問題回傳說明，沒問題回傳 ''
+function urlProblem(raw) {
+  const s = String(raw || '').trim(); let u;
+  try { u = new URL(s); } catch { return '網址格式不對，應該像 https://script.google.com/macros/s/…/exec'; }
+  if (process.env.TODO_URL_ANY === '1') return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password ? '' : '網址格式不對';
+  if (u.protocol !== 'https:' || u.hostname !== 'script.google.com') return '網址要是 Apps Script 網頁應用程式的網址（https://script.google.com/macros/s/…/exec）';
+  if (u.username || u.password) return '網址不能帶帳號密碼';
+  if (/\/home\/projects\/|\/edit\/?$/.test(u.pathname)) return '這是 Apps Script「編輯頁」的網址，不是部署後的網址。請先在 Apps Script 右上角按「部署 → 新增部署作業 → 網頁應用程式」，部署完複製「網頁應用程式網址」（長得像 https://script.google.com/macros/s/…/exec）';
+  if (/\/dev\/?$/.test(u.pathname)) return '這是「測試部署」的網址（結尾是 /dev），只有你本人登入才打得開。請用正式部署的網址（結尾是 /exec）';
+  if (!/^\/(?:a\/macros\/[^/]+|macros)\/s\/[^/]+\/exec\/?$/.test(u.pathname)) return '網址格式不對，應該像 https://script.google.com/macros/s/…/exec';
+  return '';
+}
+
 function create(ctx) {
   // ctx: { config, saveConfig }
   const cfg = () => (ctx.config.todo = ctx.config.todo || {});
@@ -82,16 +96,10 @@ function create(ctx) {
   let cache = { items: null, at: 0, members: null, mAt: 0 };
   const drop = () => { cache = { items: null, at: 0, members: null, mAt: 0 }; };
 
-  function cleanUrl(raw) {
-    const s = String(raw || '').trim(); let u;
-    try { u = new URL(s); } catch { throw new Error('網址格式不對，應該像 https://script.google.com/macros/s/…/exec'); }
-    const ok = process.env.TODO_URL_ANY === '1' ? ['http:', 'https:'].includes(u.protocol) : u.protocol === 'https:' && u.hostname === 'script.google.com';
-    if (!ok) throw new Error('網址要是 Apps Script 網頁應用程式的網址（https://script.google.com/macros/s/…/exec）');
-    if (u.username || u.password) throw new Error('網址不能帶帳號密碼');
-    return u.toString();
-  }
+  function cleanUrl(raw) { const p = urlProblem(raw); if (p) throw new Error(p); return new URL(String(raw).trim()).toString(); }
   async function call(op, args = {}, timeoutMs = 25000) {
     if (!configured()) throw new Error('還沒設定待辦清單（Apps Script 網址與密鑰）');
+    const bad = urlProblem(cfg().url); if (bad) throw new Error(bad);
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), timeoutMs);
     let res;
     try { res = await fetch(cfg().url, { method: 'POST', redirect: 'follow', signal: ac.signal, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ key: cfg().key, op, ...args }) }); }
@@ -182,7 +190,7 @@ function create(ctx) {
 
   function status() {
     let hint = ''; try { const u = new URL(cfg().url); hint = u.hostname + '/…' + u.pathname.split('/').filter(Boolean).slice(-2, -1)[0].slice(-6) + '/exec'; } catch {}
-    return { configured: configured(), hasKey: !!cfg().key, urlHint: hint };
+    return { configured: configured(), hasKey: !!cfg().key, urlHint: hint, urlProblem: cfg().url ? urlProblem(cfg().url) : '' };
   }
   function update(body) {
     const c = cfg();
@@ -201,4 +209,4 @@ function create(ctx) {
   return { configured, status, update, ping, digest, call, whoIs, register, setEmail, context, execute, items, members, drop };
 }
 
-module.exports = { create, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS };
+module.exports = { create, urlProblem, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS };

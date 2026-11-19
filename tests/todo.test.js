@@ -34,6 +34,22 @@ test('parseReply: action lines, options, aliases; text is stripped of markers', 
   assert.equal(todo.parseReply('我說【待辦】這個詞但不是動作行').actions.length, 0, '只有整行開頭才算');
 });
 
+test('urlProblem: only deployed web-app URLs; editor and test URLs get a clear explanation', () => {
+  assert.equal(process.env.TODO_URL_ANY, undefined);
+  assert.equal(todo.urlProblem('https://script.google.com/macros/s/AKfycbxABCdef_123-xyz/exec'), '');
+  assert.equal(todo.urlProblem('https://script.google.com/a/macros/example.com/s/AKfycbxABC/exec'), '', 'Workspace 網域的寫法');
+  assert.match(todo.urlProblem('https://script.google.com/u/0/home/projects/1q6lITCVnqkVq2ePlhhYO8tZTMCNk/edit'), /編輯頁.*部署/);
+  assert.match(todo.urlProblem('https://script.google.com/macros/s/AKfycbxABC/dev'), /測試部署/);
+  assert.match(todo.urlProblem('https://script.google.com/macros/s/AKfycbxABC'), /格式不對/);
+  assert.match(todo.urlProblem('https://example.com/macros/s/AKfycbxABC/exec'), /Apps Script 網頁應用程式/);
+  assert.match(todo.urlProblem('http://script.google.com/macros/s/AKfycbxABC/exec'), /Apps Script 網頁應用程式/);
+  assert.match(todo.urlProblem('隨便貼的'), /格式不對/);
+  const store = {}; const t = todo.create({ config: store, saveConfig() {} });
+  assert.throws(() => t.update({ url: 'https://script.google.com/u/0/home/projects/1q6lITCVnqkVq2ePlhhYO8tZTMCNk/edit' }), /編輯頁/, '存不進去');
+  store.todo = { url: 'https://script.google.com/home/projects/x/edit', key: 'k'.repeat(40) };   // 舊版已經存進去的錯網址
+  assert.match(t.status().urlProblem, /編輯頁/); assert.equal(t.status().configured, true);
+});
+
 test('normDate / fmtDue / canonOwner / safe', () => {
   const now = new Date(2026, 10, 19, 8, 52).getTime(); // 2026/11/19 週四
   assert.equal(todo.normDate('2026-11-27', now), '2026-11-27'); assert.equal(todo.normDate('2026/1/5', now), '2026-01-05');

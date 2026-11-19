@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.18.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.18.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -2097,7 +2097,8 @@ async function openTodo() {
   const keepUrl = modalShowing('td_close') && $('td_url') ? $('td_url').value : '';
   openModal(`<h2>📋 待辦清單（Google Sheet）</h2>
     <p class="lead">部門待辦存在<b>你自己的 Google Sheet</b>：人可以直接改，LINE 群組裡 @待辦管家 也能登記、查詢、更新。<b>每天早上由 Google 自動寄 email 提醒</b>（負責人收自己的、主管收總表），不用 AI、不耗額度，電腦關機也會寄。</p>
-    <div class="ln-chips"><span class="cli-chip">${T.configured ? '✅ 已設定' : '❔ 還沒設定'}${T.urlHint ? '：' + esc(T.urlHint) : ''}</span></div>
+    <div class="ln-chips"><span class="cli-chip">${T.urlProblem ? '❌ 網址不對' : T.configured ? '✅ 已設定' : '❔ 還沒設定'}${T.urlHint && !T.urlProblem ? '：' + esc(T.urlHint) : ''}</span></div>
+    ${T.urlProblem ? `<div class="sk-bad">${esc(T.urlProblem)}</div>` : ''}
     <details class="ln-guide" ${T.configured ? '' : 'open'}><summary><b>🧭 第一次設定：照這 7 步做（約 10 分鐘，全在瀏覽器）</b></summary>
       <ol>
         <li>用你的 Gmail 開一份新的 Google 試算表（網址列輸入 <code>sheets.new</code>），取名例如「部門待辦」。</li>
