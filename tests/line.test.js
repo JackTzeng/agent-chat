@@ -72,7 +72,7 @@ test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
       const k = req.method + ' ' + req.url;
       if (k === 'GET /v2/bot/info') return send(200, { displayName: '測試助理', basicId: '@abc123' });
       if (k === 'GET /v2/bot/channel/webhook/endpoint') return send(200, { endpoint: hook, active: true });
-      if (k === 'PUT /v2/bot/channel/webhook/endpoint') { putCalls++; if (putCalls === 1) return send(400, { message: 'Invalid webhook endpoint URL' }); hook = body.endpoint; return send(200, {}); }
+      if (k === 'PUT /v2/bot/channel/webhook/endpoint') { putCalls++; if (putCalls <= 5) return send(400, { message: 'Invalid webhook endpoint URL' }); hook = body.endpoint; return send(200, {}); }
       if (k === 'POST /v2/bot/channel/webhook/test') return send(200, { success: true, statusCode: 200, reason: 'OK' });
       if (k === 'GET /v2/bot/message/quota') return send(200, { type: 'limited', value: 200 });
       if (k === 'GET /v2/bot/message/quota/consumption') return send(200, { totalUsage: 7 });
@@ -228,7 +228,8 @@ test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
   st = await waitFor(async () => { const s = await J('/api/line'); return s.tunnel.state === 'on' && s.webhook && s.webhook.tested && s; }, 'tunnel on');
   assert.equal(st.tunnel.url, 'https://fake-test-1.trycloudflare.com'); assert.equal(st.publicUrl, 'https://fake-test-1.trycloudflare.com');
   assert.equal(hook, 'https://fake-test-1.trycloudflare.com/line/webhook');
-  assert.equal(putCalls, 2, '第一次 LINE 回 400（網址還沒生效），自動重試後成功');
+  assert.ok(putCalls >= 6, '前 5 次 LINE 都回 400（網址還沒生效）：先在一次設定裡重試 4 次、失敗後稍後再整個重來，第 6 次成功');
+  assert.equal((await J('/api/line')).lastError, '', '成功之後，舊的「最近的問題」會清掉');
   assert.ok(calls.some((c) => c.method === 'POST' && c.url === '/v2/bot/channel/webhook/test'));
   assert.match(fs.readFileSync(log, 'utf8'), new RegExp('CLOUDFLARED tunnel --no-autoupdate --url http://127.0.0.1:' + linePort));
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'agents.json'), 'utf8')).line.tunnel, true, '記住要自動開');

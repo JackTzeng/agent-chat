@@ -394,6 +394,7 @@ function create(ctx) {
       await sleep(retryMs());
     }
     const got = await request('GET', '/v2/bot/channel/webhook/endpoint'); // 「Use webhook」開關 API 改不了，讀回來看有沒有打開
+    if (test.success) S().lastError = ''; // 成功了，之前的「最近的問題」就不用再顯示
     S().webhook = { endpoint: url, active: got.status === 200 ? !!(got.json && got.json.active) : null, at: Date.now(), tested: !!test.success, reason: test.success ? '' : short(test.reason || test.detail || '測試沒有通過', 200) };
     ctx.saveState(); changed();
     return { url, ok: !!test.success, reason: S().webhook.reason };
@@ -406,6 +407,13 @@ function create(ctx) {
     for (const n of ['cloudflared.exe', 'cloudflared']) { const f = path.join(ctx.ROOT, n); try { if (fs.existsSync(f)) return f; } catch {} }
     return 'cloudflared';
   };
+  // 通道網址每次重開都會變：設到 LINE 失敗（例如網址還沒生效）就過一陣子再試，最多 5 次，直到成功或通道換了網址
+  function trySetup(url, n = 0) {
+    setupWebhook(url).catch((e) => {
+      note(e.message);
+      if (n < 5) setTimeout(() => { if (tun.url === url) trySetup(url, n + 1); }, Math.max(retryMs() * 6, 500)).unref();
+    });
+  }
   function startTunnel() {
     if (tun.proc || !configured()) return;
     tunWant = true; tun = { proc: null, state: 'starting', url: '', error: '' }; changed();
@@ -416,7 +424,7 @@ function create(ctx) {
     tun.proc = proc;
     const onData = (c) => {
       const m = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(String(c));
-      if (m && tun.url !== m[0]) { tun.url = m[0]; tun.state = 'on'; tunRestarts = 0; changed(); setupWebhook(m[0]).catch((e) => note(e.message)); }
+      if (m && tun.url !== m[0]) { tun.url = m[0]; tun.state = 'on'; tunRestarts = 0; changed(); trySetup(m[0]); }
     };
     proc.stdout.on('data', onData); proc.stderr.on('data', onData);
     proc.on('error', (e) => { tun.proc = null; tunWant = false; tun.state = e.code === 'ENOENT' ? 'missing' : 'error'; tun.error = e.code === 'ENOENT' ? '找不到 cloudflared。請下載 cloudflared.exe 放進 Agent Chat 資料夾（作法見上面的說明）' : e.message; changed(); });
