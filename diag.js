@@ -43,6 +43,7 @@ exports.create = function create(ctx) {
     const list = [];
     const C = ctx.CONFIG || {};
     if (C.telegram && C.telegram.botToken) list.push(C.telegram.botToken);
+    if (C.todo && C.todo.key) list.push(C.todo.key);
     if (C.line) { if (C.line.channelSecret) list.push(C.line.channelSecret); if (C.line.channelAccessToken) list.push(C.line.channelAccessToken); }
     for (const a of C.agents || []) {
       if (a.telegram && a.telegram.botToken) list.push(a.telegram.botToken);

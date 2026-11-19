@@ -32,7 +32,8 @@
 6. **🧩 Skill 安裝（v3.14）**：請成員「幫我裝 nutlope/hallmark 給某成員」，確認申請出現、核准後檔案在 `工作資料夾\.claude\skills\hallmark`、該成員下一輪看得到這個 Skill。公司網路若擋 codeload.github.com，下載會失敗（錯誤訊息會顯示）。
 7. **🗓 助理（v3.15）**：新增成員按「🗓 套用助理設定」，對它說「明天下午三點提醒我開會」，確認：行程.md 有寫進 `workspace\assistant`、「⏰ 排程」出現單次建議、核准後時間到會收到提醒（Telegram 也要收到）；acceptEdits 能不能順利寫檔（Claude Code 實際行為還沒在 Windows 驗證）。
 8. **💚 LINE（v3.17）**：照「💚 LINE」6 步建 LINE 官方帳號、貼 secret／token、放 cloudflared.exe、一鍵開通道、配對，然後在 LINE 對助理說「明天下午三點提醒我開會」。要確認：Windows 上 cloudflared 能開（公司網路可能擋）、LINE「Verify」通過、reply 能收到、「同意 N」能排進去、提醒時間到有收到 push。LINE 官方帳號的選單名稱常改，教學若與實際畫面不同請回報。
-9. CLAUDE.md 待辦 3 列的其他項目（一鍵更新、排程配真實 CLI、Codex rollout token、`--allowedTools` 比對）。
+9. **📋 部門待辦（v3.18）**：Google 端只用假的環境測過（真的 Code.gs 跑在假的試算表／信箱）。在真實環境要確認：Apps Script 部署與授權流程、網頁應用程式 POST 的 302 轉址（`todo.js` 用 fetch 跟隨）、寄信額度與每日觸發、agy 唯讀在群組裡寫動作行的穩定度（若 gemini-flash 常漏寫動作行，調整 `TODO_PERSONA` 或換模型）、LINE 群組的 `mention.isSelf` 與 userId 是否有提供、群組推播的訊息則數怎麼算。
+10. CLAUDE.md 待辦 3 列的其他項目（一鍵更新、排程配真實 CLI、Codex rollout token、`--allowedTools` 比對）。
 
 ## 待辦（依優先順序建議）
 1. 上面的實測回報與修正（agy write 等級的錯誤說法已在 v3.11.1 更正，剩 E／F 實測）。

@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.17.0';
+const VERSION = '3.18.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -14,6 +14,7 @@ const agy = require('./agy');
 const cliStatusLib = require('./clistatus');
 const skillsLib = require('./skills');
 const lineLib = require('./line');
+const todoLib = require('./todo');
 const harnessLib = require('./harness');
 const { createSecurity, inside, isProtectedEnvKey } = require('./security');
 
@@ -130,7 +131,7 @@ function decodeOutput(buf) {
 }
 
 // 要從回報、紀錄裡遮掉的機密：Telegram bot token、LINE channel secret／access token
-function secretList() { const c = CONFIG; return [c.telegram && c.telegram.botToken, c.line && c.line.channelSecret, c.line && c.line.channelAccessToken]; }
+function secretList() { const c = CONFIG; return [c.telegram && c.telegram.botToken, c.line && c.line.channelSecret, c.line && c.line.channelAccessToken, c.todo && c.todo.key]; }
 
 const LOCAL_HOSTS = ['127.0.0.1', 'localhost', '::1'];
 if (!LOCAL_HOSTS.includes(HOST) && !process.env.ALLOWED_HOSTS) {
@@ -902,7 +903,7 @@ function startRun(agent, userText, opts = {}) {
   }
   const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system, interject: opts.interject, shift: opts.shift, timerId: opts.timerId };
 
-  const shownText = opts.pauseNote ? '⏸ 專案暫停：請成員寫交班筆記，重啟後換成全新的對話接手' : opts.shift ? '🔄 換班：' + (opts.manualShift ? '你要求換班' : '對話已經很長') + '，請成員寫交班筆記，之後換成全新的對話接手' : userText;
+  const shownText = opts.pauseNote ? '⏸ 專案暫停：請成員寫交班筆記，重啟後換成全新的對話接手' : opts.shift ? '🔄 換班：' + (opts.manualShift ? '你要求換班' : '對話已經很長') + '，請成員寫交班筆記，之後換成全新的對話接手' : opts.shown || userText;
   appendHistory(agent.id, { role: 'user', text: shownText, ...meta, ts: Date.now() });
   broadcast({ agentId: agent.id, kind: 'user', text: shownText, ...meta });
   hooks.emit('user', { agent, text: userText, from: opts.from, via: opts.via });
@@ -1799,6 +1800,12 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/agents' && req.method === 'GET') return send(res, 200, AGENTS.map(publicAgent));
 
     // ---- Telegram 設定（網頁上貼 token、產生配對碼）----
+    // ---- 📋 待辦清單（Google Sheet）----
+    if (p === '/api/todo' && req.method === 'GET') return send(res, 200, todoBook.status());
+    if (p === '/api/todo' && req.method === 'PUT') { try { return send(res, 200, todoBook.update(await readBody(req))); } catch (e) { return send(res, e.status || 400, { error: e.message }); } }
+    if (p === '/api/todo/ping' && req.method === 'POST') { try { return send(res, 200, { ...(await todoBook.ping()), status: todoBook.status() }); } catch (e) { return send(res, 400, { error: e.message }); } }
+    if (p === '/api/todo/digest' && req.method === 'POST') { try { const b = await readBody(req); return send(res, 200, await todoBook.digest(b.send === true)); } catch (e) { return send(res, 400, { error: e.message }); } }
+    if (p === '/api/todo/script' && req.method === 'GET') { try { return send(res, 200, { code: fs.readFileSync(path.join(ROOT, 'templates', 'todo', 'Code.gs'), 'utf8') }); } catch (e) { return send(res, 500, { error: '找不到 Apps Script 範本：' + e.message }); } }
     // ---- 💚 LINE ----
     if (p === '/api/line' && req.method === 'GET') return send(res, 200, lineBot.status());
     if (p === '/api/line' && req.method === 'PUT') { try { return send(res, 200, lineBot.update(await readBody(req))); } catch (e) { return send(res, e.status || 400, { error: e.message }); } }
@@ -2175,7 +2182,8 @@ server.listen(PORT, HOST, () => {
 
 // Telegram 遙控（agents.json 有設定 telegram.botToken 才會啟動）
 const telegram = require('./telegram');
-const lineBot = lineLib.create({ config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
+const todoBook = todoLib.create({ config: CONFIG, saveConfig: () => saveConfig() });
+const lineBot = lineLib.create({ todo: todoBook, config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
   agentById, agents: AGENTS, dispatch, stopRun, resetAgent, timers, proctree, ROOT });
 const tgCtx = {
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,

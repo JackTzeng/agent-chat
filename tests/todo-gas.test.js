@@ -1,0 +1,123 @@
+'use strict';
+// 待辦機器人的 Apps Script（templates/todo/Code.gs）：用假的 Google 環境（試算表、信箱、鎖、設定）載入真正要貼進 Sheet 的那份檔案來測。
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { makeEnv, iso } = require('./helpers/fakegoogle');
+
+const sheetRows = (env, name) => env.sheets.get(name).data;
+
+test('setup creates the sheets and a key; key check and unknown ops', () => {
+  const env = makeEnv();
+  env.g.setup();
+  for (const n of ['待辦', '成員', '設定', '紀錄']) assert.ok(env.sheets.get(n), '建立分頁 ' + n);
+  assert.deepEqual(sheetRows(env, '待辦')[0].slice(0, 5), ['編號', '事項', '負責人', '期限', '狀態']);
+  assert.match(env.props.KEY, /^[0-9a-f]{40}$/);
+  assert.match(env.alerts.at(-1), /初始化完成/);
+  assert.equal(sheetRows(env, '設定').length, 4, '預設設定');
+  const keyBefore = env.props.KEY; env.g.setup(); assert.equal(env.props.KEY, keyBefore, '再按一次初始化不會換密鑰');
+  assert.equal(env.call('ping', {}, 'wrong').ok, false);
+  assert.match(env.call('ping', {}, 'wrong').error, /密鑰不對/);
+  assert.equal(env.call('ping', {}, '').ok, false);
+  assert.match(env.call('nope').error, /不認得/);
+  assert.equal(env.call('ping').ok, true);
+  assert.match(JSON.parse(env.g.doGet().text).note, /POST/);
+  env.g.showKey(); assert.ok(env.alerts.at(-1).includes(env.props.KEY));
+  env.g.resetKey(); assert.notEqual(env.props.KEY, keyBefore);
+});
+
+test('add / list / update / get with validation; humans can edit the sheet too', () => {
+  const env = makeEnv(); env.g.setup();
+  const a = env.call('add', { title: '完成 HPLC 校正紀錄', owner: '小王', due: iso(3), priority: '高', by: '王小明', note: '等試劑' });
+  assert.equal(a.ok, true); assert.equal(a.item.id, 1);
+  const b = env.call('add', { title: '訂購耗材', owner: '小李', due: '', by: '小李' }); assert.equal(b.item.id, 2);
+  assert.equal(env.call('add', { title: '' }).ok, false);
+  assert.match(env.call('add', { title: 'x', due: '明天' }).error, /YYYY-MM-DD/);
+  assert.match(env.call('add', { title: 'x', due: '2026-02-31' }).error, /YYYY-MM-DD/);
+  assert.match(env.call('add', { title: 'x', priority: '急' }).error, /高／中／低/);
+  // 寫進去的是真的日期格式；其他欄位按欄位名稱放對位置
+  const row = sheetRows(env, '待辦')[1]; assert.equal(row[1], '完成 HPLC 校正紀錄'); assert.ok(row[3] instanceof Date); assert.equal(row[4], '待辦'); assert.equal(row[7], '王小明');
+  // 人直接在 Sheet 新增一列（沒有編號、沒有狀態）→ 下次讀取時補上
+  env.sheets.get('待辦').appendRow(['', '人工新增的事項', '小張', '2026/12/5']);
+  let list = env.call('list'); assert.equal(list.items.length, 3);
+  const manual = list.items.find((x) => x.title === '人工新增的事項'); assert.equal(manual.id, 3); assert.equal(manual.status, '待辦'); assert.equal(manual.due, '2026-12-05');
+  // 欄位順序被人調過、中間插了自己的欄：照樣能用
+  const sh = env.sheets.get('待辦'); sh.data = sh.data.map((r) => { const c = r.slice(); c.splice(2, 0, c[0] === '編號' ? '我的欄位' : 'x'); return c; });
+  assert.equal(env.call('add', { title: '調過欄位後新增', owner: '小王' }).item.id, 4);
+  const last = sh.data.at(-1); assert.equal(last[sh.data[0].indexOf('事項')], '調過欄位後新增'); assert.equal(last[sh.data[0].indexOf('我的欄位')], '');
+  // 更新
+  const u = env.call('update', { id: 1, fields: { status: '進行中', due: iso(10), note: '試劑到了' }, by: '小王' });
+  assert.equal(u.ok, true); assert.equal(u.item.status, '進行中'); assert.equal(u.item.due, iso(10)); assert.deepEqual(u.changed, ['期限', '備註', '狀態']);
+  const done = env.call('update', { id: 1, fields: { status: '完成' }, by: '小王' });
+  assert.equal(done.item.status, '完成'); assert.ok(done.item.doneAt, '有完成時間'); assert.equal(done.item.updatedBy, '小王');
+  assert.ok(!env.call('list').items.some((x) => x.id === 1), '預設只列未完成的');
+  assert.equal(env.call('list', { statuses: ['完成'] }).items.length, 1);
+  assert.equal(env.call('update', { id: 1, fields: { status: '待辦' } }).item.doneAt, '', '重新打開就清掉完成時間');
+  assert.equal(env.call('update', { id: 2, fields: { due: '' } }).item.due, '');
+  assert.match(env.call('update', { id: 2, fields: { status: '搞定' } }).error, /狀態要是/);
+  assert.match(env.call('update', { id: 99, fields: { note: 'x' } }).error, /找不到編號 #99/);
+  assert.match(env.call('update', { id: 2, fields: {} }).error, /沒有要改/);
+  assert.equal(env.call('get', { id: 2 }).item.title, '訂購耗材');
+  assert.ok(sheetRows(env, '紀錄').length > 3, '有留紀錄');
+});
+
+test('members: register, bind pre-filled names, email, conflicts', () => {
+  const env = makeEnv(); env.g.setup();
+  env.sheets.get('成員').appendRow(['小王', 'wang@example.com', '成員', '', '']);          // 人先填好姓名與 email
+  const r1 = env.call('register', { userId: 'U1', lineName: 'Wang🙂', name: '小王' });
+  assert.equal(r1.member.email, 'wang@example.com'); assert.equal(r1.member.userId, 'U1');
+  assert.equal(sheetRows(env, '成員').length, 2, '綁到原本那列，沒有多一列');
+  const r2 = env.call('register', { userId: 'U2', lineName: 'Boss', name: '王主任' }); assert.equal(r2.member.role, '成員');
+  assert.match(env.call('register', { userId: 'U3', name: '小王' }).error, /已經有人登記/);
+  assert.equal(env.call('register', { userId: 'U2', name: '王主任（改）' }).member.name, '王主任（改）', '同一個人可以改名');
+  assert.match(env.call('register', { userId: '', name: 'x' }).error, /LINE/);
+  assert.equal(env.call('setEmail', { userId: 'U2', email: 'boss@example.com' }).member.email, 'boss@example.com');
+  assert.match(env.call('setEmail', { userId: 'U2', email: 'not-an-email' }).error, /格式不對/);
+  assert.match(env.call('setEmail', { userId: 'U9', email: 'a@b.co' }).error, /還沒登記/);
+  assert.equal(env.call('members').members.length, 2);
+});
+
+test('daily digest: owners get theirs, managers get the summary, nothing when nothing is due', () => {
+  const env = makeEnv(); env.g.setup();
+  env.sheets.get('設定').data.forEach((r) => { if (r[0] === '週末是否寄信') r[1] = '是'; if (r[0] === '總表收件人') r[1] = 'head@example.com, boss@example.com'; });
+  env.sheets.get('成員').appendRow(['小王', 'wang@example.com', '成員', '', 'U1']);
+  env.sheets.get('成員').appendRow(['王主任', 'boss@example.com', '主管', '', 'U2']);
+  assert.equal(env.call('digest').count, 0, '沒有事項就不寄');
+  env.call('add', { title: '逾期的事', owner: '小王', due: iso(-2), priority: '高' });
+  env.call('add', { title: '兩天後到期', owner: '小王', due: iso(2) });
+  env.call('add', { title: '很久以後', owner: '小王', due: iso(30) });
+  env.call('add', { title: '沒 email 的人的事', owner: '小李', due: iso(0) });
+  env.call('add', { title: '沒有期限', owner: '小王' });
+  env.call('add', { title: '擱置中', owner: '小王', due: iso(-5) }); env.call('update', { id: 6, fields: { status: '擱置' } });
+  env.call('add', { title: '已經完成', owner: '小王', due: iso(-1) }); env.call('update', { id: 7, fields: { status: '完成' } });
+  const prev = env.call('digest');
+  assert.equal(prev.count, 2); assert.equal(prev.sent, false); assert.equal(env.sent.length, 0, '預覽不會寄');
+  const r = env.call('digest', { send: true });
+  assert.equal(r.sent, true); assert.equal(env.sent.length, 2);
+  const owner = env.sent.find((m) => m.to === 'wang@example.com'), summary = env.sent.find((m) => m.to !== 'wang@example.com');
+  assert.match(owner.subject, /【待辦提醒】小王：逾期 1 項、1 項快到期/);
+  assert.match(owner.body, /#1 逾期的事（期限 \d+\/\d+（週.）?，已逾期 2 天，優先 高）/); assert.match(owner.body, /#2 兩天後到期.*2 天後到期/);
+  assert.doesNotMatch(owner.body, /很久以後|沒有期限|擱置中|已經完成/);
+  assert.deepEqual(summary.to.split(',').sort(), ['boss@example.com', 'head@example.com'], '主管與總表收件人（不重複）');
+  assert.match(summary.subject, /【部門待辦總表】逾期 1 項、2 項快到期/);
+  assert.match(summary.body, /■ 小王[\s\S]*■ 小李/); assert.match(summary.body, /沒有登記 email.*小李/);
+  assert.equal(summary.name, '待辦提醒'); assert.equal(owner.name, '待辦提醒');
+  // 寄信額度不夠
+  const env2 = makeEnv({ mailQuota: 1 }); env2.g.setup();
+  env2.sheets.get('設定').data.forEach((r) => { if (r[0] === '週末是否寄信') r[1] = '是'; if (r[0] === '總表收件人') r[1] = 'a@x.com'; });
+  env2.sheets.get('成員').appendRow(['小王', 'wang@example.com', '成員', '', '']);
+  env2.call('add', { title: 't', owner: '小王', due: iso(0) });
+  assert.match(env2.call('digest', { send: true }).error, /額度不夠/);
+});
+
+test('digest weekend rule and the daily trigger', () => {
+  const d = new Date(); d.setHours(12, 0, 0, 0);
+  const wd = d.getDay(); // 今天是週末：預設不寄；平日：預設會寄
+  const env = makeEnv(); env.g.setup();
+  env.sheets.get('成員').appendRow(['小王', 'wang@example.com', '成員', '', '']);
+  env.call('add', { title: 't', owner: '小王', due: iso(0) });
+  assert.equal(env.call('digest').count, wd === 0 || wd === 6 ? 0 : 1);
+  env.g.installDigestTrigger(); env.g.installDigestTrigger();
+  assert.equal(env.triggers.length, 1, '重複安裝只會有一個');
+  env.g.removeDigestTrigger(); assert.equal(env.triggers.length, 0);
+  env.g.installDigestTrigger(); env.g.dailyDigest(); // 不會丟錯
+});
