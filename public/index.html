@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.19.2'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.19.3'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -2140,7 +2140,7 @@ async function openTodo() {
 }
 
 // ---------- 💚 LINE ----------
-let LINE_CHECK = null;
+let LINE_CHECK = null, LN_URL_DIRTY = false; // 進階的網址欄：只有你自己改過才保留，不然每次都顯示目前的
 const LN_STATE = { off: '⚪ 沒開', starting: '⏳ 啟動中…', on: '🟢 已開', error: '🔴 出錯了', missing: '🔴 找不到 cloudflared' };
 async function openLine() {
   const keep = modalShowing('ln_close') ? ['ln_secret', 'ln_token', 'ln_url', 'ln_agent', 'ln_gagent'].reduce((o, id) => { if ($(id)) o[id] = $(id).value; return o; }, {}) : {};
@@ -2196,8 +2196,9 @@ async function openLine() {
       <p class="help">到 <a href="https://github.com/cloudflare/cloudflared/releases/latest" target="_blank" rel="noopener noreferrer">cloudflared 的下載頁</a>，下載 <code>cloudflared-windows-amd64.exe</code>，<b>改名成 <code>cloudflared.exe</code></b>，放進 Agent Chat 的資料夾（和 <code>server.js</code> 同一層）。之後按上面的按鈕就會自動開通道，並<b>自動把網址設到 LINE</b>。<br>
       通道網址每次重開都會變，但 Agent Chat 會自動重新設定，你不用管。已經開啟過的話，程式重新啟動時會自動再開。</p></details>
     <details class="ln-guide"><summary>進階：我有自己的固定網址（Tailscale Funnel、自己的網域…）</summary>
-      <div class="sk-row"><input id="ln_url" value="${esc(keep.ln_url !== undefined ? keep.ln_url : L.publicUrl)}" placeholder="https://你的網址（只要網域，不用加 /line/webhook）" style="flex:1;min-width:200px"><button id="ln_wh">設定 Webhook 並測試</button></div>
+      <div class="sk-row"><input id="ln_url" value="${esc(LN_URL_DIRTY && keep.ln_url !== undefined ? keep.ln_url : L.publicUrl)}" placeholder="https://你的網址（只要網域，不用加 /line/webhook）" style="flex:1;min-width:200px"><button id="ln_wh">設定 Webhook 並測試</button></div>
       <p class="help">把這個網址的 <code>/line/webhook</code> 轉到這台電腦的 <code>127.0.0.1:${L.port}</code> 即可（Tailscale：<code>tailscale funnel --bg ${L.port}</code>）。上面的一鍵通道和這裡二選一。</p></details>
+    ${t.state === 'on' && t.url && wh && wh.endpoint && wh.endpoint !== t.url + '/line/webhook' ? `<div class="sk-bad">⚠️ LINE 上登記的網址（${esc(wh.endpoint)}）和目前的通道（${esc(t.url)}）<b>不一樣</b>，LINE 的訊息會送去舊網址、這裡收不到。程式會自動更新（剛開通道要等一下）；超過一兩分鐘還是這樣，按：<button id="ln_fix">🔄 立刻重設 Webhook</button></div>` : ''}
     ${wh ? `<p class="help">Webhook：${esc(wh.endpoint || '—')}｜${wh.tested ? '✅ LINE 測試通過' : '❌ ' + esc(wh.reason || '還沒通過')}${wh.active === false ? '｜⚠️ 到 LINE Developers 把「Use webhook」打開' : ''}（${ago(wh.at)}）</p>` : ''}
     <h3 class="sk-h">③ 配對（只有配對過的 LINE 帳號，才能跟成員說話）</h3>
     <div class="sk-row"><button id="ln_pair" ${L.configured ? '' : 'disabled'}>產生配對碼</button>${L.allowedCount ? '<button id="ln_unpair">清除所有配對</button>' : ''}
@@ -2211,13 +2212,15 @@ async function openLine() {
     <div class="modal-actions"><span class="spacer"></span><button id="ln_close">關閉</button></div>`);
   $('modal').classList.add('wide');
   const act = async (fn) => { try { await fn(); } catch (e) { toast(e.message); } openLine(); };
-  $('ln_close').onclick = closeModal;
+  $('ln_close').onclick = () => { LN_URL_DIRTY = false; closeModal(); };
+  if ($('ln_url')) $('ln_url').addEventListener('input', () => { LN_URL_DIRTY = true; });
+  if ($('ln_fix')) $('ln_fix').onclick = () => act(async () => { const r = await api('/api/line/webhook', { method: 'POST', body: JSON.stringify({ publicUrl: t.url }) }); LN_URL_DIRTY = false; toast(r.ok ? '✅ Webhook 重設好了，LINE 測試通過' : '設定好了，但 LINE 測試沒過：' + r.reason); });
   $('ln_save').onclick = () => act(() => api('/api/line', { method: 'PUT', body: JSON.stringify({ agentId: $('ln_agent').value, groupAgentId: $('ln_gagent').value, channelSecret: $('ln_secret').value, channelAccessToken: $('ln_token').value }) }).then(() => { $('ln_secret').value = ''; $('ln_token').value = ''; toast('已儲存'); }));
   $('ln_check').onclick = () => act(async () => { $('ln_check').textContent = '檢查中…'; LINE_CHECK = await api('/api/line/check', { method: 'POST', body: '{}' }); });
   if ($('ln_clear')) $('ln_clear').onclick = () => { if (confirm('移除 LINE 的所有設定（secret、token、配對）？LINE 上的官方帳號不會被刪除。')) act(async () => { LINE_CHECK = null; await api('/api/line', { method: 'PUT', body: JSON.stringify({ clear: true }) }); }); };
   $('ln_tun_on').onclick = () => act(() => api('/api/line/tunnel', { method: 'POST', body: JSON.stringify({ on: true }) }));
   $('ln_tun_off').onclick = () => act(() => api('/api/line/tunnel', { method: 'POST', body: JSON.stringify({ on: false }) }));
-  $('ln_wh').onclick = () => act(async () => { const r = await api('/api/line/webhook', { method: 'POST', body: JSON.stringify({ publicUrl: $('ln_url').value }) }); toast(r.ok ? '✅ Webhook 設定好了，LINE 測試通過' : '設定好了，但 LINE 測試沒過：' + r.reason); });
+  $('ln_wh').onclick = () => act(async () => { const r = await api('/api/line/webhook', { method: 'POST', body: JSON.stringify({ publicUrl: $('ln_url').value }) }); LN_URL_DIRTY = false; toast(r.ok ? '✅ Webhook 設定好了，LINE 測試通過' : '設定好了，但 LINE 測試沒過：' + r.reason); });
   $('ln_pair').onclick = () => act(() => api('/api/line/pair', { method: 'POST', body: '{}' }));
   $('ln_todo').onclick = () => openTodo();
   if ($('ln_cgroups')) $('ln_cgroups').onclick = () => { if (confirm('清除所有已啟用的群組？之後要在群組重新貼配對碼才會再啟用。')) act(() => api('/api/line', { method: 'PUT', body: JSON.stringify({ clearGroups: true }) })); };
