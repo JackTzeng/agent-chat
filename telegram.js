@@ -35,6 +35,7 @@ const HELP =
   '/resume 指示　▶ 重啟專案，可以加一句給所有成員的補充指示\n' +
   '/new　目前對象開新對話\n' +
   '/usage　Claude / Codex 用量額度、agy 本週用量\n' +
+  '/skills　🧩 Skill 安裝申請；/skill 編號 ok（會再問一次）／no\n' +
   '/timers　⏰ 看所有排程；/timer 編號 run／on／off／ok／no\n' +
   '/report 描述　🐞 產生問題回報檔傳給你（轉給 Claude 排查）\n' +
   '/update　⬆️ 檢查更新，有新版就更新並重新啟動\n' +
@@ -429,6 +430,22 @@ exports.start = function start(ctx) {
   listen('resume', async ({ label: lb, minutes, restarted, held, text }) => {
     for (const id of pushRecipients()) await say(id, '▶ ' + lb + '已重啟（暫停了 ' + minutes + ' 分鐘）：' + (restarted ? restarted + ' 位成員接著做被停下的工作，' : '') + (held ? '放行 ' + held + ' 則排隊的訊息' : '沒有排隊的訊息') + (text ? '\n補充指示：' + text : ''));
   });
+  // 🧩 Skill 安裝申請：下載檢查完成，等你核准
+  listen('skill-request', async ({ req }) => {
+    const rv = req.review || {};
+    const lines = ['🧩 Skill 安裝申請 #' + req.id + '：' + (req.title || req.name),
+      '來源：github.com/' + req.source + (req.from && ctx.agentById(req.from) ? '（' + ctx.agentById(req.from).name + ' 提出）' : ''),
+      req.description ? '說明：' + req.description.slice(0, 200) : '',
+      '安裝到：' + req.targetLabel,
+      '內容：' + rv.fileCount + ' 個檔案、' + Math.max(1, Math.round((rv.bytes || 0) / 1024)) + ' KB',
+      rv.scripts && rv.scripts.length ? '⚠️ 含可執行的腳本 ' + rv.scripts.length + ' 個：' + rv.scripts.slice(0, 5).join('、') + (rv.scripts.length > 5 ? '…' : '') : '✅ 沒有可執行的腳本',
+      req.exists ? '⚠️ 同名的 Skill 已經存在，要到網頁勾「取代現有的」才能裝' : '',
+      '', '核准：/skill ' + req.id + ' ok　拒絕：/skill ' + req.id + ' no（網頁「🧰 CLI 狀態 → 🧩 Skill」可以看完整檔案清單）'];
+    for (const id of pushRecipients()) await say(id, lines.filter((x) => x !== '').join('\n'));
+  });
+  listen('skill-installed', async ({ req }) => {
+    for (const id of pushRecipients()) await say(id, '✅ Skill「' + (req.title || req.name) + '」已安裝到' + req.targetLabel + '，相關成員下一輪就能用');
+  });
   // 🪫 agy 額度用完：暫停自動派工，等恢復
   listen('agy-quota', async ({ agent, until, estimated, usage }) => {
     for (const id of pushRecipients()) await say(id, '🪫 ' + label(agent) + ' 的 agy 額度用完了，預計 ' + fmtHm(until) + (estimated ? '（推估）' : '') + ' 恢復。\n本週用了 ' + usage.runs + ' 輪、' + usage.tokens + ' tokens。\n在那之前同事轉交、任務、排程不會交給它（會通知派工的人改派）；你直接傳訊息給它會再試一次，成功就自動解除。');
@@ -621,6 +638,32 @@ exports.start = function start(ctx) {
           return;
         }
         case 'status': case 'tasks': return say(chatId, taskStatusText());
+        case 'skills': {
+          const snap = ctx.skills.snapshot();
+          const list = snap.requests.filter((r) => ['ready', 'choose', 'fetching', 'failed'].includes(r.status)).slice(0, 8);
+          if (!list.length) return say(chatId, '目前沒有 Skill 安裝申請。請成員幫你找 Skill，它會用【安裝 Skill】提出申請。');
+          const ST = { ready: '等你核准', choose: '要在網頁選擇裝哪一個', fetching: '下載檢查中', failed: '失敗' };
+          return say(chatId, '🧩 Skill 安裝申請\n' + list.map((r) => '#' + r.id + ' ' + (r.title || r.source) + '（' + ST[r.status] + (r.error ? '：' + r.error : '') + '）').join('\n') + '\n\n/skill 編號 ok 核准、/skill 編號 no 拒絕');
+        }
+        case 'skill': {
+          const m = /^#?(\d+)\s+(ok|yes|no)\b/i.exec(arg || '');
+          if (!m) return say(chatId, '用法：/skill 編號 ok（核准，會再問一次）或 /skill 編號 no（拒絕）');
+          const r = ctx.skills.get(m[1]);
+          if (!r) return say(chatId, '找不到 Skill 安裝申請 #' + m[1]);
+          const act = m[2].toLowerCase();
+          try {
+            if (act === 'no') { ctx.skills.reject(r.id, 'telegram'); return say(chatId, '🚫 已拒絕 Skill 安裝申請 #' + r.id); }
+            if (r.status !== 'ready') return say(chatId, '#' + r.id + ' 現在不能安裝（' + r.status + '）' + (r.error ? '：' + r.error : ''));
+            if (act === 'ok') {
+              c.skillConfirm = { id: r.id, at: Date.now() }; ctx.saveState();
+              return say(chatId, '確定要安裝「' + (r.title || r.name) + '」到' + r.targetLabel + '？' + (r.review && r.review.scripts.length ? '\n⚠️ 它含 ' + r.review.scripts.length + ' 個可執行的腳本。' : '') + '\n確定請在 2 分鐘內傳：/skill ' + r.id + ' yes');
+            }
+            if (!c.skillConfirm || c.skillConfirm.id !== r.id || Date.now() - c.skillConfirm.at > 120000) return say(chatId, '請先傳 /skill ' + r.id + ' ok，再在 2 分鐘內確認');
+            delete c.skillConfirm; ctx.saveState();
+            ctx.skills.approve(r.id, { by: 'telegram' });
+            return;
+          } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+        }
         case 'approve': {
           const r = pickTask(arg, ['awaiting_approval'], '在等核准');
           if (r.err) return say(chatId, r.err);

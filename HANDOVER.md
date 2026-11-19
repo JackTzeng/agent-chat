@@ -29,7 +29,8 @@
 3. **開頭說明去重**：真實 CLI 下，成員在只收到「說明沒有變動」那一行時是否仍照守則與交接規則做事；看 📏 面板的數字。
 4. **暫停／重啟**：真實成員寫交班筆記、重啟接手是否順利；程式重新啟動（⬆️ 更新）後暫停狀態與排隊訊息是否保留。
 5. **🧰 CLI 狀態頁（v3.13）**：打開看三個 CLI 的登入與 MCP 是否顯示正確；顯示「無法判斷」或狀態不對的地方截圖回報，依實際輸出調整 `clistatus.js` 的解析。
-6. CLAUDE.md 待辦 3 列的其他項目（一鍵更新、排程配真實 CLI、Codex rollout token、`--allowedTools` 比對）。
+6. **🧩 Skill 安裝（v3.14）**：請成員「幫我裝 nutlope/hallmark 給某成員」，確認申請出現、核准後檔案在 `工作資料夾\.claude\skills\hallmark`、該成員下一輪看得到這個 Skill。公司網路若擋 codeload.github.com，下載會失敗（錯誤訊息會顯示）。
+7. CLAUDE.md 待辦 3 列的其他項目（一鍵更新、排程配真實 CLI、Codex rollout token、`--allowedTools` 比對）。
 
 ## 待辦（依優先順序建議）
 1. 上面的實測回報與修正（agy write 等級的錯誤說法已在 v3.11.1 更正，剩 E／F 實測）。

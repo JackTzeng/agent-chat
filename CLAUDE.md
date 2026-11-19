@@ -8,6 +8,7 @@
 - `server.js` 後端：啟動 CLI、解析輸出、SSE 推送、API；`tasks.js` 工作流程；`harness.js` 守則／檢查／預算／記憶；`timers.js` 排程；`telegram.js` 遙控
 - `rtkhook.js` rtk 的 Claude hook 外層（只採用改寫、拿掉自動核准；由 `--settings` 檔呼叫，server.js 不 require 它）
 - `agy.js` Google agy 的參數、權限對應、stream-json 解析；`security.js` 路徑與權限檢查
+- `skills.js` 🧩 Skill：成員回覆【安裝 Skill】→ 下載 GitHub tar.gz（`SKILL_TARBALL_BASE` 可換，測試用）→ 檢查（檔案、腳本）→ 使用者核准 → 複製到 `.claude/skills`；移除＝搬到 `data/skills-trash`
 - `clistatus.js` 🧰 CLI 狀態頁（登入、MCP、成員用得到哪些；只看不改，只跑不耗額度的查詢指令，不回傳指令參數／網址／金鑰）
 - `diag.js`／`updater.js`／`launcher.js`／`localsettings.js`／`proctree.js` 問題回報、一鍵更新、啟動器（結束碼 75＝重新啟動）、個人設定、子程式樹關閉
 - `public/index.html` 單檔前端（內嵌 script）、`public/office.js` 辦公室畫面
@@ -15,16 +16,17 @@
 
 ## 開發慣例
 - 不加任何 npm 相依套件；Node 18+。
-- **跑測試**：逐檔跑 `node --test tests/xxx.test.js`（`node --test tests/` 會失敗）。全部：`for f in tests/*.test.js; do node --test $f; done`。目前 15 檔全過。
+- **跑測試**：逐檔跑 `node --test tests/xxx.test.js`（`node --test tests/` 會失敗）。全部：`for f in tests/*.test.js; do node --test $f; done`。目前 16 檔全過。
 - 新增 `.js` 模組時，要把檔名加進**每個測試檔的 FILES／檔案清單**（它們會把原始碼複製到暫存資料夾跑真的伺服器），否則 `require` 找不到。
 - 測試用「假 CLI」（`tests/*.test.js` 裡的 MOCK_*）加真的伺服器，環境變數：`CLAUDE_BIN`／`CODEX_BIN`／`AGY_BIN`、`AGENTCHAT_NO_UPDATE_CHECK=1`、`AGENT_ENV_ALLOWLIST`。
 - 發版：同步改 `server.js` 的 `VERSION`、`public/index.html` 的 `UI_VERSION`、`CHANGELOG.md`（最上面加一節）、必要時 `README.md`；commit 訊息用「v3.x.y：做了什麼」；推到 `main`。使用者在網頁按「⬆️ 更新／重新啟動」取得新版（updater 遇到已追蹤檔案被改動會拒絕更新，所以**開發請用另一個 clone，不要直接改正在跑的那個資料夾**）。
 - `start.bat` 只能有 ASCII（cmd 讀 UTF-8 中文會出錯）；個人設定放 `local-settings.txt`（不進 git）。
+- 前端的視窗（modal）關閉只是隱藏，內容還在 DOM：收到 SSE 要重畫某個視窗時，用 `modalShowing(id)` 判斷，不要只看元素在不在（否則視窗會自己跳出來）。
 - 前端沒有建置步驟；改完 `public/index.html` 用抽出 `<script>` 後 `node --check` 檢查語法。
 - 安全底線：永不加入會略過權限的選項（`--dangerously-skip-permissions`、`bypassPermissions`）；使用者資料夾存取由 `security.js` 的允許清單管；機密不寫進回報（diag.js 會遮蔽）。
 
 ## 已完成（近期）
-v3.4 小組＋多房間辦公室、v3.5 守則分範圍、v3.6 問題回報與一鍵更新、v3.7 排程（前置檢查、成員暫停）、v3.8 緊急派工（【緊急】插話，授權＋冷卻）＋ Google agy 引擎（`read`／`write` 存取等級）、v3.9 上下文瘦身（開頭說明去重、📏 上下文用量、排程每次新對話、換班門檻 40%）、v3.10 暫停／重啟專案（`state.pause`、`isHeld` 擋自動派工、交班筆記、重啟接續）＋排隊訊息存檔（`state.queue`）、v3.11 rtk 壓縮指令輸出（只限 Claude 團隊成員，`--settings` ＋ `rtkhook.js`）、v3.11.1 更正 agy write 說明、v3.11.2 常用守則範本（markitdown）、v3.12 agy 額度用完偵測（`state.agyQuota`、`agyQuotaCheck`、退回並通知派工者）＋本週用量（`state.agyUsage`）、v3.12.1 agy write 資料夾警告＋`AGY_WRITE_ARGS`、v3.13 🧰 CLI 狀態頁（`clistatus.js`、`/api/clistatus`、`state.cliSeen`）。偵測規則 `agy.quotaHit`／`quotaReset` 是依常見寫法，待拿到真實 agy 額度錯誤訊息校正。
+v3.4 小組＋多房間辦公室、v3.5 守則分範圍、v3.6 問題回報與一鍵更新、v3.7 排程（前置檢查、成員暫停）、v3.8 緊急派工（【緊急】插話，授權＋冷卻）＋ Google agy 引擎（`read`／`write` 存取等級）、v3.9 上下文瘦身（開頭說明去重、📏 上下文用量、排程每次新對話、換班門檻 40%）、v3.10 暫停／重啟專案（`state.pause`、`isHeld` 擋自動派工、交班筆記、重啟接續）＋排隊訊息存檔（`state.queue`）、v3.11 rtk 壓縮指令輸出（只限 Claude 團隊成員，`--settings` ＋ `rtkhook.js`）、v3.11.1 更正 agy write 說明、v3.11.2 常用守則範本（markitdown）、v3.12 agy 額度用完偵測（`state.agyQuota`、`agyQuotaCheck`、退回並通知派工者）＋本週用量（`state.agyUsage`）、v3.12.1 agy write 資料夾警告＋`AGY_WRITE_ARGS`、v3.13 🧰 CLI 狀態頁（`clistatus.js`、`/api/clistatus`、`state.cliSeen`）、v3.14 🧩 Skill 安裝（`skills.js`、`state.skillReqs`、`/api/skills`、Telegram `/skill`）＋修正排程視窗自己跳出（`modalShowing`）。偵測規則 `agy.quotaHit`／`quotaReset` 是依常見寫法，待拿到真實 agy 額度錯誤訊息校正。
 
 ## agy 實測事實（Windows，agy 1.5.10，免費 Starter Quota）
 - 安裝位置 `%LOCALAPPDATA%\agy\bin\agy.exe`；免費帳號可用模型：`gemini-3.8-flash-{high,medium,low}`、`claude-sonnet-4-6`、`claude-opus-4-6-thinking`、`gpt-oss-120b-medium`（**沒有** gemini-4-argon）。

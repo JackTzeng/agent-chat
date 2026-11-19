@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.13.2';
+const VERSION = '3.14.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -12,6 +12,7 @@ const hooks = new EventEmitter(); // 給 Telegram 等外掛監聽：user / done 
 const taskLib = require('./tasks');
 const agy = require('./agy');
 const cliStatusLib = require('./clistatus');
+const skillsLib = require('./skills');
 const harnessLib = require('./harness');
 const { createSecurity, inside, isProtectedEnvKey } = require('./security');
 
@@ -1037,6 +1038,9 @@ function startRun(agent, userText, opts = {}) {
     // 自由聊天模式：回覆裡 @ 了同事 → 自動轉交（任務模式改由流程決定）
     const replyText = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n');
     if (!opts.taskId && replyText && !run.stopped && !agent.standalone) harness.collect(agent, replyText, null);
+    // 🧩【安裝 Skill】→ 建立安裝申請（等使用者核准，不會自動安裝）
+    if (replyText && !run.stopped) for (const r of skills.fromReply(agent, replyText))
+      emit({ kind: 'tool', text: r.error ? '🧩 Skill 安裝申請沒有送出：' + r.error : '🧩 已送出 Skill 安裝申請 #' + r.id + '（' + r.source + ' → ' + r.targetLabel + '），下載檢查後等使用者核准' });
     if (replyText && !run.stopped) timers.collect(agent, replyText, opts.taskId || null);
     const targets = opts.taskId || run.stopped || !replyText ? [] : findMentions(agent, replyText);
     if (targets.length && hops >= maxHops()) {
@@ -1414,6 +1418,10 @@ function noteCliRun(agent, run, code) {
   state.cliSeen[agent.engine] = { ok: !code && !errs, at: Date.now(), login, err: !code && !errs ? '' : short(security.redact(errs || err, []).trim(), 160) };
 }
 const cliStatus = cliStatusLib.create({ getBin, run: runCapture, agents: () => AGENTS.filter((a) => !a.blocked), seen: () => state.cliSeen, broadcast: (e) => broadcast(e) });
+
+const skills = skillsLib.create({ DATA_DIR, state, saveState: () => saveState(), broadcast: (e) => broadcast(e), hooks,
+  agents: () => AGENTS.filter((a) => !a.blocked), agentById, teams: () => CONFIG.teams, teamById,
+  findAgentByName: (n) => AGENTS.find((a) => a.name === n || a.name.toLowerCase() === String(n).toLowerCase()) });
 
 let probing = false;
 async function probeUsage() {
@@ -1824,6 +1832,22 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/usage' && req.method === 'GET') return send(res, 200, usageSnapshot());
     if (p === '/api/clistatus' && req.method === 'GET') { const snap = cliStatus.snapshot(); if (!snap.at && !snap.running) { cliStatus.refresh().catch((e) => console.error('CLI 狀態檢查失敗：' + e.message)); snap.running = true; } return send(res, 200, snap); }
+    if (p === '/api/skills' && req.method === 'GET') return send(res, 200, skills.snapshot());
+    if (p.startsWith('/api/skills') && req.method === 'POST') {
+      const b = await readBody(req).catch(() => ({})); let m;
+      try {
+        if (p === '/api/skills/requests') { skills.request(String(b.source || ''), { targetKey: String(b.target || ''), via: 'web', want: String(b.skill || '') }); return send(res, 200, skills.snapshot()); }
+        if ((m = /^\/api\/skills\/requests\/(\d+)\/(approve|reject|choose|retry)$/.exec(p))) {
+          const id = m[1];
+          if (m[2] === 'approve') skills.approve(id, { target: b.target, replace: b.replace === true, by: 'web' });
+          else if (m[2] === 'reject') skills.reject(id, 'web');
+          else if (m[2] === 'choose') skills.choose(id, String(b.skill || ''));
+          else skills.retry(id);
+          return send(res, 200, skills.snapshot());
+        }
+        if (p === '/api/skills/remove') { skills.remove(b.root, b.name); return send(res, 200, skills.snapshot()); }
+      } catch (e) { return send(res, 400, { error: e.message }); }
+    }
     if (p === '/api/clistatus/refresh' && req.method === 'POST') { cliStatus.refresh().catch((e) => console.error('CLI 狀態檢查失敗：' + e.message)); return send(res, 200, { ok: true }); }
     if (p === '/api/usage/refresh' && req.method === 'POST') { probeUsage(); return send(res, 200, { ok: true }); }
     if (p === '/api/config' && req.method === 'GET') {
@@ -2088,7 +2112,7 @@ const tgCtx = {
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,
   makeReport: (o) => reporter.makeReport(o), updater, timers,
-  pauseProject, resumeProject, pauseStatus,
+  pauseProject, resumeProject, pauseStatus, skills,
 };
 telegram.start(tgCtx);
 telegram.startAgentBots(tgCtx);

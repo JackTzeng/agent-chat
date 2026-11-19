@@ -107,6 +107,11 @@
   @media (max-width: 760px) { .usage { display: none; } }
   .cli-tabs { display: flex; gap: 6px; align-items: center; margin: 6px 0 10px; } .cli-tabs .spacer { flex: 1; } .cli-tabs small { color: var(--muted); }
   .cli-body { max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; } .cli-ver { color: var(--muted); font-size: 12px; margin-left: 4px; }
+  .cli-body .hn-item .grow { white-space: normal; }
+  .sk-h { margin: 14px 0 6px; font-size: 14px; } .sk-desc { margin: 4px 0; font-size: 13px; } .sk-bad { color: var(--err); margin: 4px 0; font-size: 13px; } .sk-ok { color: #4f9a6b; margin: 4px 0; font-size: 13px; }
+  .sk-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 6px 0; } .sk-row label { font-size: 13px; color: var(--muted); }
+  .sk-files { font-family: ui-monospace, monospace; font-size: 12px; max-height: 160px; overflow-y: auto; padding: 4px 0; } .sk-card .acts button { white-space: nowrap; }
+  .cli-chip a { color: var(--muted); text-decoration: none; margin-left: 2px; } .cli-chip a:hover { color: var(--err); }
   .cli-chip { display: inline-block; padding: 1px 8px; margin: 2px 0; border: 1px solid var(--line); border-radius: 10px; font-size: 12px; }
   .cli-tbl { width: 100%; border-collapse: collapse; font-size: 13px; } .cli-tbl th, .cli-tbl td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
   .av-img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
@@ -358,7 +363,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.13.2'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.14.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -836,6 +841,8 @@ function squareAvatar(file) {
 
 function openModal(html) { $('modal').innerHTML = html; $('modal').classList.remove('wide'); $('modalBg').classList.add('open'); }
 function closeModal() { $('modalBg').classList.remove('open'); }
+// 視窗關掉後內容還留在頁面上（只是隱藏），所以「要不要重新整理某個視窗」要看它是不是真的開著，不能只看元素在不在
+const modalShowing = (id) => !!$(id) && $('modalBg').classList.contains('open');
 $('modalBg').addEventListener('mousedown', (e) => { if (e.target === $('modalBg')) closeModal(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 
@@ -1702,7 +1709,7 @@ function renderUsage() {
     '<div class="ulinks">' +
     `<div class="ulink" id="timerLine" title="定時叫成員做事，例如每小時檢查、每天早上整理">⏰ 排程${TIMER_BADGE ? ' <span class="hn-dot">' + TIMER_BADGE + '</span>' : ''}</div>` +
     `<div class="ulink" id="updLine" title="檢查新版本、一鍵更新並重新啟動">⬆️ 更新${UPD_BADGE ? ' <span class="hn-dot">新</span>' : ''}</div>` +
-    '<div class="ulink" id="cliLine" title="三個 CLI 的登入狀態、MCP 串接，以及每位成員用得到哪些 MCP（只看不改）">🧰 CLI 狀態</div>' +
+    `<div class="ulink" id="cliLine" title="三個 CLI 的登入狀態、MCP、Skill（含安裝申請）">🧰 CLI 狀態${SKILL_PENDING ? ' <span class="hn-dot" title="有 Skill 安裝申請等你核准">' + SKILL_PENDING + '</span>' : ''}</div>` +
     '<div class="ulink" id="repLine" title="出問題時產生一個回報檔，帶給 Claude 排查">🐞 問題回報</div>' +
     '<div class="ulink" id="logoutLine" title="登出這個瀏覽器；可以選擇登出所有裝置">🔒 登出</div></div>';
   $('usageToggle').onclick = () => { setUsageOpen(!usageOpen()); renderUsage(); };
@@ -1710,7 +1717,7 @@ function renderUsage() {
   $('updLine').onclick = () => openUpdate();
   $('timerLine').onclick = () => openTimers();
   $('repLine').onclick = () => openReport();
-  $('cliLine').onclick = () => openCliStatus();
+  $('cliLine').onclick = () => (SKILL_PENDING ? openSkills() : openCliStatus());
   $('logoutLine').onclick = openLogout;
   $('usageBtn').onclick = async () => {
     $('usageBtn').textContent = '查詢中…';
@@ -1733,7 +1740,7 @@ function tgLineHTML() {
 async function loadTelegram() {
   try { TG = await api('/api/telegram'); } catch { return; }
   renderUsage();
-  if ($('tgModal')) renderTelegramForm();
+  if (modalShowing('tgModal')) renderTelegramForm();
 }
 function openTelegramForm() {
   openModal('<div id="tgModal"></div>');
@@ -1912,11 +1919,12 @@ function connectEvents() {
     if (window.Office && ev.agentId !== '*') Office.event(ev);
     if (ev.kind === 'agents-changed') { refreshAgents(); loadWorkflow().then(() => current === ALL && updateTop()); return; }
     if (ev.kind === 'usage') { loadUsage(); return; }
-    if (ev.kind === 'clistatus') { if (CLI_OPEN && $('cli_close') && $('modalBg').classList.contains('open')) openCliStatus(CLI_TAB); return; }
+    if (ev.kind === 'skills') { loadSkillPending(); if (CLI_OPEN && CLI_TAB === 'skill' && modalShowing('cli_close')) openSkills(); return; }
+    if (ev.kind === 'clistatus') { if (CLI_OPEN && modalShowing('cli_close')) openCliStatus(CLI_TAB); return; }
     if (ev.kind === 'telegram') { loadTelegram(); return; }
     if (ev.kind === 'task') { loadTasks(); return; }
     if (ev.kind === 'harness' || ev.kind === 'harness-run') { loadHarness(ev.kind === 'harness-run'); return; }
-    if (ev.kind === 'timers') { refreshTimerBadge(); if ($('tmr_list')) openTimers(true); return; }
+    if (ev.kind === 'timers') { refreshTimerBadge(); if (modalShowing('tmr_list')) openTimers(true); return; }
     if (ev.kind === 'update-available') { if (!UPD_BADGE) { UPD_BADGE = true; renderUsage(); } return; }
     if (ev.kind === 'queue') { refreshQueue(); if ((PAUSE.pauses || []).length) loadPause(); return; }
     if (ev.kind === 'pause') { loadPause(); refreshAgents(); return; }
@@ -1949,6 +1957,7 @@ async function init() {
   api('/api/update').then((u) => { UPD_BADGE = !!(u.last && u.last.behind > 0); if (u.failed) toast('⚠️ 上次更新失敗，已自動退回原本的版本（按側邊欄「⬆️ 更新」看詳情）'); renderUsage(); }).catch(() => {});
   connectEvents();
   loadUsage();
+  loadSkillPending();
   loadTelegram();
   loadHarness();
   await Promise.all([loadWorkflow(), loadTasks()]);
@@ -2008,6 +2017,75 @@ function openResume(scope) {
   };
 }
 // ---------- 🐞 問題回報 ----------
+// ---------- 🧩 Skill：成員提出 → 你核准 → 系統安裝 ----------
+let SKILL_PENDING = 0;
+async function loadSkillPending() { try { SKILL_PENDING = (await api('/api/skills')).pending || 0; } catch {} renderUsage(); }
+const SK_ST = { fetching: '⏳ 下載檢查中', ready: '🟡 等你核准', choose: '🟡 要選擇裝哪一個', failed: '❌ 失敗', installed: '✅ 已安裝', rejected: '🚫 已拒絕' };
+async function openSkills() {
+  CLI_OPEN = true; CLI_TAB = 'skill';
+  let K = { roots: [], extra: [], members: [], requests: [], targets: [], pending: 0 };
+  try { K = await api('/api/skills'); } catch (e) { toast(e.message); }
+  SKILL_PENDING = K.pending || 0;
+  const tsel = (id, cur) => `<select id="${id}">${K.targets.map((t) => `<option value="${esc(t.key)}" ${t.key === cur ? 'selected' : ''}>${esc(t.label)}</option>`).join('')}</select>`;
+  const open = K.requests.filter((r) => ['fetching', 'ready', 'choose', 'failed'].includes(r.status));
+  const done = K.requests.filter((r) => ['installed', 'rejected'].includes(r.status)).slice(0, 5);
+  const card = (r) => {
+    const rv = r.review || {};
+    let h = `<div class="hn-item sk-card"><div class="grow"><b>#${r.id} ${esc(r.title || r.name || r.source)}</b> <small style="display:inline">${SK_ST[r.status] || esc(r.status)}</small>
+      <small>來源：<a href="https://github.com/${esc(r.source.split('@')[0])}" target="_blank" rel="noopener noreferrer">github.com/${esc(r.source)}</a>${r.fromName ? '｜' + esc(r.fromName) + ' 提出' : r.via === 'web' ? '｜你新增的' : ''}｜${fmtTime(r.at)}</small>`;
+    if (r.description) h += `<div class="sk-desc">${esc(r.description)}</div>`;
+    if (r.error) h += `<div class="sk-bad">${esc(r.error)}</div>`;
+    if (r.status === 'choose') h += `<div class="sk-desc">這個 repo 有好幾個 Skill，要裝哪一個？</div>` + (r.choices || []).map((c) => `<button data-skchoose="${r.id}" data-name="${esc(c.name)}" title="${esc(c.description)}">${esc(c.name)}</button>`).join(' ');
+    if (r.status === 'ready') {
+      h += `<div class="sk-desc">內容：${rv.fileCount} 個檔案・${Math.max(1, Math.round(rv.bytes / 1024))} KB</div>` +
+        (rv.scripts.length ? `<div class="sk-bad">⚠️ 含 ${rv.scripts.length} 個可執行的腳本：${rv.scripts.slice(0, 8).map(esc).join('、')}${rv.scripts.length > 8 ? '…' : ''}<br>Skill 被使用時，成員可能會執行這些腳本。請確認來源可信再安裝。</div>` : '<div class="sk-ok">✅ 沒有可執行的腳本（只有說明文件與資料）</div>') +
+        `<details><summary>檔案清單</summary><div class="sk-files">${rv.files.map((f) => `${f.script ? '⚠️ ' : ''}${esc(f.path)} <small style="display:inline">${Math.max(1, Math.round(f.size / 1024))} KB</small>`).join('<br>')}${rv.fileCount > rv.files.length ? '<br>…' : ''}</div></details>` +
+        `<div class="sk-row"><label>安裝到</label>${tsel('sk_t_' + r.id, r.targetKey)}</div>` +
+        (r.exists ? `<label class="opt sk-bad"><input type="checkbox" id="sk_rep_${r.id}"> 同名的 Skill「${esc(r.name)}」已經存在：取代現有的（舊的會搬到回收區）</label>` : '');
+    }
+    h += '</div><div class="acts" style="flex-direction:column">' +
+      (r.status === 'ready' ? `<button class="primary" data-skok="${r.id}">核准安裝</button>` : '') +
+      (r.status === 'failed' ? `<button data-skretry="${r.id}">重試</button>` : '') +
+      (r.status !== 'fetching' ? `<button data-skno="${r.id}">${r.status === 'failed' ? '移除' : '拒絕'}</button>` : '') + '</div></div>';
+    return h;
+  };
+  const roots = K.roots.map((rt) => `<div class="hn-item"><div class="grow"><b>${esc(rt.label)}</b><small>${esc(rt.root)}</small>
+    <div>${rt.skills.length ? rt.skills.map((k) => `<span class="cli-chip" title="${esc(k.description)}">🧩 ${esc(k.title)} <a href="#" data-skrm="${esc(k.name)}" data-root="${esc(rt.root)}" title="移除（搬到回收區）">✕</a></span>`).join(' ') : '<small style="display:inline">（還沒有 Skill）</small>'}</div></div></div>`).join('');
+  const extra = K.extra.map((x) => `<div class="hn-item"><div class="grow"><b>${esc(x.cli)}</b> <small style="display:inline">${esc(x.root)}</small><div>${x.found ? (x.skills.length ? x.skills.map((k) => `<span class="cli-chip" title="${esc(k.description)}">🧩 ${esc(k.title)}</span>`).join(' ') : '<small style="display:inline">（沒有 Skill）</small>') : '<small style="display:inline">❔ 找不到這個資料夾（位置還沒在你的電腦上確認）</small>'}</div></div></div>`).join('');
+  const body = `${open.length ? '<h3 class="sk-h">待處理的安裝申請</h3>' + open.map(card).join('') : ''}
+    <h3 class="sk-h">新增 Skill</h3>
+    <p class="help" style="margin:0 0 6px">最簡單的方式：直接跟成員說「幫我找一個做○○的 Skill 裝給 Coder」，它會提出申請。也可以在這裡貼 GitHub 來源（例如 <code>nutlope/hallmark</code> 或 GitHub 網址），系統會先下載檢查，給你看過再安裝。</p>
+    <div class="sk-row"><input id="sk_src" placeholder="GitHub 來源，例如 nutlope/hallmark" style="flex:1;min-width:180px">${tsel('sk_tnew', (K.targets[1] || K.targets[0] || {}).key)}<button class="primary" id="sk_add">下載並檢查</button></div>
+    <h3 class="sk-h">已安裝（Claude）</h3>${roots}
+    <h3 class="sk-h">其他 CLI（只看）</h3>${extra}
+    <h3 class="sk-h">每位成員用得到的 Skill</h3>
+    <table class="cli-tbl"><tr><th>成員</th><th>Skill</th><th>說明</th></tr>${K.members.map((m) => `<tr><td>${esc(m.name)} <span class="badge ${esc(m.engine)}">${esc(m.engine)}</span></td><td>${m.skills.length ? m.skills.map(esc).join('、') : '—'}</td><td><small>${esc(m.note || '')}</small></td></tr>`).join('')}</table>
+    ${done.length ? '<h3 class="sk-h">最近處理過的</h3>' + done.map((r) => `<div class="hn-item"><div class="grow">#${r.id} ${esc(r.title || r.source)} <small style="display:inline">${SK_ST[r.status]}・${fmtTime(r.doneAt || r.at)}${r.status === 'installed' ? '・' + esc(r.targetLabel) : ''}</small></div></div>`).join('') : ''}
+    <p class="help">安全：成員只能「提出」安裝，一定要你核准；系統只從 GitHub 公開 repo 下載，先列出檔案與腳本給你看，不會執行 Skill 裡的任何東西。移除會搬到回收區（Agent Chat 的 data/skills-trash），可以找回。</p>`;
+  const tabs = [['login', '🔑 登入'], ['mcp', '🔌 MCP'], ['skill', '🧩 Skill' + (SKILL_PENDING ? ' (' + SKILL_PENDING + ')' : '')]].map(([k, t]) => `<button data-ctab="${k}" class="${CLI_TAB === k ? 'primary' : ''}">${t}</button>`).join('');
+  const keep = $('modal').querySelector('.cli-body'), top = keep && CLI_TAB === 'skill' ? keep.scrollTop : 0;
+  openModal(`<h2>🧰 CLI 狀態</h2>
+    <p class="lead">Skill 是給成員的「工作說明書＋工具包」。成員提出、你核准，系統替你安裝，不用打指令。</p>
+    <div class="cli-tabs">${tabs}</div>
+    <div class="cli-body">${body}</div>
+    <div class="modal-actions"><span class="spacer"></span><button id="cli_close">關閉</button></div>`);
+  $('modal').classList.add('wide');
+  if (top) $('modal').querySelector('.cli-body').scrollTop = top;
+  const act = async (url, payload) => { try { await api(url, { method: 'POST', body: JSON.stringify(payload || {}) }); } catch (e) { toast(e.message); } openSkills(); };
+  document.querySelectorAll('[data-ctab]').forEach((b) => (b.onclick = () => (b.dataset.ctab === 'skill' ? openSkills() : openCliStatus(b.dataset.ctab))));
+  $('cli_close').onclick = () => { CLI_OPEN = false; closeModal(); };
+  $('sk_add').onclick = () => { const v = $('sk_src').value.trim(); if (v) act('/api/skills/requests', { source: v, target: $('sk_tnew').value }); };
+  document.querySelectorAll('[data-skok]').forEach((b) => (b.onclick = () => {
+    const id = b.dataset.skok, r = K.requests.find((x) => String(x.id) === id), sc = r && r.review && r.review.scripts.length;
+    if (!confirm('確定安裝「' + ((r && (r.title || r.name)) || '') + '」？' + (sc ? '\n⚠️ 它含 ' + sc + ' 個可執行的腳本。' : ''))) return;
+    act('/api/skills/requests/' + id + '/approve', { target: $('sk_t_' + id).value, replace: !!($('sk_rep_' + id) && $('sk_rep_' + id).checked) });
+  }));
+  document.querySelectorAll('[data-skno]').forEach((b) => (b.onclick = () => act('/api/skills/requests/' + b.dataset.skno + '/reject')));
+  document.querySelectorAll('[data-skretry]').forEach((b) => (b.onclick = () => act('/api/skills/requests/' + b.dataset.skretry + '/retry')));
+  document.querySelectorAll('[data-skchoose]').forEach((b) => (b.onclick = () => act('/api/skills/requests/' + b.dataset.skchoose + '/choose', { skill: b.dataset.name })));
+  document.querySelectorAll('[data-skrm]').forEach((b) => (b.onclick = (e) => { e.preventDefault(); if (confirm('移除 Skill「' + b.dataset.skrm + '」？（搬到回收區，可以找回）')) act('/api/skills/remove', { root: b.dataset.root, name: b.dataset.skrm }); }));
+}
+
 // ---------- 🧰 CLI 狀態（只看不改）----------
 let CLI_OPEN = false, CLI_TAB = 'login';
 const CLI_ICON = { ok: '✅', no: '❌', warn: '⚠️', unknown: '❔', fail: '❌', configured: '⚙️', off: '⏸' };
@@ -2015,7 +2093,8 @@ async function openCliStatus(tab) {
   CLI_TAB = tab || CLI_TAB; CLI_OPEN = true;
   let S = { engines: [], members: [] };
   try { S = await api('/api/clistatus'); } catch (e) { toast(e.message); }
-  const tabs = [['login', '🔑 登入'], ['mcp', '🔌 MCP']].map(([k, t]) => `<button data-ctab="${k}" class="${CLI_TAB === k ? 'primary' : ''}">${t}</button>`).join('');
+  if (CLI_TAB === 'skill') return openSkills();
+  const tabs = [['login', '🔑 登入'], ['mcp', '🔌 MCP'], ['skill', '🧩 Skill' + (SKILL_PENDING ? ' (' + SKILL_PENDING + ')' : '')]].map(([k, t]) => `<button data-ctab="${k}" class="${CLI_TAB === k ? 'primary' : ''}">${t}</button>`).join('');
   const when = S.running ? '檢查中…（第一次可能要一分鐘，MCP 會實際連線檢查）' : S.at ? '上次檢查：' + fmtTime(S.at) : '還沒檢查過';
   let body = '';
   if (!S.engines.length) body = `<p class="help">${S.running ? '⏳ 檢查中，完成後會自動更新…' : '按「🔄 重新檢查」開始。'}</p>`;
