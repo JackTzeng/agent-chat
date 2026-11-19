@@ -214,4 +214,7 @@ function create(ctx) {
   return { configured, status, update, ping, digest, call, whoIs, register, setEmail, context, execute, items, members, drop };
 }
 
-module.exports = { create, urlProblem, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS };
+// 在網頁（Agent Chat 的對話框）跟待辦管家說話的人＝管理這台 Agent Chat 的你：視同主管
+const WEB_OWNER = { userId: 'web', name: '管理員', role: '主管' };
+
+module.exports = { create, urlProblem, WEB_OWNER, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS };

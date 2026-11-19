@@ -268,6 +268,24 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   const dg = await J('/api/todo/digest', 'POST', { send: true });
   assert.equal(dg.sent, true); assert.ok(g.sent.some((m) => m.to === 'wang@example.com' && /逾期/.test(m.subject)), '小王收到自己的'); assert.ok(g.sent.some((m) => m.to.includes('boss@example.com') && /部門待辦總表/.test(m.subject)), '主管收到總表');
 
+  // 8c) 網頁對話：待辦管家也看得到清單（不是去找檔案瞎猜）；它寫的動作行由系統以「管理員（主管）」身分寫進 Sheet
+  const histText = async () => { const l = (await J('/api/history/todo')).history.filter((x) => x.role === 'assistant').at(-1); return l ? l.segments.map((s) => s.text).join('\n') : ''; };
+  const idleTodo = async () => !(await J('/api/agents')).find((a) => a.id === 'todo').busy;
+  await waitFor(idleTodo, 'todo idle before web');
+  await J('/api/chat/todo', 'POST', { text: 'QUERY 看一下待辦' });
+  await waitFor(async () => /你的待辦：[\s\S]*#\d+｜/.test(await histText()), 'web query answered from the list');
+  const pw = lastAgyPrompt(); assert.match(pw, /【網頁對話（系統整理）】/); assert.match(pw, /發言者：管理員（主管）/); assert.match(pw, /#\d+｜/);
+  assert.match(fs.readFileSync(log, 'utf8').split('=====AGY ')[1], /你不能讀取或寫入任何檔案，也不能執行指令/, '給待辦管家的權限說明（開頭說明第一輪完整送）：連讀檔都不要試');
+  assert.equal((await J('/api/history/todo')).history.filter((x) => x.role === 'user').at(-1).text, 'QUERY 看一下待辦', '網頁上只顯示你打的字，不是整份清單');
+  await waitFor(idleTodo, 'todo idle 2');
+  const nWeb = tasks().length;
+  await J('/api/chat/todo', 'POST', { text: 'BOSSADD 網頁' });
+  await waitFor(async () => /📋 ✅ 已登記 #\d+｜準備稽核資料｜負責 王主任/.test(await histText()), 'web add');
+  assert.equal(tasks().length, nWeb + 1); assert.equal(tasks().at(-1)[7], '管理員', '提出人＝管理員');
+  await waitFor(idleTodo, 'todo idle 3');
+  await J('/api/chat/todo', 'POST', { text: 'LIE 網頁' });
+  await waitFor(async () => /沒有產生任何寫入/.test(await histText()), 'web lie warning'); assert.equal(tasks().length, nWeb + 1);
+
   // 9) 設定驗證與機器人被踢出群組
   assert.equal((await call('/api/todo', 'PUT', { url: 'https://evil.example.com/exec' })).status, 200, '測試環境放寬了網址檢查（TODO_URL_ANY）');
   assert.equal((await call('/api/todo', 'PUT', { key: 'short' })).status, 400);

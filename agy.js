@@ -112,6 +112,8 @@ const stdinMessage = (prompt) => JSON.stringify({ event: 'user', message: { cont
 
 // 唯讀成員的提示詞：不能只靠 CLI 擋，也要明講
 const READ_ONLY_NOTE = '【唯讀】你的角色是閱讀與評論：只能讀取檔案、用文字回覆意見；不要建立、修改、刪除或移動任何檔案，也不要執行任何指令。需要改動的地方，請在回覆中具體寫出建議，由其他成員動手。';
+// 資料都已經附在訊息裡的成員（助理、待辦管家）：連「讀檔」也不要試。agy 想讀不存在的檔就會去猜，甚至想執行指令被擋、整輪沒有輸出
+const NO_FILES_NOTE = '【權限】你不能讀取或寫入任何檔案，也不能執行指令（不要嘗試：會被系統擋下，這一輪就沒有回覆了）。你需要的資料都已經附在訊息裡；訊息裡沒有的，就直接說你現在看不到，不要猜、不要去找檔案。';
 const WRITE_NOTE = '【權限】你可以建立與修改檔案，也可以執行指令。只在工作資料夾內動作，不要讀寫工作資料夾以外的地方；不要執行刪除大量檔案、改系統設定、安裝軟體、推送到遠端等有風險或不可回復的指令，需要時請在回覆中說明，由使用者決定。';
 
 // 額度用完：agy 沒有提供剩餘額度，只能從錯誤訊息判斷。還沒拿到真實的錯誤文字，先認常見寫法（Google API 的 RESOURCE_EXHAUSTED／429 等）
@@ -134,4 +136,4 @@ function quotaReset(text, now = Date.now()) {
 }
 const quotaHit = (text) => QUOTA_RE.test(String(text || ''));
 
-module.exports = { access, readOnlyArgs, writeArgs, makeParser, describeTool, stdinMessage, mergeDelta, quotaHit, quotaReset, READ_ONLY_NOTE, WRITE_NOTE, READ_ONLY_DEFAULT };
+module.exports = { access, readOnlyArgs, writeArgs, makeParser, describeTool, stdinMessage, mergeDelta, quotaHit, quotaReset, READ_ONLY_NOTE, WRITE_NOTE, NO_FILES_NOTE, READ_ONLY_DEFAULT };
