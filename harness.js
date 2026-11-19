@@ -213,6 +213,11 @@ exports.create = function create(ctx) {
     M.items.splice(i, 1); saveM();
   }
   const KIND = { decision: '決策', result: '任務成果', note: '備註' };
+  function recallDecisions(agent) {
+    if (!agent || agent.standalone || agent.blocked) return [];
+    return M.items.filter((it) => it.kind === 'decision' && (!it.team || it.team === agent.team))
+      .map((it) => ({ id: it.id, ts: it.ts, text: it.text, author: agentName(it.from) }));
+  }
   function memoryText(agent) {
     const items = M.items.filter((it) => !it.team || !agent || it.team === agent.team);
     if (!items.length) return '';
@@ -363,7 +368,7 @@ exports.create = function create(ctx) {
 
   docs();
   return {
-    cfg, record, promptBlock, collect, guidesText, memoryText, scopeLabel,
+    cfg, record, promptBlock, collect, guidesText, memoryText, recallDecisions, scopeLabel,
     addGuide, updateGuide, deleteGuide, propose, acceptProposal, dismissProposal,
     addMemory, deleteMemory, docs, runChecks, cancelChecks, checksText, isChecking: (id) => checking.has(id), stats,
     snapshot: () => ({ guides: G.guides.map((g) => ({ ...g, scopeLabel: scopeLabel(g.scope) })), proposals: G.proposals.map((p) => ({ ...p, scope: validScope(p.scope), scopeLabel: scopeLabel(validScope(p.scope)) })), memory: M.items.slice().reverse(), config: cfg(), load: guideLoad() }),

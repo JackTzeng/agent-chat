@@ -304,6 +304,20 @@ Agent = Model + Harness。模型是大腦，Harness 是圍繞模型的執行系�
 
 自由聊天和任務都適用；換班那一輪不算任務的交接次數。交班筆記會顯示在對話裡，也存在 `data/harness/shifts`。
 
+### 查詢歷史決策（v3.16）
+
+在 `local-settings.txt` 加入 `AGENTCHAT_RECALL_AGENT=成員ID`，重新啟動後，直接在網頁或 Telegram 問該成員「現在還能不能跑 run07？」。Claude 或 Codex 團隊成員可依編號找到最近十筆以外的決策。查詢範圍涵蓋同小組與全體共用紀錄。每次最多引用四筆原文，附記憶編號、作者與 UTC 時間，由新到舊排列。守則繼續由 Harness 依核准範圍派送。
+
+要依主題查詢，可輸入「查決策 如何驗收交付成果」。預設使用本機關鍵字。啟用本機語意查詢時，請先在管理者信任的目錄準備 Python 3.11 以上的虛擬環境與模型，例如在安裝目錄執行以下 PowerShell 指令：
+
+```powershell
+py -m venv data/recall-venv
+data/recall-venv/Scripts/python -m pip install mem0ai==1.0.11 onnxruntime==1.32.0 tokenizers==0.23.3
+py recall_mem0.py --download data/recall-model
+```
+
+把虛擬環境的 `python.exe` 與模型資料夾的**絕對路徑**分別填入 `local-settings.txt` 的 `AGENTCHAT_RECALL_PYTHON`、`AGENTCHAT_RECALL_MODEL` 並重啟。下載程式會核對模型與詞表的 SHA-256。查詢時在本機用多語模型與 Mem0 的 Qdrant 向量搜尋元件比對原文，查完釋放記憶體。編號精確比對不需啟動 Python。模型失敗或超時時，會在查詢提示中註明改用關鍵字。移除 `AGENTCHAT_RECALL_AGENT` 並重啟即可停用。
+
 ### 🗜 壓縮指令輸出（rtk，只限 Claude 成員，v3.11）
 
 [rtk](https://github.com/rtk-ai/rtk) 會把 git、測試、建置等指令的輸出精簡後再交給 AI，省 token，對話也不容易被長長的紀錄撐大。

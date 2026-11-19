@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.15.0';
+const VERSION = '3.16.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1091,7 +1091,26 @@ function startRun(agent, userText, opts = {}) {
   });
 
   proc.stdin.on('error', () => {});
-  proc.stdin.end(agent.engine === 'agy' ? (stdinPrompt ? agy.stdinMessage(prompt) : '') : prompt);
+  if (userDirect(opts) && !agent.standalone && agent.engine !== 'agy' && agent.id === process.env.AGENTCHAT_RECALL_AGENT) {
+    const lookup = require('./recall');
+    const controller = new AbortController();
+    proc.once('close', () => controller.abort());
+    const decisions = () => harness.recallDecisions(agentById(agent.id));
+    const deliver = (context) => {
+      if (runs.get(agent.id) !== run || run.stopped || run.interrupt || proc.stdin.destroyed) return;
+      const current = agentById(agent.id);
+      if (!current || current.standalone || current.blocked || current.team !== run.team) {
+        run.stopped = true;
+        proctree.killTree(proc);
+        return;
+      }
+      proc.stdin.end(context ? context + '\n\n' + prompt : prompt);
+    };
+    lookup.context(userText, decisions, { signal: controller.signal, env: security.safeEnvironment() })
+      .then(deliver, () => deliver(''));
+  } else {
+    proc.stdin.end(agent.engine === 'agy' ? (stdinPrompt ? agy.stdinMessage(prompt) : '') : prompt);
+  }
 }
 
 // agy 一輪結束後：登入問題提示、被擋下的動作、唯讀成員有沒有改到檔案
