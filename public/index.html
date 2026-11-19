@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.19.4'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.19.5'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -673,6 +673,14 @@ function clearAttach() { ATTACH = []; renderChips(); }
 
 async function send() {
   const raw = $('input').value.trim();
+  // 在網頁打 /new 也當作「新對話」（LINE、Telegram 本來就有；agy 看到 /new 會當成奇怪的字，想去執行指令被擋、整輪沒有輸出）
+  if (/^\/new$/i.test(raw)) {
+    const a = current !== ALL && current !== OFFICE ? agentOf(current) : null;
+    if (!a) { toast('請先選一位成員，再用 /new 開新對話'); return; }
+    $('input').value = ''; autoGrow();
+    try { await api('/api/reset/' + a.id, { method: 'POST' }); toast('🆕 已和「' + a.name + '」開新對話'); } catch (e) { toast(e.message); }
+    return;
+  }
   const text = composeText(); if (text === null || !text) return;
   const mode = sendMode || 'send';
   const t = selTask();
