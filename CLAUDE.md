@@ -16,7 +16,7 @@
 
 ## 開發慣例
 - 不加任何 npm 相依套件；Node 18+。
-- **跑測試**：逐檔跑 `node --test tests/xxx.test.js`（`node --test tests/` 會失敗）。全部：`for f in tests/*.test.js; do node --test $f; done`。目前 16 檔全過。
+- **跑測試**：逐檔跑 `node --test tests/xxx.test.js`（`node --test tests/` 會失敗）。全部：`for f in tests/*.test.js; do node --test $f; done`。目前 17 檔全過。
 - 新增 `.js` 模組時，要把檔名加進**每個測試檔的 FILES／檔案清單**（它們會把原始碼複製到暫存資料夾跑真的伺服器），否則 `require` 找不到。
 - 測試用「假 CLI」（`tests/*.test.js` 裡的 MOCK_*）加真的伺服器，環境變數：`CLAUDE_BIN`／`CODEX_BIN`／`AGY_BIN`、`AGENTCHAT_NO_UPDATE_CHECK=1`、`AGENT_ENV_ALLOWLIST`。
 - 發版：同步改 `server.js` 的 `VERSION`、`public/index.html` 的 `UI_VERSION`、`CHANGELOG.md`（最上面加一節）、必要時 `README.md`；commit 訊息用「v3.x.y：做了什麼」；推到 `main`。使用者在網頁按「⬆️ 更新／重新啟動」取得新版（updater 遇到已追蹤檔案被改動會拒絕更新，所以**開發請用另一個 clone，不要直接改正在跑的那個資料夾**）。
@@ -26,7 +26,7 @@
 - 安全底線：永不加入會略過權限的選項（`--dangerously-skip-permissions`、`bypassPermissions`）；使用者資料夾存取由 `security.js` 的允許清單管；機密不寫進回報（diag.js 會遮蔽）。
 
 ## 已完成（近期）
-v3.4 小組＋多房間辦公室、v3.5 守則分範圍、v3.6 問題回報與一鍵更新、v3.7 排程（前置檢查、成員暫停）、v3.8 緊急派工（【緊急】插話，授權＋冷卻）＋ Google agy 引擎（`read`／`write` 存取等級）、v3.9 上下文瘦身（開頭說明去重、📏 上下文用量、排程每次新對話、換班門檻 40%）、v3.10 暫停／重啟專案（`state.pause`、`isHeld` 擋自動派工、交班筆記、重啟接續）＋排隊訊息存檔（`state.queue`）、v3.11 rtk 壓縮指令輸出（只限 Claude 團隊成員，`--settings` ＋ `rtkhook.js`）、v3.11.1 更正 agy write 說明、v3.11.2 常用守則範本（markitdown）、v3.12 agy 額度用完偵測（`state.agyQuota`、`agyQuotaCheck`、退回並通知派工者）＋本週用量（`state.agyUsage`）、v3.12.1 agy write 資料夾警告＋`AGY_WRITE_ARGS`、v3.13 🧰 CLI 狀態頁（`clistatus.js`、`/api/clistatus`、`state.cliSeen`）、v3.14 🧩 Skill 安裝（`skills.js`、`state.skillReqs`、`/api/skills`、Telegram `/skill`）＋修正排程視窗自己跳出（`modalShowing`）。偵測規則 `agy.quotaHit`／`quotaReset` 是依常見寫法，待拿到真實 agy 額度錯誤訊息校正。
+v3.4 小組＋多房間辦公室、v3.5 守則分範圍、v3.6 問題回報與一鍵更新、v3.7 排程（前置檢查、成員暫停）、v3.8 緊急派工（【緊急】插話，授權＋冷卻）＋ Google agy 引擎（`read`／`write` 存取等級）、v3.9 上下文瘦身（開頭說明去重、📏 上下文用量、排程每次新對話、換班門檻 40%）、v3.10 暫停／重啟專案（`state.pause`、`isHeld` 擋自動派工、交班筆記、重啟接續）＋排隊訊息存檔（`state.queue`）、v3.11 rtk 壓縮指令輸出（只限 Claude 團隊成員，`--settings` ＋ `rtkhook.js`）、v3.11.1 更正 agy write 說明、v3.11.2 常用守則範本（markitdown）、v3.12 agy 額度用完偵測（`state.agyQuota`、`agyQuotaCheck`、退回並通知派工者）＋本週用量（`state.agyUsage`）、v3.12.1 agy write 資料夾警告＋`AGY_WRITE_ARGS`、v3.13 🧰 CLI 狀態頁（`clistatus.js`、`/api/clistatus`、`state.cliSeen`）、v3.14 🧩 Skill 安裝（`skills.js`、`state.skillReqs`、`/api/skills`、Telegram `/skill`）＋修正排程視窗自己跳出（`modalShowing`）、v3.15 🗓 助理（個人秘書：預設範本按鈕、`agent.brief` 現況摘要 `briefText()`、`timers.parsePhrase` 支援單次時間、提出排程後有回饋）。偵測規則 `agy.quotaHit`／`quotaReset` 是依常見寫法，待拿到真實 agy 額度錯誤訊息校正。
 
 ## agy 實測事實（Windows，agy 1.5.10，免費 Starter Quota）
 - 安裝位置 `%LOCALAPPDATA%\agy\bin\agy.exe`；免費帳號可用模型：`gemini-3.8-flash-{high,medium,low}`、`claude-sonnet-4-6`、`claude-opus-4-6-thinking`、`gpt-oss-120b-medium`（**沒有** gemini-4-argon）。

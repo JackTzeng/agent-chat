@@ -112,15 +112,65 @@ function computeNext(t, from) {
   return allowed(t, next) ? next : windowStart(t, next);
 }
 
-// 「每小時」「每 30 分鐘」「每 2 小時」「每天 08:30」「平日 08:30」→ 排程（給【排程建議】用）
-function parsePhrase(text) {
+// 時間：15:00、下午3點、早上9點30分、晚上8點半、中午12點 → 當天的第幾分鐘（看不懂回 null）
+function parseClock(s) {
+  let m = /(上午|早上|早晨|中午|下午|晚上|傍晚|凌晨)?(\d{1,2})[:：](\d{2})/.exec(s) || /(上午|早上|早晨|中午|下午|晚上|傍晚|凌晨)?(\d{1,2})[點时時](半|(\d{1,2})分?)?/.exec(s);
+  if (!m) return null;
+  let h = +m[2], mi = 0;
+  if (m[3] === '半') mi = 30; else if (m[4] != null) mi = +m[4]; else if (m[3] && /^\d+$/.test(m[3])) mi = +m[3];
+  const ap = m[1] || '';
+  if (/下午|晚上|傍晚/.test(ap) && h < 12) h += 12;
+  else if (/中午/.test(ap) && h < 11) h += 12;
+  else if (/凌晨|上午|早上|早晨/.test(ap) && h === 12) h = 0;
+  return h > 23 || mi > 59 ? null : h * 60 + mi;
+}
+// 單次：「明天 15:00」「後天下午3點」「11/20 15:00」「2026-11-20 09:30」「週五 10:00」「下週一 09:00」「30 分鐘後」「2 小時後」
+// 週的算法：週一～週日算一週；只說「週五」＝最近的一個週五（今天這個時間已過就是下週）；「下週五」＝下一週的週五
+function parseOnce(s, now) {
+  let m, base = null, bareWeekday = false;
+  s = s.replace(/半小時/g, '30分鐘').replace(/一小時/g, '1小時').replace(/兩小時/g, '2小時');
+  const rel = /(?:(\d+(?:\.\d+)?)(?:個)?小時)?(?:(\d+)分鐘?)?後$/.exec(s);
+  if (rel && (rel[1] || rel[2]) && !/[明後今隔]天|週|周|禮拜|星期|\d[\/\-月]\d/.test(s)) {
+    const ms = ((+rel[1] || 0) * 60 + (+rel[2] || 0)) * 60000;
+    return ms >= 60000 ? { schedule: { kind: 'once', at: Math.round((now + ms) / 60000) * 60000 }, days: [] } : null;
+  }
+  const d0 = new Date(now); d0.setHours(0, 0, 0, 0);
+  const day = (n) => { const d = new Date(d0); d.setDate(d.getDate() + n); return d; };
+  if ((m = /(\d{4})[\/\-.年](\d{1,2})[\/\-.月](\d{1,2})日?/.exec(s))) base = new Date(+m[1], +m[2] - 1, +m[3]);
+  else if ((m = /(?:^|\D)(\d{1,2})[\/月](\d{1,2})日?/.exec(s))) {
+    base = new Date(d0.getFullYear(), +m[1] - 1, +m[2]);
+    if (base.getTime() < d0.getTime()) base.setFullYear(base.getFullYear() + 1);
+  }
+  else if (/大後天/.test(s)) base = day(3);
+  else if (/後天/.test(s)) base = day(2);
+  else if (/明天|明日|隔天/.test(s)) base = day(1);
+  else if (/今天|今日|今晚|今早/.test(s)) base = day(0);
+  else if ((m = /(下*)(?:週|周|禮拜|星期)([一二三四五六日天])/.exec(s))) {
+    const want0 = ('一二三四五六日'.indexOf(m[2] === '天' ? '日' : m[2]) + 7) % 7, mon0 = (d0.getDay() + 6) % 7;
+    let add = want0 - mon0;
+    if (m[1]) add += 7 * m[1].length; else { bareWeekday = true; if (add < 0) add += 7; }
+    base = day(add);
+  }
+  if (!base || Number.isNaN(base.getTime())) return null;
+  let min = parseClock(s);
+  if (min == null) { if (/今晚/.test(s)) min = 20 * 60; else if (/今早/.test(s)) min = 9 * 60; else return null; }
+  base.setHours(Math.floor(min / 60), min % 60, 0, 0);
+  if (bareWeekday && base.getTime() < now - 60000) { base.setDate(base.getDate() + 7); base.setHours(Math.floor(min / 60), min % 60, 0, 0); }
+  const at = base.getTime();
+  if (at < now - 60000) return null;
+  return { schedule: { kind: 'once', at }, days: [] };
+}
+// 「每小時」「每 30 分鐘」「每 2 小時」「每天 08:30」「平日 08:30」＋單次「明天 15:00」「11/20 15:00」「30 分鐘後」→ 排程（給【排程建議】用）
+function parsePhrase(text, now = Date.now()) {
   const s = String(text || '').replace(/\s+/g, '');
   let m;
   const days = /^平日|工作日/.test(s) ? [1, 2, 3, 4, 5] : [];
   if ((m = s.match(/(\d{1,2})[:：](\d{2})/)) && /每天|每日|平日|工作日|每週/.test(s)) return { schedule: { kind: 'daily', time: pad(+m[1]) + ':' + m[2] }, days };
   if (/每小時|每一小時/.test(s)) return { schedule: { kind: 'every', minutes: 60 }, days };
   if ((m = s.match(/每(\d+)(小時|分鐘|分)/))) return { schedule: { kind: 'every', minutes: m[2] === '小時' ? +m[1] * 60 : +m[1] }, days };
-  return null;
+  if (/每|平日|工作日/.test(s)) return null;
+  // 單次要保留「數字和數字之間」的空白（1/5 09:00 不能變成 1/509:00），其他空白拿掉
+  return parseOnce(String(text || '').trim().replace(/\s*([^\d\s])\s*/g, '$1').replace(/\s+/g, ' '), now);
 }
 
 exports.describe = describe;
@@ -352,27 +402,33 @@ exports.create = function create(ctx) {
   // 【排程建議】每天 08:30｜整理昨天的帳並寫進表單
   function propose(agent, line, taskId) {
     // 【排程建議】每小時｜要做的事｜先檢查：node pm/check.mjs
+    // 回傳：排程建議本身、{ error } 說明為什麼沒送出（讓成員知道，不要悄悄丟掉）、或 null（和已有的建議重複）
     const parts = String(line).split(/[｜|]/).map((x) => x.trim());
-    if (parts.length < 2) return null;
+    if (parts.length < 2) return { error: '格式是「【排程建議】時間｜要做的事」，中間用「｜」隔開' };
     const m = [line, parts[0], parts.slice(1).filter((x) => !/^先檢查\s*[:：]/.test(x)).join('｜')];
     const pre = (parts.find((x) => /^先檢查\s*[:：]/.test(x)) || '').replace(/^先檢查\s*[:：]\s*/, '');
     const sch = parsePhrase(m[1]);
-    if (!sch || !m[2]) return null;
+    if (!sch) return { error: '看不懂時間「' + short(m[1], 30) + '」。可以寫：每天 08:30、平日 09:00、每小時、每 30 分鐘；單次要寫在未來：明天 15:00、11/20 15:00、週五 10:00、30 分鐘後' };
+    if (!m[2]) return { error: '「｜」後面要寫要做的事' };
     let precheck = '';
-    try { precheck = cleanPrecheck(pre); } catch { return null; }
+    try { precheck = cleanPrecheck(pre); } catch (e) { return { error: '「先檢查」的指令不合法：' + e.message }; }
     const prompt = m[2].trim().slice(0, 1000);
     const norm = (s) => s.replace(/\s+/g, '');
     if (S.proposals.some((p) => norm(p.prompt) === norm(prompt) && p.agentId === agent.id)) return null;
-    const p = { id: ++S.seq, agentId: agent.id, name: short(prompt, 20), prompt, ...sch, notify: 'changes', ownSession: true, allowPause: true, precheck, taskId: taskId || null, createdAt: Date.now(), phrase: m[1].trim() };
+    const p = { id: ++S.seq, agentId: agent.id, name: short(prompt, 20), prompt, ...sch, notify: sch.schedule.kind === 'once' ? 'always' : 'changes', ownSession: true, allowPause: true, precheck, taskId: taskId || null, createdAt: Date.now(), phrase: m[1].trim() };
     S.proposals.push(p); changed();
     if (ctx.onProposal) ctx.onProposal(p, agent);
     return p;
   }
   function collect(agent, text, taskId) {
+    const out = [];
     for (const raw of String(text || '').split('\n')) {
       const m = raw.replace(/^[\s>*\-•]+/, '').replace(/\*\*/g, '').match(/^【排程建議】\s*[:：]?\s*(.+)$/);
-      if (m) propose(agent, m[1].trim(), taskId);
+      if (!m) continue;
+      const r = propose(agent, m[1].trim(), taskId);
+      if (r && r.error) out.push({ error: r.error }); else if (r) out.push({ proposal: r });
     }
+    return out;
   }
   function acceptProposal(id, edits = {}) {
     const i = S.proposals.findIndex((p) => p.id === Number(id));
@@ -391,6 +447,7 @@ exports.create = function create(ctx) {
   const view = (t) => ({ ...t, desc: describe(t), agentName: (ctx.agentById(t.agentId) || {}).name || t.agentId });
   const snapshot = () => ({ timers: S.timers.map(view), proposals: S.proposals.map(view), runs: recent.slice(-80).reverse(), minEvery: MIN_EVERY });
   const promptHint = () => '【排程】需要定期或稍後再做的事（例如每小時檢查、每天早上整理），不要自己建立 Windows 排程或背景程式；在回覆中另起一行寫「【排程建議】每天 08:30｜要做的事」（也可以寫「每小時」「每 30 分鐘」「平日 08:30」），使用者核准後系統會準時叫你。' +
+    '單次提醒也一樣寫：「【排程建議】明天 15:00｜要做的事」（可以寫 11/20 15:00、週五 10:00、30 分鐘後；時間要在未來）。' +
     '定期檢查最好附一個不花 AI 額度的檢查指令：「【排程建議】每小時｜要做的事｜先檢查：node 檢查腳本.mjs」，腳本在沒有待辦時不要輸出任何東西，系統就不會叫醒你。';
 
   let timer = null;

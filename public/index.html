@@ -363,7 +363,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.14.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.15.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -793,6 +793,18 @@ const AGY_LABEL = {
   write: 'write：可以建立與修改檔案，也會執行指令（⚠️ 範圍是否限在工作資料夾還沒確認）',
 };
 const CUSTOM = '__custom';
+const ASSISTANT_PERSONA = `你叫{name}，是使用者的個人秘書／助理，用繁體中文回覆，語氣親切、簡潔、有禮貌，像一位可靠的行政助理。
+你的工作：
+1. 安排行程：把使用者的行程、會議、截止日記在工作資料夾的「行程.md」（每筆一行：日期 時間｜事項｜地點或備註），待辦記在「待辦.md」（- [ ] 事項（期限））。每次對話開始先讀這兩個檔案；新增、改期、取消都要同步改檔案，並回報「已記下／已改成…」。檔案還不存在就自己建立。
+2. 提醒：要在某個時間提醒使用者時，不要自己建立 Windows 排程或背景程式，在回覆中另起一行寫「【排程建議】明天 15:00｜提醒使用者：下午三點開會，地點…」，使用者核准後系統會準時叫你，到時你就把提醒內容回覆出來。時間可以寫：明天 15:00、後天 09:30、11/20 15:00、週五 10:00、30 分鐘後；固定的可以寫：每天 08:30、平日 09:00。系統回報「沒有送出」就照說明改寫法再提一次。
+3. 看排程：訊息裡的【現況】是系統提供的最新排程、任務與待核准清單。被問到「現在有哪些排程、有沒有異常」時照【現況】回答（哪些在跑、下次什麼時候、哪些失敗或暫停），需要使用者處理的挑重點說。你不能自己新增、修改或刪除排程，只能用【排程建議】提出，由使用者按核准。
+4. 日常小事：排待辦的優先順序、寫簡短的訊息或信件草稿、整理會議重點、算日期與時間差。
+原則：
+- 時間一律換成明確的日期與時間再確認（例如「週五」要說出是 11/21（週五）幾點）；沒說哪一天或幾點就問，不要猜。
+- 新行程和既有行程衝突或排得太緊時，先提醒再記。
+- 你看不到使用者的日曆、信箱或手機，只知道「行程.md」裡的內容和系統給的【現況】；不要假裝知道沒記過的事。
+- 你只能讀寫自己資料夾裡的檔案，不能執行指令。需要寫程式、查資料或處理專案的事，請使用者交給對應的成員，你可以幫他把需求整理成一段話。
+- 第一次對話時建議使用者設定每天早上的行程摘要，用這行提出：「【排程建議】平日 08:30｜整理今天的行程與待辦，簡短回報；今天沒有任何事就回【無異常】」。`;
 // Harness 守則面板的常用範本：只填進輸入框，使用者確認後按「新增」才會變成守則
 const GUIDE_TEMPLATES = [
   { name: '📄 附件先轉 Markdown（markitdown）',
@@ -917,7 +929,7 @@ async function openAgentForm(id) {
       <div class="field full">
         <label class="opt"><input type="checkbox" id="f_standalone" ${a.standalone ? 'checked' : ''}> 🧍 獨立成員（不進工作流程）</label>
         <span class="help">訊息直接交給它處理、直接回覆：不建立任務、不交接、不需要核准，也不會被其他成員 @ 轉交。適合記帳員這種常駐助手。</span>
-        <div class="tpl" style="margin-top:6px"><button type="button" id="f_tpl_ledger">📒 套用記帳員設定</button></div>
+        <div class="tpl" style="margin-top:6px"><button type="button" id="f_tpl_ledger">📒 套用記帳員設定</button><button type="button" id="f_tpl_asst">🗓 套用助理（個人秘書）設定</button></div>
       </div>
       <div class="field full sa-only">
         <label>角色設定檔（相對於工作資料夾，每一輪重新讀取）</label>
@@ -964,7 +976,9 @@ async function openAgentForm(id) {
         <span class="help">派工訊息寫「【緊急】」時，會立刻中斷正在工作的同事，先處理這件事，再回頭做原本的工作。預設只有角色寫了 PM 的成員有；同一位同事冷卻時間內只能被插話一次（在「⚙️ 工作流程」設定）。</span>
       </div>
       <div class="field full claude-only">
-        <label class="opt"><input type="checkbox" id="f_rtk" ${a.rtk ? 'checked' : ''}> 🗜 壓縮指令輸出（rtk，只限 Claude 成員）</label>
+        <label class="opt"><input type="checkbox" id="f_brief" ${a.brief ? 'checked' : ''}> 📋 每輪附上現況摘要（現在時間、排程、進行中的任務、等你處理的事）</label>
+        <span class="help">系統產生的唯讀資料，讓成員知道「現在幾點、有哪些排程、有沒有異常」。適合助理（個人秘書）這種要幫你看排程與行程的成員；每輪多約 300～800 字。</span>
+        <label class="opt" style="margin-top:8px"><input type="checkbox" id="f_rtk" ${a.rtk ? 'checked' : ''}> 🗜 壓縮指令輸出（rtk，只限 Claude 成員）</label>
         <span class="help" id="f_rtkhelp">成員在 Bash 執行的 git、測試、建置等指令，輸出會先經過 rtk 精簡再交給它，省 token、對話也不會被長長的紀錄撐大。要先在這台電腦裝 rtk（PowerShell：<code>winget install rtk-ai.rtk</code>）。只影響勾選的成員，不會改你自己的 Claude Code 設定；rtk 不能替成員核准指令，權限照原本的設定。獨立成員和有「限制工具」的成員不會使用。</span>
       </div>
       <div class="field full">
@@ -1121,6 +1135,24 @@ async function openAgentForm(id) {
     syncKind();
     toast('已套用記帳員設定：記得在環境變數填 LEDGER_SHEET_ID 的值');
   };
+  // 🗓 助理（個人秘書）：安排行程、提醒、看排程、日常小事。獨立成員，只能讀寫自己的資料夾（acceptEdits、不能執行指令）
+  $('f_tpl_asst').onclick = () => {
+    if (!$('f_name').value.trim()) $('f_name').value = '助理';
+    const name = $('f_name').value.trim();
+    setAvatar('🗓️');
+    $('f_role').value = '個人秘書 · 行程、排程、日常小事';
+    $('f_standalone').checked = true;
+    engineSel.value = 'claude'; syncEngine(true); buildModels('claude-sonnet-5-5');
+    $('f_perm').value = 'acceptEdits';
+    $('f_cwd').value = './workspace/assistant';
+    $('f_pfile').value = ''; $('f_tools').value = ''; $('f_allow').value = '';
+    $('f_tgprefix').value = '/助理';
+    $('f_brief').checked = true;
+    $('f_persona').value = ASSISTANT_PERSONA.replace(/\{name\}/g, name);
+    if (TG && TG.allowedIds && TG.allowedIds.length === 1 && !$('f_tgusers').value) $('f_tgusers').value = TG.allowedIds[0];
+    syncKind();
+    toast('已套用助理設定：儲存後就能對它說「明天下午三點提醒我開會」');
+  };
   $('f_unres').onchange = (e) => $('f_handoff').classList.toggle('disabled', e.target.checked);
   if (editing) ['f_name', 'f_role', 'f_persona', 'f_engine'].forEach((fid) =>
     $(fid).addEventListener('change', () => { $('f_reset').checked = true; }));
@@ -1139,6 +1171,7 @@ async function openAgentForm(id) {
       canHandoffTo: $('f_unres').checked ? null : [...document.querySelectorAll('#f_handoff input:checked')].map((x) => x.value),
       extraDirs: dirs.filter((d) => d.path),
       rtk: engineSel.value === 'claude' && !$('f_standalone').checked && $('f_rtk').checked,
+      brief: $('f_brief').checked,
       takeTurns: $('f_turns').checked && !$('f_standalone').checked, canInterrupt: $('f_urgent').checked && !$('f_standalone').checked, team: $('f_team').value,
       standalone: $('f_standalone').checked, personaFile: $('f_pfile').value, env: $('f_env').value,
       tools: $('f_tools').value, allowedTools: $('f_allow').value, disallowedTools: $('f_deny').value,

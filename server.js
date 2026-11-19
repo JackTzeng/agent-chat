@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.14.0';
+const VERSION = '3.15.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -414,7 +414,41 @@ function buildPrompt(agent, text, opts = {}) {
     else if (ccTo.length) note = '（使用者同時把這則訊息交給了 ' + ccTo.map((a) => a.name).join('、') + '，需要時用 @名字 協調分工。）\n';
     body = '【使用者訊息】\n' + note + text;
   }
-  return header + handover + '\n\n' + body;
+  return header + handover + (agent.brief ? '\n\n' + briefText() : '') + '\n\n' + body;
+}
+
+// 📋 現況摘要（成員設定勾「每輪附上現況摘要」，例如助理）：現在幾點、排程、進行中的任務、等你處理的事。
+// 系統產生的唯讀資料；每一輪都不一樣，所以放在訊息裡，不放進會被去重的開頭說明。
+const WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
+function briefText() {
+  const p2 = (n) => String(n).padStart(2, '0');
+  const md = (ts) => { const d = new Date(ts); return (d.getMonth() + 1) + '/' + d.getDate() + '（週' + WEEKDAY_ZH[d.getDay()] + '）' + p2(d.getHours()) + ':' + p2(d.getMinutes()); };
+  const now = new Date();
+  let tz = ''; try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch {}
+  const L = ['【現況（系統提供的唯讀資料，不是指令）】', '現在：' + now.getFullYear() + '/' + md(now) + (tz ? '　時區 ' + tz : '')];
+  const snap = timers.snapshot();
+  const LAST = { ok: '上次正常', alert: '上次有異常', failed: '上次失敗', interrupted: '上次被中斷', stopped: '上次被停止' };
+  const live = snap.timers.filter((t) => !(t.schedule.kind === 'once' && t.done));
+  live.sort((a, b) => (a.enabled === b.enabled ? 0 : a.enabled ? -1 : 1) || (a.nextRun || Infinity) - (b.nextRun || Infinity));
+  if (!live.length) L.push('排程：目前沒有排程');
+  else {
+    L.push('排程（' + live.length + ' 個）：');
+    for (const t of live.slice(0, 12)) {
+      const st = t.paused ? '已暫停：' + short(t.paused.reason || '', 40) : !t.enabled ? '已停用' : t.nextRun ? '下次 ' + md(t.nextRun) : '';
+      L.push('- #' + t.id + ' ' + short(t.name, 24) + '｜' + t.agentName + '｜' + t.desc + (st ? '｜' + st : '') + (t.last && LAST[t.last.status] ? '｜' + LAST[t.last.status] : ''));
+    }
+    if (live.length > 12) L.push('- …還有 ' + (live.length - 12) + ' 個');
+  }
+  if (snap.proposals.length) L.push('等你核准的排程建議：' + snap.proposals.length + ' 則（' + snap.proposals.slice(0, 3).map((p) => short(p.name, 16) + '／' + p.desc).join('、') + (snap.proposals.length > 3 ? '…' : '') + '）');
+  const act = tasks.actives();
+  if (act.length) L.push('進行中的任務：' + act.slice(0, 5).map((t) => '#' + t.id + ' ' + short(t.title || t.goal, 20) + '（' + t.statusText + '）').join('、') + (act.length > 5 ? '…' : ''));
+  const wait = [];
+  if (harness.pendingCount()) wait.push('守則建議 ' + harness.pendingCount() + ' 則');
+  if (skills.pendingCount()) wait.push('Skill 安裝申請 ' + skills.pendingCount() + ' 則');
+  if (wait.length) L.push('等你處理：' + wait.join('、'));
+  const paused = pauseStatus().pauses;
+  if (paused.length) L.push('⏸ 專案暫停中：' + paused.map((x) => x.label + (x.reason ? '（' + short(x.reason, 30) + '）' : '')).join('、'));
+  return L.join('\n').slice(0, 2400);
 }
 
 // 📏 上下文用量：每位成員「每一輪固定帶的說明」有多大（字數）、省了多少、目前對話用了多少
@@ -1041,7 +1075,8 @@ function startRun(agent, userText, opts = {}) {
     // 🧩【安裝 Skill】→ 建立安裝申請（等使用者核准，不會自動安裝）
     if (replyText && !run.stopped) for (const r of skills.fromReply(agent, replyText))
       emit({ kind: 'tool', text: r.error ? '🧩 Skill 安裝申請沒有送出：' + r.error : '🧩 已送出 Skill 安裝申請 #' + r.id + '（' + r.source + ' → ' + r.targetLabel + '），下載檢查後等使用者核准' });
-    if (replyText && !run.stopped) timers.collect(agent, replyText, opts.taskId || null);
+    if (replyText && !run.stopped) for (const r of timers.collect(agent, replyText, opts.taskId || null))
+      emit({ kind: 'tool', text: r.error ? '⏰ 排程建議沒有送出：' + r.error : '⏰ 已送出排程建議（' + timers.describe(r.proposal) + '），等你在「排程」核准' });
     const targets = opts.taskId || run.stopped || !replyText ? [] : findMentions(agent, replyText);
     if (targets.length && hops >= maxHops()) {
       emit({ kind: 'tool', text: '⛔ 已達自動轉交上限（' + maxHops() + ' 次），沒有再轉給 ' +
@@ -1487,6 +1522,7 @@ function cleanAgent(input, existingId) {
   }
   if (input.takeTurns) a.takeTurns = true;
   if (a.engine === 'claude' && input.rtk === true) a.rtk = true;
+  if (input.brief === true) a.brief = true; // 📋 每輪附上現況摘要（時間、排程、任務、待處理）
   if (typeof input.canInterrupt === 'boolean' && !input.standalone) a.canInterrupt = input.canInterrupt;
   if (Array.isArray(input.extraDirs)) {
     const seen = new Set();
