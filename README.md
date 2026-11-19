@@ -128,7 +128,7 @@ AGENT_ALLOWED_ROOTS=C:\EM_reports_copy
 
 重要的原始資料建議只給唯讀，或先複製一份再給可讀寫。
 
-想加更多成員，照格式複製一段即可。Windows 路徑要寫成 `"C:/Users/Jack/project"`（斜線方向改成 `/`）。
+想加更多成員，照格式複製一段即可。Windows 路徑要寫成 `"C:/Users/你的帳號/project"`（斜線方向改成 `/`）。
 
 ### 權限設定（重要）
 

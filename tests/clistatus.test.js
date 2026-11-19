@@ -35,7 +35,7 @@ test('parse codex config.toml / json / login status', () => {
   assert.equal(cs.parseCodexLogin('Logged in using ChatGPT').state, 'ok');
   assert.equal(cs.parseCodexLogin('Not logged in').state, 'no');
   assert.equal(cs.parseCodexLogin('error: unrecognized subcommand'), null);
-  assert.equal(cs.maskEmail('jack.tzeng@example.com'), 'ja***@example.com');
+  assert.equal(cs.maskEmail('jane.doe@example.com'), 'ja***@example.com');
 });
 
 test('member MCP: least-privilege allowlist, disallowed, plan mode, agy', () => {
