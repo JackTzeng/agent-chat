@@ -198,6 +198,9 @@ test('agy member through the real server: stdin prompt, resume, read-only args, 
   await api('/api/chat/gem', 'POST', { text: '請審查這份計畫' });
   await waitFor(async () => (await lastReply('gem')).includes('審查意見：沒有問題'), 'reply');
   let c = calls();
+  const meta1 = (await api('/api/history/gem')).history.filter((x) => x.role === 'assistant').at(-1).meta;
+  assert.match(meta1, /對話累計 15 tokens/, 'tokens 標明是整段對話累計');
+  assert.doesNotMatch(meta1, /1\.5s/, 'agy 回報的 1.5 秒是整段對話累計，改成這一輪實際花的時間');
   assert.match(c[0], /--input-format stream-json --output-format stream-json --model gemini-4-argon-high --effort high --mode plan --sandbox/);
   assert.doesNotMatch(c[0], /dangerously|-p /);
   assert.match(c[0], /請審查這份計畫/);

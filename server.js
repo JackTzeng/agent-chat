@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.19.3';
+const VERSION = '3.19.4';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -886,6 +886,12 @@ function readAudit(agentId, limit = 50) {
   catch { return []; }
 }
 
+// agy 回報的時間與 tokens 是「整段對話累計」（連續兩輪的秒數差剛好是你兩則訊息的間隔），不是這一輪的：
+// 時間改成這一輪實際花的，tokens 標明是累計，免得以為這一輪花了很久
+function agyMeta(meta, ms) {
+  return String(meta || '').split(' · ').map((p) => (/^\d+ tokens$/.test(p) ? '對話累計 ' + p : /^\d+(\.\d+)?s$/.test(p) ? (ms / 1000).toFixed(1) + 's' : p)).join(' · ');
+}
+
 function startRun(agent, userText, opts = {}) {
   const key = sessionKey(agent, opts);
   // 排程（沒勾「記得上次的對話」）每次都開全新的對話，不會一個鐘頭一輪地越堆越長
@@ -988,7 +994,7 @@ function startRun(agent, userText, opts = {}) {
       c.at = Date.now();
       return;
     }
-    if (e.kind === 'done') { run.meta = e.meta || ''; run.finished = true; if (e.stats) run.stats = e.stats; return; }
+    if (e.kind === 'done') { run.meta = agent.engine === 'agy' ? agyMeta(e.meta, Date.now() - run.startedAt) : e.meta || ''; run.finished = true; if (e.stats) run.stats = e.stats; return; }
     if (e.kind === 'toolres') {
       // 工具結果：記進稽核紀錄；被擋下或失敗的顯示一行
       let c = e.id && run.calls.find((x) => x.id === e.id);
