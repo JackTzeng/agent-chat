@@ -504,6 +504,31 @@ PM（被授權的成員）在派工訊息裡寫 **【緊急】**，正在工作�
 - 要新增或修改 MCP：在 PowerShell 用 `claude mcp add …`、`codex mcp add …`，改完按「🔄 重新檢查」
 - agy 沒有查登入狀態的指令，是用最近一次成員執行的結果判斷；agy 的 MCP 設定位置還沒實測確認，找不到會顯示「無法判斷」
 
+## 💚 LINE（用 LINE 跟成員對話）
+
+把「助理」（或任何成員）接到 LINE：在手機上傳訊息給它、收它的提醒。左下角「💚 LINE」裡有完整的 6 步教學與所有按鈕，這裡是重點。
+
+**要準備的**：一個 LINE 帳號、約 10 分鐘。全部是網頁和手機操作。
+
+1. 到 [manager.line.biz](https://manager.line.biz/) 建立一個 **LINE 官方帳號**（免費）
+2. 在 LINE Official Account Manager：設定 → **Messaging API → 啟用**，選一個提供者（2024/9 起只能這樣開）
+3. 設定 → **回應設定**：回應模式選 **Bot**、**Webhook 打開**；**「加入好友的歡迎訊息」和「自動回應訊息」關掉**
+4. 到 [developers.line.biz/console](https://developers.line.biz/console/) → 你的 channel：Basic settings 最下面複製 **Channel secret**；Messaging API 最下面 **Channel access token (long-lived)** 按 Issue 後複製
+5. Messaging API 分頁的 QR code 用手機 LINE 掃描，加好友
+6. 回 Agent Chat「💚 LINE」：貼上兩個密碼、選要接的成員 → 儲存 → **「📡 一鍵開啟公開通道」** → 「🔍 檢查連線」→ 「產生配對碼」，把 6 位數字傳給 LINE 上的 bot。最後到 Developers 確認 **Use webhook** 是打開的
+
+**公開通道**：LINE 只能把訊息送到公開網址。第一次用要下載 [cloudflared](https://github.com/cloudflare/cloudflared/releases/latest) 的 `cloudflared-windows-amd64.exe`，改名成 `cloudflared.exe`，放進 Agent Chat 資料夾（和 `server.js` 同一層）。之後按按鈕就會自動開通道、**自動把網址設到 LINE**；網址每次重開都會變，程式會自動重設，重新啟動時也會自動再開。有自己固定網址的（Tailscale Funnel、自己的網域），在「進階」欄位填網址，並把 `網址/line/webhook` 轉到 `127.0.0.1:3941`。
+
+**在 LINE 上怎麼用**：直接傳文字。`/new` 開新對話、`/stop` 停止。成員提出提醒時會問你「同意 3」或「不要 3」。目前只收文字、只支援一對一聊天。
+
+**訊息則數**：你傳訊息、它回覆（reply）**不算** LINE 的訊息則數；只有「回覆太久（超過約 50 秒）」和「排程提醒時間到、主動推播」會用掉推播額度。台灣的免費方案（輕用量）每月約 200 則（以 LINE 官方為準），設定畫面會顯示本月已用多少。用完後只能回覆你傳來的訊息。
+
+**安全**
+- LINE 的入口開在獨立連接埠（預設 3941，只聽 `127.0.0.1`），公開通道只接到這裡，**你的 Agent Chat 網頁（3939）不會被公開**
+- 每個請求都驗證 LINE 的簽章，不對就 401；只有配對過的 LINE 帳號才轉給成員（配對碼 10 分鐘有效、只能用一次、錯 5 次鎖住）；其他人只會收到「還沒配對」
+- Channel secret／token 存在 `agents.json`（和 Telegram token 一樣），不會出現在 API 回應或問題回報；要清除按「移除 LINE 設定」
+- ⚠️ 你的訊息會經過 LINE 的伺服器，公開通道也經過 Cloudflare。**如果這是公司電腦，請先確認資安規定允許對外開通道**；工作上的機密資料不要透過 LINE 傳給成員
+
 ## 🗓 助理（個人秘書）
 
 專門幫你安排行程、提醒、看排程、處理日常小事的獨立成員。
@@ -522,6 +547,8 @@ PM（被授權的成員）在派工訊息裡寫 **【緊急】**，正在工作�
 - 能：讀寫自己資料夾的檔案（行程.md、待辦.md）、看系統提供的現況、用【排程建議】提出提醒
 - 不能：執行指令、改別的成員的檔案、自己新增或刪除排程（一律你核准）、看你的日曆、信箱或手機（只知道行程.md 裡記過的）
 - 想接 Google 日曆等：先到「🧰 CLI 狀態」確認 MCP 已連線，再到助理的成員設定「允許規則」加上該 MCP（例如 `mcp__日曆名稱`）
+
+**想用 LINE 跟它聊**：見上面的「💚 LINE」。
 
 **📋 每輪附上現況摘要**（成員設定的選項，其他成員也能勾）：現在的日期時間與時區、所有排程、等你核准的排程建議、進行中的任務、等你處理的守則建議與 Skill 申請。每輪多約 300～800 字，沒勾的成員不會多帶。
 

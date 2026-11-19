@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.16.0';
+const VERSION = '3.17.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -13,6 +13,7 @@ const taskLib = require('./tasks');
 const agy = require('./agy');
 const cliStatusLib = require('./clistatus');
 const skillsLib = require('./skills');
+const lineLib = require('./line');
 const harnessLib = require('./harness');
 const { createSecurity, inside, isProtectedEnvKey } = require('./security');
 
@@ -127,6 +128,9 @@ function decodeOutput(buf) {
   try { return new TextDecoder('big5').decode(buf); } catch {}
   return buf.toString('latin1');
 }
+
+// 要從回報、紀錄裡遮掉的機密：Telegram bot token、LINE channel secret／access token
+function secretList() { const c = CONFIG; return [c.telegram && c.telegram.botToken, c.line && c.line.channelSecret, c.line && c.line.channelAccessToken]; }
 
 const LOCAL_HOSTS = ['127.0.0.1', 'localhost', '::1'];
 if (!LOCAL_HOSTS.includes(HOST) && !process.env.ALLOWED_HOSTS) {
@@ -926,7 +930,7 @@ function startRun(agent, userText, opts = {}) {
     if (quotaStop) agyQuotaNotifySender(agent, opts, userText);
     broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
     finish();
-    hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
+    hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
     if (opts.taskId) tasks.onTurnDone(agent, run, opts, null);
     setImmediate(pump);
     return;
@@ -939,7 +943,7 @@ function startRun(agent, userText, opts = {}) {
       agent.engine.toUpperCase() + '_BIN。' });
     broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
     finish();
-    hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
+    hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
     if (opts.taskId) tasks.onTurnDone(agent, run, opts, null);
     setImmediate(pump);
     return;
@@ -1019,7 +1023,7 @@ function startRun(agent, userText, opts = {}) {
       // 專案暫停（立刻停）：這一輪先停下，記下來，重啟時接著做
       emit({ kind: 'tool', text: '⏸ 專案暫停，這一輪先停下（重啟後會接著做）' });
       finish();
-      hooks.emit('done', { agent, timerId: opts.timerId, stopped: true, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
+      hooks.emit('done', { agent, timerId: opts.timerId, stopped: true, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
       if (opts.taskId) tasks.noteInterrupt(agent, opts, before, '專案暫停');
       if (agent.engine === 'codex') { setTimeout(readCodexUsage, 500); codexContext(key); }
       const rec = state.pause[run.interrupt.pause] || pauseOf(agent);
@@ -1034,7 +1038,7 @@ function startRun(agent, userText, opts = {}) {
       const urgent = run.interrupt.urgent;
       emit({ kind: 'tool', text: urgent ? '⚡ 收到 ' + ((agentById(urgent.opts.from) || {}).name || '同事') + ' 的緊急派工，這一輪先暫停' : '⚡ 使用者插話，這一輪先暫停' });
       finish();
-      hooks.emit('done', { agent, timerId: null, stopped: false, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
+      hooks.emit('done', { agent, timerId: null, stopped: false, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
       if (opts.taskId) tasks.noteInterrupt(agent, opts, before, urgent ? urgent.text : run.interrupt.text);
       if (agent.engine === 'codex') setTimeout(readCodexUsage, 500);
       if (urgent) {
@@ -1064,7 +1068,7 @@ function startRun(agent, userText, opts = {}) {
       const note = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n').trim();
       if (!run.stopped) finishShift(agent, key, run, note);
       finish();
-      hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId, shift: true, pauseNote: !!opts.pauseNote });
+      hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId, shift: true, pauseNote: !!opts.pauseNote });
       pump();
       return;
     }
@@ -1083,7 +1087,7 @@ function startRun(agent, userText, opts = {}) {
         targets.map((t) => t.name).join('、') + '。需要的話請你手動接手。' });
     }
     finish();
-    hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, via: opts.via, segments: run.segments, meta: run.meta, relayTo: hops < maxHops() ? targets : [], taskId: opts.taskId });
+    hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: run.meta, relayTo: hops < maxHops() ? targets : [], taskId: opts.taskId });
 
     if (opts.taskId && !run.silentStop) tasks.onTurnDone(agent, run, opts, before);
     if (hops < maxHops()) for (const t of targets) dispatch(t, replyText, { from: agent.id, hops: hops + 1 });
@@ -1234,9 +1238,9 @@ function diag(id) {
     running: !!run,
     run: run ? {
       pid: run.pid, startedAt: run.startedAt, lastActivity: run.lastActivity, lastStderr: run.lastStderr || null, stalled: !!run.stalled,
-      cmdline: security.redact(run.cmdline, [CONFIG.telegram && CONFIG.telegram.botToken]),
-      stderrTail: security.redact(decodeOutput(run.stderr).split(/\r?\n/).slice(-40).join('\n'), [CONFIG.telegram && CONFIG.telegram.botToken]),
-      stdoutTail: run.stdoutTail.map((s) => security.redact(s, [CONFIG.telegram && CONFIG.telegram.botToken])), segments: run.segments.length, taskId: run.opts.taskId || null,
+      cmdline: security.redact(run.cmdline, secretList()),
+      stderrTail: security.redact(decodeOutput(run.stderr).split(/\r?\n/).slice(-40).join('\n'), secretList()),
+      stdoutTail: run.stdoutTail.map((s) => security.redact(s, secretList())), segments: run.segments.length, taskId: run.opts.taskId || null,
     } : null,
     queue: queueInfo(id),
     stallMinutes: stallMinutes(),
@@ -1271,7 +1275,7 @@ function resetAgent(id) {
 const harness = harnessLib.create({
   CONFIG, AGENTS, agentById, teamById, DATA_DIR, hooks, broadcast, IS_WIN, decode: decodeOutput,
   safeEnv: () => security.safeEnvironment(),
-  redact: (s) => security.redact(s, [CONFIG.telegram && CONFIG.telegram.botToken]),
+  redact: (s) => security.redact(s, secretList()),
 });
 
 // ---------- 任務與工作流程（tasks.js）----------
@@ -1795,6 +1799,14 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/agents' && req.method === 'GET') return send(res, 200, AGENTS.map(publicAgent));
 
     // ---- Telegram 設定（網頁上貼 token、產生配對碼）----
+    // ---- 💚 LINE ----
+    if (p === '/api/line' && req.method === 'GET') return send(res, 200, lineBot.status());
+    if (p === '/api/line' && req.method === 'PUT') { try { return send(res, 200, lineBot.update(await readBody(req))); } catch (e) { return send(res, e.status || 400, { error: e.message }); } }
+    if (p === '/api/line/check' && req.method === 'POST') { try { return send(res, 200, { ...(await lineBot.check()), status: lineBot.status() }); } catch (e) { return send(res, 400, { error: e.message }); } }
+    if (p === '/api/line/pair' && req.method === 'POST') { if (!lineBot.status().configured) return send(res, 400, { error: '請先貼上 Channel secret 與 Channel access token 並儲存' }); lineBot.newPairCode(); return send(res, 200, lineBot.status()); }
+    if (p === '/api/line/unpair' && req.method === 'POST') return send(res, 200, lineBot.unpair());
+    if (p === '/api/line/webhook' && req.method === 'POST') { try { const b = await readBody(req); return send(res, 200, { ...(await lineBot.setupWebhook(b.publicUrl)), status: lineBot.status() }); } catch (e) { return send(res, 400, { error: e.message }); } }
+    if (p === '/api/line/tunnel' && req.method === 'POST') { try { const b = await readBody(req); return send(res, 200, b.on === false ? lineBot.stopTunnel() : lineBot.startTunnel()); } catch (e) { return send(res, 400, { error: e.message }); } }
     if (p === '/api/telegram' && req.method === 'GET') return send(res, 200, telegram.status());
     if (p === '/api/telegram' && req.method === 'PUT') {
       const body = await readBody(req);
@@ -2163,6 +2175,8 @@ server.listen(PORT, HOST, () => {
 
 // Telegram 遙控（agents.json 有設定 telegram.botToken 才會啟動）
 const telegram = require('./telegram');
+const lineBot = lineLib.create({ config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
+  agentById, agents: AGENTS, dispatch, stopRun, resetAgent, timers, proctree, ROOT });
 const tgCtx = {
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,
@@ -2171,6 +2185,7 @@ const tgCtx = {
 };
 telegram.start(tgCtx);
 telegram.startAgentBots(tgCtx);
+try { lineBot.start(); } catch (e) { console.error('LINE 啟動失敗：' + e.message); }
 
 // code 75 = 請啟動器重新啟動（一鍵更新／重啟）
 const shutdown = (code) => {

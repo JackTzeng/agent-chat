@@ -66,7 +66,7 @@ let inp = ''; process.stdin.on('data', (d) => (inp += d)).on('end', () => {
 
 test('only checked Claude team members get the rtk hook', { timeout: 60000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-rtk-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'rtkhook.js', 'agents.example.json'])
+  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'rtkhook.js', 'agents.example.json'])
     fs.copyFileSync(path.join(source, f), path.join(dir, f));
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   const mk = (id, extra = {}) => ({ id, name: id, avatar: '🤖', role: 'x', engine: 'claude', permissionMode: 'acceptEdits', cwd: './workspace', team: 'main', ...extra });

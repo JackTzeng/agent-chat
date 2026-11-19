@@ -19,7 +19,7 @@ async function freePort() {
 }
 async function boot() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-http-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'agents.example.json'])
+  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'agents.example.json'])
     fs.copyFileSync(path.join(source, f), path.join(dir, f));
   fs.mkdirSync(path.join(dir, 'public'));
   fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');

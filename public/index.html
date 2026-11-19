@@ -108,6 +108,9 @@
   .cli-tabs { display: flex; gap: 6px; align-items: center; margin: 6px 0 10px; } .cli-tabs .spacer { flex: 1; } .cli-tabs small { color: var(--muted); }
   .cli-body { max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; } .cli-ver { color: var(--muted); font-size: 12px; margin-left: 4px; }
   .cli-body .hn-item .grow { white-space: normal; }
+  input.secret { -webkit-text-security: disc; }
+  .ln-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; } .ln-guide { margin: 8px 0; } .ln-guide ol { padding-left: 20px; margin: 6px 0; line-height: 1.7; } .ln-guide li { margin-bottom: 6px; }
+  .ln-check { margin: 8px 0; font-size: 13px; line-height: 1.7; } .ln-code { font-size: 28px; font-weight: 700; letter-spacing: 6px; margin: 0 8px; color: var(--accent); font-variant-numeric: tabular-nums; }
   .sk-h { margin: 14px 0 6px; font-size: 14px; } .sk-desc { margin: 4px 0; font-size: 13px; } .sk-bad { color: var(--err); margin: 4px 0; font-size: 13px; } .sk-ok { color: #4f9a6b; margin: 4px 0; font-size: 13px; }
   .sk-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 6px 0; } .sk-row label { font-size: 13px; color: var(--muted); }
   .sk-files { font-family: ui-monospace, monospace; font-size: 12px; max-height: 160px; overflow-y: auto; padding: 4px 0; } .sk-card .acts button { white-space: nowrap; }
@@ -363,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.16.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.17.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -793,6 +796,9 @@ const AGY_LABEL = {
   write: 'write：可以建立與修改檔案，也會執行指令（⚠️ 範圍是否限在工作資料夾還沒確認）',
 };
 const CUSTOM = '__custom';
+// 機密欄位（bot token、channel secret 等）：不能用 type="password"，否則 Chrome／Edge 的密碼管理員會把「管理密碼」填進去、
+// 把登入頁的帳號（agent-chat）填進前一個文字欄（例如「職責」）。改用一般文字欄＋遮蔽字元；不支援遮蔽的瀏覽器才退回 password＋new-password。
+const SECRET_ATTR = (() => { try { if (CSS.supports('-webkit-text-security', 'disc')) return 'type="text" class="secret" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other"'; } catch {} return 'type="password" autocomplete="new-password"'; })();
 const ASSISTANT_PERSONA = `你叫{name}，是使用者的個人秘書／助理，用繁體中文回覆，語氣親切、簡潔、有禮貌，像一位可靠的行政助理。
 你的工作：
 1. 安排行程：把使用者的行程、會議、截止日記在工作資料夾的「行程.md」（每筆一行：日期 時間｜事項｜地點或備註），待辦記在「待辦.md」（- [ ] 事項（期限））。每次對話開始先讀這兩個檔案；新增、改期、取消都要同步改檔案，並回報「已記下／已改成…」。檔案還不存在就自己建立。
@@ -942,7 +948,7 @@ async function openAgentForm(id) {
       </div>
       <div class="field sa-only">
         <label>專屬 Telegram bot token（選填）</label>
-        <input id="f_tgtoken" type="password" autocomplete="off" placeholder="${(a.telegram || {}).hasBotToken ? '已設定（bot ' + esc(a.telegram.botHint) + '），留空就不變' : '在 BotFather 另外開一個 bot，貼上 token'}">
+        <input id="f_tgtoken" ${SECRET_ATTR} placeholder="${(a.telegram || {}).hasBotToken ? '已設定（bot ' + esc(a.telegram.botHint) + '），留空就不變' : '在 BotFather 另外開一個 bot，貼上 token'}">
         ${(a.telegram || {}).hasBotToken ? '<label class="opt"><input type="checkbox" id="f_tgclear"> 移除專屬 bot</label>' : ''}
         <span class="help">有專屬 bot 的話，在那個聊天打的每句話都交給它（適合「對」「撤銷」這種接續對話）。要先用主 bot 配對過帳號。</span>
       </div>
@@ -1743,6 +1749,7 @@ function renderUsage() {
     `<div class="ulink" id="timerLine" title="定時叫成員做事，例如每小時檢查、每天早上整理">⏰ 排程${TIMER_BADGE ? ' <span class="hn-dot">' + TIMER_BADGE + '</span>' : ''}</div>` +
     `<div class="ulink" id="updLine" title="檢查新版本、一鍵更新並重新啟動">⬆️ 更新${UPD_BADGE ? ' <span class="hn-dot">新</span>' : ''}</div>` +
     `<div class="ulink" id="cliLine" title="三個 CLI 的登入狀態、MCP、Skill（含安裝申請）">🧰 CLI 狀態${SKILL_PENDING ? ' <span class="hn-dot" title="有 Skill 安裝申請等你核准">' + SKILL_PENDING + '</span>' : ''}</div>` +
+    '<div class="ulink" id="lineLink" title="讓助理（或任何成員）用 LINE 跟你對話、收提醒">💚 LINE</div>' +
     '<div class="ulink" id="repLine" title="出問題時產生一個回報檔，帶給 Claude 排查">🐞 問題回報</div>' +
     '<div class="ulink" id="logoutLine" title="登出這個瀏覽器；可以選擇登出所有裝置">🔒 登出</div></div>';
   $('usageToggle').onclick = () => { setUsageOpen(!usageOpen()); renderUsage(); };
@@ -1750,6 +1757,7 @@ function renderUsage() {
   $('updLine').onclick = () => openUpdate();
   $('timerLine').onclick = () => openTimers();
   $('repLine').onclick = () => openReport();
+  $('lineLink').onclick = () => openLine();
   $('cliLine').onclick = () => (SKILL_PENDING ? openSkills() : openCliStatus());
   $('logoutLine').onclick = openLogout;
   $('usageBtn').onclick = async () => {
@@ -1794,7 +1802,7 @@ function renderTelegramForm() {
         ${t.error ? '<span class="seg-error">' + esc(t.error) + '</span>' : ''}</div>
       ${t.fromEnv ? '<p class="help">目前使用環境變數 TELEGRAM_BOT_TOKEN 的 token。</p>' : `
       <div class="tg-row">
-        <input type="password" id="tg_token" placeholder="${t.hasToken ? '已設定（' + esc(t.tokenHint) + '），要換新的才需要貼' : '貼上 BotFather 給的 token，例如 123456789:ABC…'}" autocomplete="off">
+        <input ${SECRET_ATTR} id="tg_token" placeholder="${t.hasToken ? '已設定（' + esc(t.tokenHint) + '），要換新的才需要貼' : '貼上 BotFather 給的 token，例如 123456789:ABC…'}">
         <button class="primary" id="tg_save">${t.hasToken ? '更新並重新連線' : '儲存並連線'}</button>
       </div>
       <p class="help">在 Telegram 的 @BotFather 選你的 bot，按「Copy」複製 token，再貼到這裡。</p>`}
@@ -1952,6 +1960,7 @@ function connectEvents() {
     if (window.Office && ev.agentId !== '*') Office.event(ev);
     if (ev.kind === 'agents-changed') { refreshAgents(); loadWorkflow().then(() => current === ALL && updateTop()); return; }
     if (ev.kind === 'usage') { loadUsage(); return; }
+    if (ev.kind === 'line') { if (modalShowing('ln_close')) openLine(); return; }
     if (ev.kind === 'skills') { loadSkillPending(); if (CLI_OPEN && CLI_TAB === 'skill' && modalShowing('cli_close')) openSkills(); return; }
     if (ev.kind === 'clistatus') { if (CLI_OPEN && modalShowing('cli_close')) openCliStatus(CLI_TAB); return; }
     if (ev.kind === 'telegram') { loadTelegram(); return; }
@@ -2050,6 +2059,82 @@ function openResume(scope) {
   };
 }
 // ---------- 🐞 問題回報 ----------
+// ---------- 💚 LINE ----------
+let LINE_CHECK = null;
+const LN_STATE = { off: '⚪ 沒開', starting: '⏳ 啟動中…', on: '🟢 已開', error: '🔴 出錯了', missing: '🔴 找不到 cloudflared' };
+async function openLine() {
+  const keep = modalShowing('ln_close') ? ['ln_secret', 'ln_token', 'ln_url', 'ln_agent'].reduce((o, id) => { if ($(id)) o[id] = $(id).value; return o; }, {}) : {};
+  let L = null;
+  try { L = await api('/api/line'); } catch (e) { toast(e.message); return; }
+  const members = (CFG ? CFG.agents : agents).filter((a) => a.engine);
+  const defAgent = L.agentId || ((members.find((a) => a.name === '助理') || members.find((a) => a.standalone) || members[0] || {}).id || '');
+  const ago = (t) => (t ? fmtTime(t) : '—');
+  const chip = (ok, text) => `<span class="cli-chip">${ok === true ? '✅' : ok === false ? '❌' : '❔'} ${text}</span>`;
+  const t = L.tunnel || {};
+  const wh = L.webhook;
+  const q = L.quota;
+  const pairLeft = L.pairing ? Math.max(0, Math.round((L.pairing.expires - Date.now()) / 60000)) : 0;
+  openModal(`<h2>💚 LINE</h2>
+    <p class="lead">讓「助理」（或任何成員）用 LINE 跟你對話、收提醒。你傳訊息給它、它回你是<b>免費、不限則數</b>的；只有「時間到、它主動提醒你」會用掉 LINE 的每月推播額度（台灣免費方案每月約 200 則，請以 LINE 官方為準）。</p>
+    <div class="ln-chips">${chip(L.configured, L.configured ? '已設定' + (L.bot ? '：' + esc(L.bot.name) : '') : '還沒設定')}
+      ${chip(L.listening, 'Webhook 伺服器' + (L.listening ? '（127.0.0.1:' + L.port + '）' : ' 沒開'))}
+      ${chip(t.state === 'on' || !!L.publicUrl ? true : null, '公開通道：' + (t.state === 'on' ? '已開' : L.publicUrl ? '已設定網址' : '還沒有'))}
+      ${chip(wh ? (wh.tested && wh.active !== false) : null, wh ? (wh.tested ? 'LINE 測試通過' : 'LINE 測試沒過') + (wh.active === false ? '（Use webhook 沒打開）' : '') : 'Webhook 還沒測')}
+      ${chip(L.allowedCount > 0, '已配對 ' + L.allowedCount + ' 人')}</div>
+    ${L.lastError ? `<div class="sk-bad">最近的問題：${esc(L.lastError)}（${ago(L.lastErrorAt)}）</div>` : ''}
+    <details ${L.configured ? '' : 'open'} class="ln-guide"><summary><b>🧭 第一次設定：照這 6 步做（約 10 分鐘，全部在網頁和手機上操作）</b></summary>
+      <ol>
+        <li><b>建立 LINE 官方帳號（免費）</b>：電腦打開 <a href="https://manager.line.biz/" target="_blank" rel="noopener noreferrer">manager.line.biz</a>，用你的個人 LINE 登入 →「建立 LINE 官方帳號」→ 帳號名稱例如「我的助理」，業種隨便選 → 完成。不需要公司認證。</li>
+        <li><b>啟用 Messaging API</b>：在 LINE Official Account Manager 右上「設定」→ 左邊「Messaging API」→「啟用 Messaging API」→ 選一個「提供者」（沒有就新增一個，名稱隨意）→ 同意。（2024/9 起不能直接在 Developers 建 channel，要這樣開。）</li>
+        <li><b>回應設定</b>：同一個「設定」→「回應設定」：<b>回應模式選 Bot、Webhook 打開</b>；<b>「加入好友的歡迎訊息」和「自動回應訊息」都關掉</b>（不然 LINE 會自己亂回）。</li>
+        <li><b>拿兩個密碼</b>：打開 <a href="https://developers.line.biz/console/" target="_blank" rel="noopener noreferrer">developers.line.biz/console</a> → 你的提供者 → 那個 channel：<br>
+          ・「Basic settings」分頁最下面的 <b>Channel secret</b>（32 個字）複製<br>
+          ・「Messaging API」分頁最下面的 <b>Channel access token (long-lived)</b> → 按 Issue → 複製<br>
+          貼到下面的欄位，按「儲存」。</li>
+        <li><b>加好友</b>：在「Messaging API」分頁有 QR code，用手機 LINE 掃描，把這個官方帳號加為好友。</li>
+        <li><b>回到這裡</b>：按「📡 一鍵開啟公開通道」（見下面，只要先下載一個小程式）→ 再按「🔍 檢查連線」→「產生配對碼」，把 6 位數字傳給 LINE 上的 bot。配對成功就能開始聊了。<br>
+          最後到 Developers 的「Messaging API」分頁，確認 <b>Use webhook</b> 是打開的。</li>
+      </ol></details>
+    <h3 class="sk-h">① 連線資料</h3>
+    <div class="form-grid">
+      <div class="field"><label>要接哪位成員</label><select id="ln_agent">${members.map((a) => `<option value="${esc(a.id)}" ${a.id === (keep.ln_agent || defAgent) ? 'selected' : ''}>${esc(a.name)}（${esc(a.role || a.engine)}）</option>`).join('')}</select></div>
+      <div class="field"><label>Channel secret</label><input id="ln_secret" ${SECRET_ATTR} value="${esc(keep.ln_secret || '')}" placeholder="${L.hasSecret ? '已設定（' + esc(L.secretHint) + '），要換才貼' : '32 個英數字'}"></div>
+      <div class="field full"><label>Channel access token (long-lived)</label><input id="ln_token" ${SECRET_ATTR} value="${esc(keep.ln_token || '')}" placeholder="${L.hasToken ? '已設定，要換才貼' : '一長串英數字（Issue 後複製）'}"></div>
+    </div>
+    <div class="sk-row"><button class="primary" id="ln_save">儲存</button><button id="ln_check" ${L.configured ? '' : 'disabled'}>🔍 檢查連線</button>${L.configured ? '<button id="ln_clear" title="清除所有 LINE 設定">移除 LINE 設定</button>' : ''}</div>
+    ${LINE_CHECK ? '<div class="ln-check">' + LINE_CHECK.steps.map((s) => `<div>${s.ok ? '✅' : '❌'} <b>${esc(s.name)}</b>：${esc(s.msg)}</div>`).join('') + '</div>' : ''}
+    <h3 class="sk-h">② 公開通道（LINE 要有一個公開網址才送得到訊息）</h3>
+    <p class="help" style="margin:0 0 6px">只會公開「LINE 專用的小入口」（<code>127.0.0.1:${L.port}</code>，每個請求都驗證 LINE 的簽章），<b>你的 Agent Chat 網頁不會被公開</b>。</p>
+    <div class="sk-row"><button class="primary" id="ln_tun_on" ${L.configured && t.state !== 'on' && t.state !== 'starting' ? '' : 'disabled'}>📡 一鍵開啟公開通道</button>
+      <button id="ln_tun_off" ${t.state === 'on' || t.state === 'starting' || t.wanted ? '' : 'disabled'}>關閉</button><span>${LN_STATE[t.state] || ''}${t.url ? '　<code>' + esc(t.url) + '</code>' : ''}</span></div>
+    ${t.error ? `<div class="sk-bad">${esc(t.error)}</div>` : ''}
+    <details class="ln-guide"><summary>第一次使用：下載 cloudflared（免費小程式，不用打指令）</summary>
+      <p class="help">到 <a href="https://github.com/cloudflare/cloudflared/releases/latest" target="_blank" rel="noopener noreferrer">cloudflared 的下載頁</a>，下載 <code>cloudflared-windows-amd64.exe</code>，<b>改名成 <code>cloudflared.exe</code></b>，放進 Agent Chat 的資料夾（和 <code>server.js</code> 同一層）。之後按上面的按鈕就會自動開通道，並<b>自動把網址設到 LINE</b>。<br>
+      通道網址每次重開都會變，但 Agent Chat 會自動重新設定，你不用管。已經開啟過的話，程式重新啟動時會自動再開。</p></details>
+    <details class="ln-guide"><summary>進階：我有自己的固定網址（Tailscale Funnel、自己的網域…）</summary>
+      <div class="sk-row"><input id="ln_url" value="${esc(keep.ln_url !== undefined ? keep.ln_url : L.publicUrl)}" placeholder="https://你的網址（只要網域，不用加 /line/webhook）" style="flex:1;min-width:200px"><button id="ln_wh">設定 Webhook 並測試</button></div>
+      <p class="help">把這個網址的 <code>/line/webhook</code> 轉到這台電腦的 <code>127.0.0.1:${L.port}</code> 即可（Tailscale：<code>tailscale funnel --bg ${L.port}</code>）。上面的一鍵通道和這裡二選一。</p></details>
+    ${wh ? `<p class="help">Webhook：${esc(wh.endpoint || '—')}｜${wh.tested ? '✅ LINE 測試通過' : '❌ ' + esc(wh.reason || '還沒通過')}${wh.active === false ? '｜⚠️ 到 LINE Developers 把「Use webhook」打開' : ''}（${ago(wh.at)}）</p>` : ''}
+    <h3 class="sk-h">③ 配對（只有配對過的 LINE 帳號，才能跟成員說話）</h3>
+    <div class="sk-row"><button id="ln_pair" ${L.configured ? '' : 'disabled'}>產生配對碼</button>${L.allowedCount ? '<button id="ln_unpair">清除所有配對</button>' : ''}
+      ${L.pairing ? `<span class="ln-code">${esc(L.pairing.code)}</span><span class="help">把這 6 位數字傳給 LINE 上的 bot（${pairLeft} 分鐘內有效，只能用一次）</span>` : ''}</div>
+    <p class="help">${q ? `本月主動推播：已用 ${q.used} ${q.type === 'limited' ? '/ ' + q.value : ''} 則（${ago(q.at)} 更新）` : `本程式這個月推播了 ${L.pushedThisMonth} 則`}${L.pushBlocked ? '　⚠️ 本月推播額度已用完，只能回覆你傳來的訊息' : ''}｜最近一次收到訊息：${ago(L.lastEventAt)}</p>
+    <p class="help">在 LINE 上：直接傳文字給它；<code>/new</code> 開新對話、<code>/stop</code> 停止、<code>同意 3</code>／<code>不要 3</code> 核准或取消它提出的提醒。目前只收文字。</p>
+    <p class="help">⚠️ 你的訊息會經過 LINE 的伺服器（日本），公開通道也會經過 Cloudflare。這台如果是公司電腦，請先確認資安規定允許；工作上的機密資料不要透過 LINE 傳給成員。</p>
+    <div class="modal-actions"><span class="spacer"></span><button id="ln_close">關閉</button></div>`);
+  $('modal').classList.add('wide');
+  const act = async (fn) => { try { await fn(); } catch (e) { toast(e.message); } openLine(); };
+  $('ln_close').onclick = closeModal;
+  $('ln_save').onclick = () => act(() => api('/api/line', { method: 'PUT', body: JSON.stringify({ agentId: $('ln_agent').value, channelSecret: $('ln_secret').value, channelAccessToken: $('ln_token').value }) }).then(() => { $('ln_secret').value = ''; $('ln_token').value = ''; toast('已儲存'); }));
+  $('ln_check').onclick = () => act(async () => { $('ln_check').textContent = '檢查中…'; LINE_CHECK = await api('/api/line/check', { method: 'POST', body: '{}' }); });
+  if ($('ln_clear')) $('ln_clear').onclick = () => { if (confirm('移除 LINE 的所有設定（secret、token、配對）？LINE 上的官方帳號不會被刪除。')) act(async () => { LINE_CHECK = null; await api('/api/line', { method: 'PUT', body: JSON.stringify({ clear: true }) }); }); };
+  $('ln_tun_on').onclick = () => act(() => api('/api/line/tunnel', { method: 'POST', body: JSON.stringify({ on: true }) }));
+  $('ln_tun_off').onclick = () => act(() => api('/api/line/tunnel', { method: 'POST', body: JSON.stringify({ on: false }) }));
+  $('ln_wh').onclick = () => act(async () => { const r = await api('/api/line/webhook', { method: 'POST', body: JSON.stringify({ publicUrl: $('ln_url').value }) }); toast(r.ok ? '✅ Webhook 設定好了，LINE 測試通過' : '設定好了，但 LINE 測試沒過：' + r.reason); });
+  $('ln_pair').onclick = () => act(() => api('/api/line/pair', { method: 'POST', body: '{}' }));
+  if ($('ln_unpair')) $('ln_unpair').onclick = () => { if (confirm('清除所有已配對的 LINE 帳號？之後要重新配對才能使用。')) act(() => api('/api/line/unpair', { method: 'POST', body: '{}' })); };
+}
+
 // ---------- 🧩 Skill：成員提出 → 你核准 → 系統安裝 ----------
 let SKILL_PENDING = 0;
 async function loadSkillPending() { try { SKILL_PENDING = (await api('/api/skills')).pending || 0; } catch {} renderUsage(); }
