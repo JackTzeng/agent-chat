@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.18.1';
+const VERSION = '3.19.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -434,15 +434,24 @@ function briefText() {
   const snap = timers.snapshot();
   const LAST = { ok: '上次正常', alert: '上次有異常', failed: '上次失敗', interrupted: '上次被中斷', stopped: '上次被停止' };
   const live = snap.timers.filter((t) => !(t.schedule.kind === 'once' && t.done));
-  live.sort((a, b) => (a.enabled === b.enabled ? 0 : a.enabled ? -1 : 1) || (a.nextRun || Infinity) - (b.nextRun || Infinity));
-  if (!live.length) L.push('排程：目前沒有排程');
+  // 只做一次的排程＝使用者的行程與提醒，依時間排序單獨列；固定排程（每天、每 15 分鐘…）另列，才不會把行程擠出去
+  const agenda = live.filter((t) => t.schedule.kind === 'once' && t.enabled).sort((a, b) => a.schedule.at - b.schedule.at);
+  const regular = live.filter((t) => !(t.schedule.kind === 'once' && t.enabled));
+  regular.sort((a, b) => (a.enabled === b.enabled ? 0 : a.enabled ? -1 : 1) || (a.nextRun || Infinity) - (b.nextRun || Infinity));
+  if (!agenda.length) L.push('行程與提醒（只做一次的排程）：目前沒有');
   else {
-    L.push('排程（' + live.length + ' 個）：');
-    for (const t of live.slice(0, 12)) {
+    L.push('行程與提醒（只做一次的，依時間排序，共 ' + agenda.length + ' 個）：');
+    for (const t of agenda.slice(0, 15)) L.push('- #' + t.id + ' ' + md(t.schedule.at) + '｜' + short(t.prompt, 70) + (t.paused ? '｜已暫停' : ''));
+    if (agenda.length > 15) L.push('- …還有 ' + (agenda.length - 15) + ' 個較晚的');
+  }
+  if (!regular.length) L.push('固定排程：沒有');
+  else {
+    L.push('固定排程（' + regular.length + ' 個）：');
+    for (const t of regular.slice(0, 8)) {
       const st = t.paused ? '已暫停：' + short(t.paused.reason || '', 40) : !t.enabled ? '已停用' : t.nextRun ? '下次 ' + md(t.nextRun) : '';
       L.push('- #' + t.id + ' ' + short(t.name, 24) + '｜' + t.agentName + '｜' + t.desc + (st ? '｜' + st : '') + (t.last && LAST[t.last.status] ? '｜' + LAST[t.last.status] : ''));
     }
-    if (live.length > 12) L.push('- …還有 ' + (live.length - 12) + ' 個');
+    if (regular.length > 8) L.push('- …還有 ' + (regular.length - 8) + ' 個');
   }
   if (snap.proposals.length) L.push('等你核准的排程建議：' + snap.proposals.length + ' 則（' + snap.proposals.slice(0, 3).map((p) => short(p.name, 16) + '／' + p.desc).join('、') + (snap.proposals.length > 3 ? '…' : '') + '）');
   const act = tasks.actives();

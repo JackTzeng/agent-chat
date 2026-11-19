@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.18.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.19.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -815,17 +815,19 @@ const TODO_PERSONA = `你叫{name}，是部門的「待辦管家」，在 LINE �
 // 機密欄位（bot token、channel secret 等）：不能用 type="password"，否則 Chrome／Edge 的密碼管理員會把「管理密碼」填進去、
 // 把登入頁的帳號（agent-chat）填進前一個文字欄（例如「職責」）。改用一般文字欄＋遮蔽字元；不支援遮蔽的瀏覽器才退回 password＋new-password。
 const SECRET_ATTR = (() => { try { if (CSS.supports('-webkit-text-security', 'disc')) return 'type="text" class="secret" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other"'; } catch {} return 'type="password" autocomplete="new-password"'; })();
-const ASSISTANT_PERSONA = `你叫{name}，是使用者的個人秘書／助理，用繁體中文回覆，語氣親切、簡潔、有禮貌，像一位可靠的行政助理。
+const ASSISTANT_PERSONA = `你叫{name}，是使用者的個人秘書／助理，用繁體中文回覆，語氣親切、簡潔、有禮貌，像一位可靠的行政助理；使用者常用手機看，回覆盡量不超過 8 行。
+你不能執行指令，也不能讀寫檔案（不要嘗試，會被系統擋下而且你這一輪就沒有回覆了）。你需要知道的一切，都在每則訊息附的【現況】裡：現在的日期時間、「行程與提醒」清單、固定排程、等使用者核准的提議、進行中的任務。
 你的工作：
-1. 安排行程：把使用者的行程、會議、截止日記在工作資料夾的「行程.md」（每筆一行：日期 時間｜事項｜地點或備註），待辦記在「待辦.md」（- [ ] 事項（期限））。每次對話開始先讀這兩個檔案；新增、改期、取消都要同步改檔案，並回報「已記下／已改成…」。檔案還不存在就自己建立。
-2. 提醒：要在某個時間提醒使用者時，不要自己建立 Windows 排程或背景程式，在回覆中另起一行寫「【排程建議】明天 15:00｜提醒使用者：下午三點開會，地點…」，使用者核准後系統會準時叫你，到時你就把提醒內容回覆出來。時間可以寫：明天 15:00、後天 09:30、11/20 15:00、週五 10:00、30 分鐘後；固定的可以寫：每天 08:30、平日 09:00。系統回報「沒有送出」就照說明改寫法再提一次。
-3. 看排程：訊息裡的【現況】是系統提供的最新排程、任務與待核准清單。被問到「現在有哪些排程、有沒有異常」時照【現況】回答（哪些在跑、下次什麼時候、哪些失敗或暫停），需要使用者處理的挑重點說。你不能自己新增、修改或刪除排程，只能用【排程建議】提出，由使用者按核准。
-4. 日常小事：排待辦的優先順序、寫簡短的訊息或信件草稿、整理會議重點、算日期與時間差。
+1. 安排行程與提醒：使用者的行程和提醒都用「排程」記，只做一次的排程就是一筆行程或提醒。要記的時候，在回覆中另起一行寫「【排程建議】明天 14:30｜提醒使用者：15:00 部門會議（會議室 B）」。這個時間是「提醒使用者的時間」：行程想提早通知就把時間提早（15:00 的會議可以設 14:30），並把行程的時間、地點寫進提醒內容。使用者核准後，系統會在那個時間叫你，你把提醒內容回覆出來。時間可以寫：明天 15:00、後天 09:30、11/20 15:00、週五 10:00、30 分鐘後；固定的寫：每天 08:30、平日 09:00。系統回報「沒有送出」就照說明改寫法再提一次。
+2. 查行程：被問「今天／明天／這週有什麼」，只看【現況】的「行程與提醒」清單，依時間排序列出；沒有就說沒有。不要編造清單裡沒有的事。
+3. 看排程：被問有哪些排程、有沒有異常，依【現況】回答（哪些在跑、下次什麼時候、哪些失敗或暫停），挑重點說。
+4. 改期或取消：你不能直接改。請使用者在 LINE 傳「取消排程 編號」（例如：取消排程 7）；改期就是取消後再提一個新的。在網頁上也可以到「⏰ 排程」修改。
+5. 日常小事：排待辦的優先順序、寫簡短的訊息或信件草稿、整理會議重點、算日期與時間差。
 原則：
 - 時間一律換成明確的日期與時間再確認（例如「週五」要說出是 11/21（週五）幾點）；沒說哪一天或幾點就問，不要猜。
-- 新行程和既有行程衝突或排得太緊時，先提醒再記。
-- 你看不到使用者的日曆、信箱或手機，只知道「行程.md」裡的內容和系統給的【現況】；不要假裝知道沒記過的事。
-- 你只能讀寫自己資料夾裡的檔案，不能執行指令。需要寫程式、查資料或處理專案的事，請使用者交給對應的成員，你可以幫他把需求整理成一段話。
+- 新行程和【現況】裡既有的行程衝突或排得太緊時，先提醒再記。
+- 你看不到使用者的日曆、信箱或手機，只知道【現況】裡有的；不要假裝知道。
+- 需要寫程式、查資料或處理專案的事，請使用者交給對應的成員，你可以幫他把需求整理成一段話。
 - 第一次對話時建議使用者設定每天早上的行程摘要，用這行提出：「【排程建議】平日 08:30｜整理今天的行程與待辦，簡短回報；今天沒有任何事就回【無異常】」。`;
 // Harness 守則面板的常用範本：只填進輸入框，使用者確認後按「新增」才會變成守則
 const GUIDE_TEMPLATES = [
@@ -1164,8 +1166,8 @@ async function openAgentForm(id) {
     setAvatar('🗓️');
     $('f_role').value = '個人秘書 · 行程、排程、日常小事';
     $('f_standalone').checked = true;
-    engineSel.value = 'claude'; syncEngine(true); buildModels('claude-sonnet-5-5');
-    $('f_perm').value = 'acceptEdits';
+    engineSel.value = 'agy'; syncEngine(true); buildModels('gemini-3.8-flash-high');
+    $('f_perm').value = 'read';
     $('f_cwd').value = './workspace/assistant';
     $('f_pfile').value = ''; $('f_tools').value = ''; $('f_allow').value = '';
     $('f_tgprefix').value = '/助理';
@@ -1173,7 +1175,7 @@ async function openAgentForm(id) {
     $('f_persona').value = ASSISTANT_PERSONA.replace(/\{name\}/g, name);
     if (TG && TG.allowedIds && TG.allowedIds.length === 1 && !$('f_tgusers').value) $('f_tgusers').value = TG.allowedIds[0];
     syncKind();
-    toast('已套用助理設定：儲存後就能對它說「明天下午三點提醒我開會」');
+    toast('已套用助理設定（agy 唯讀）：儲存後就能對它說「明天下午三點提醒我開會」');
   };
   // 📋 待辦管家：部門 LINE 群組的待辦登記與追蹤。agy 唯讀；寫入由 Agent Chat 代做
   $('f_tpl_todo').onclick = () => {

@@ -50,6 +50,21 @@ test('urlProblem: only deployed web-app URLs; editor and test URLs get a clear e
   assert.match(t.status().urlProblem, /編輯頁/); assert.equal(t.status().configured, true);
 });
 
+test('call: Google refusing (401 / sign-in page / 404) explains "who can access"', async (t) => {
+  const mode = { v: 401 };
+  const srv = http.createServer((req, res) => {
+    if (mode.v === 'login') { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end('<html><a href="https://accounts.google.com/ServiceLogin">Sign in</a></html>'); }
+    res.writeHead(mode.v, { 'Content-Type': 'text/html' }); res.end('<html>nope</html>');
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r)); t.after(() => srv.close());
+  const prev = process.env.TODO_URL_ANY; process.env.TODO_URL_ANY = '1'; t.after(() => { if (prev === undefined) delete process.env.TODO_URL_ANY; else process.env.TODO_URL_ANY = prev; });
+  const td = todo.create({ config: { todo: { url: 'http://127.0.0.1:' + srv.address().port + '/exec', key: 'k'.repeat(40) } }, saveConfig() {} });
+  await assert.rejects(td.ping(), /HTTP 401.*誰可以存取.*所有人.*新版本/);
+  mode.v = 'login'; await assert.rejects(td.ping(), /誰可以存取.*所有人/);
+  mode.v = 404; await assert.rejects(td.ping(), /找不到這個網頁應用程式/);
+  mode.v = 500; await assert.rejects(td.ping(), /不是預期的格式（HTTP 500）/);
+});
+
 test('normDate / fmtDue / canonOwner / safe', () => {
   const now = new Date(2026, 10, 19, 8, 52).getTime(); // 2026/11/19 週四
   assert.equal(todo.normDate('2026-11-27', now), '2026-11-27'); assert.equal(todo.normDate('2026/1/5', now), '2026-01-05');

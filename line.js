@@ -50,7 +50,11 @@ function replyText(segments) {
   const text = segs.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n').split('\n').filter((l) => !/^[\s>*\-•]*(\*\*)?【排程建議】/.test(l)).join('\n').trim();
   const notes = segs.filter((s) => s.type === 'tool' && /^⏰ 排程建議沒有送出/.test(s.text)).map((s) => s.text);
   const errs = segs.filter((s) => s.type === 'error').map((s) => '⚠️ ' + s.text);
-  return [plain(text), ...notes, ...errs].filter(Boolean).join('\n\n') || '（沒有回覆內容）';
+  const out = [plain(text), ...notes, ...errs].filter(Boolean).join('\n\n');
+  if (out) return out;
+  // 沒有任何文字：如果是因為想做的事（執行指令、改檔案）被系統擋下，說清楚，不要只丟一句沒有內容
+  const blocked = segs.some((s) => (s.type === 'tool' && /^⛔/.test(s.text)) || (s.type === 'toolres' && s.isError));
+  return blocked ? '⚠️ 這一輪我想做的事（例如執行指令、讀寫檔案）被系統擋下了，所以沒有產生回覆。請換個說法再說一次；還是不行的話傳 /new 開新對話，或到 Agent Chat 看對話紀錄。' : '（沒有回覆內容）';
 }
 const SECRET_RE = /^[0-9a-f]{32}$/i;
 const TOKEN_RE = /^[A-Za-z0-9+/=_.\-]{80,}$/;
@@ -143,7 +147,7 @@ function create(ctx) {
 
   // ---------- 訊息處理 ----------
   const targetAgent = () => ctx.agentById(cfg().agentId);
-  const HELP = '💚 我是 {name}。直接傳文字給我就好。\n指令：\n/new　開新對話（忘掉前面的內容）\n/stop　停止我正在做的事\n同意 3　核准我提出的提醒／排程 #3\n不要 3　不要那個提醒';
+  const HELP = '💚 我是 {name}。直接傳文字給我就好。\n指令：\n/new　開新對話（忘掉前面的內容）\n/stop　停止我正在做的事\n同意 3　核准我提出的提醒／排程 #3\n不要 3　不要那個提醒\n取消排程 3　取消已經排好的提醒 #3';
   const helpText = () => HELP.replace('{name}', (targetAgent() || {}).name || '助理');
   const announced = new Set(); // 已經在 LINE 告知過「待核准」的排程建議
 
@@ -255,6 +259,11 @@ function create(ctx) {
     if ((mm = /^(同意|核准|ok)\s*#?(\d+)$/i.exec(text))) {
       try { const t = ctx.timers.acceptProposal(mm[2]); announced.delete(Number(mm[2])); return say('✅ 已排程：' + t.name + '（' + ctx.timers.describe(t) + '）'); }
       catch (e) { return say('⚠️ ' + e.message); }
+    }
+    if ((mm = /^(取消排程|刪除排程|取消提醒)\s*#?(\d+)$/.exec(text))) {
+      const t = ctx.timers.byId(mm[2]);
+      if (!t) return say('⚠️ 找不到排程 #' + mm[2]);
+      try { ctx.timers.remove(mm[2]); return say('🗑 已取消 #' + t.id + '：' + short(t.name, 30)); } catch (e) { return say('⚠️ ' + e.message); }
     }
     if ((mm = /^(不要|拒絕|取消|no)\s*#?(\d+)$/i.exec(text))) {
       try { ctx.timers.dismissProposal(mm[2]); announced.delete(Number(mm[2])); return say('🚫 好的，不排了'); }

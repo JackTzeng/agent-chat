@@ -105,6 +105,8 @@ test('assistant member through the real server: briefing only for flagged member
 
   // 先建一個排程，讓摘要裡有東西
   await api('/api/timers', 'POST', { name: '檢查派工狀態', prompt: '看一下派工', agentId: 'pm', schedule: { kind: 'every', minutes: 15 }, enabled: false });
+  for (let i = 1; i <= 12; i++) await api('/api/timers', 'POST', { name: '固定' + i, prompt: '固定' + i, agentId: 'pm', schedule: { kind: 'every', minutes: 30 }, enabled: false });
+  await api('/api/timers', 'POST', { name: '銀行', prompt: '提醒使用者：去銀行辦事', agentId: 'asst', schedule: { kind: 'once', at: Date.now() + 2 * 86400000 }, notify: 'always' });
 
   // 1) 勾了「現況摘要」的助理：每輪都有時間與排程；沒勾的成員沒有
   await api('/api/chat/asst', 'POST', { text: '現在有哪些排程？' });
@@ -114,6 +116,8 @@ test('assistant member through the real server: briefing only for flagged member
   assert.match(c1, /現在：2026|現在：20\d\d\//, '有現在的日期時間');
   assert.match(c1, /時區 \S+/);
   assert.match(c1, /#1 檢查派工狀態｜PM｜每 15 分鐘｜已停用/);
+  assert.match(c1, /行程與提醒（只做一次的，依時間排序，共 1 個）：\n- #14 \d+\/\d+（週.）\d\d:\d\d｜提醒使用者：去銀行辦事/, '行程獨立列出，不會被 13 個固定排程擠掉');
+  assert.match(c1, /固定排程（13 個）：/); assert.match(c1, /- …還有 5 個/);
   await waitFor(() => idle('asst'), 'asst idle');
   await api('/api/chat/pm', 'POST', { text: '你好' });
   await waitFor(() => calls().length === 2, 'pm call');

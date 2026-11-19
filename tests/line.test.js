@@ -26,6 +26,8 @@ test('helpers: signature, plain text, chunking, reply text, public url', () => {
   const long = line.chunk(('一二三四五\n').repeat(2000), 100, 5);
   assert.equal(long.length, 5); assert.ok(long.every((s) => s.length <= 100)); assert.match(long[4], /太長，後面省略了/);
   assert.equal(line.replyText([{ type: 'text', text: '好的\n【排程建議】明天 15:00｜提醒我\n已記下' }, { type: 'tool', text: '⏰ 排程建議沒有送出：看不懂時間' }, { type: 'error', text: '壞了' }]), '好的\n已記下\n\n⏰ 排程建議沒有送出：看不懂時間\n\n⚠️ 壞了');
+  assert.match(line.replyText([{ type: 'tool', text: '⚙️ 執行：dir' }, { type: 'toolres', text: 'denied', isError: true }, { type: 'tool', text: '⛔ 被擋下：Bash（這位成員沒有這個權限）' }]), /想做的事.*被系統擋下.*沒有產生回覆/, '想執行指令被擋下 → 說清楚，不是「沒有內容」');
+  assert.equal(line.replyText([{ type: 'tool', text: '📖 讀取：a.txt' }]), '（沒有回覆內容）');
   assert.equal(line.cleanPublicUrl('https://abc.trycloudflare.com/line/webhook/'), 'https://abc.trycloudflare.com');
   assert.equal(line.cleanPublicUrl(''), '');
   for (const bad of ['http://abc.com', 'https://abc.com/x/y', 'https://u:p@abc.com', 'abc']) assert.throws(() => line.cleanPublicUrl(bad), undefined, bad);
@@ -197,6 +199,14 @@ test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
   // 8) 指令
   await hookPost([msg('U_owner', '/new', 'rt-new')]);
   await waitFor(() => sent('reply').length === 10, 'new reply'); assert.match(textsOf(sent('reply')[9]), /已開新對話/);
+
+  // 8b) 取消排程：LINE 上直接取消已經排好的提醒（只有配對過的人做得到）
+  const tid = (await J('/api/timers')).timers[0].id;
+  await hookPost([msg('U_owner', '取消排程 999', 'rt-c0')]);
+  await waitFor(() => sent('reply').length === 11, 'cancel missing'); assert.match(textsOf(sent('reply')[10]), /找不到排程 #999/);
+  await hookPost([msg('U_owner', '取消排程 ' + tid, 'rt-c1')]);
+  await waitFor(() => sent('reply').length === 12, 'cancel reply'); assert.match(textsOf(sent('reply')[11]), /🗑 已取消 #\d+：/);
+  assert.equal((await J('/api/timers')).timers.length, 0);
 
   // 9) 排程時間到、成員的提醒 → 用 push 推給配對過的帳號
   const when = Date.now() + 1500;

@@ -106,7 +106,12 @@ function create(ctx) {
     catch (e) { throw new Error(e.name === 'AbortError' ? 'Google Sheet 沒有回應（逾時）' : '連不上 Google（' + e.message + '）'); }
     finally { clearTimeout(timer); }
     const text = await res.text(); let j = null; try { j = JSON.parse(text); } catch {}
-    if (!j) throw new Error(res.status === 404 || res.status === 403 ? '網址不對或沒有開放存取（部署時「誰可以存取」要選「所有人」）' : 'Google 回的不是預期的格式（HTTP ' + res.status + '）：網址可能不是「網頁應用程式」的 /exec 網址');
+    if (!j) {
+      if (res.status === 401 || res.status === 403 || /accounts\.google\.com|ServiceLogin|需要授權|Authorization required/i.test(text.slice(0, 4000)))
+        throw new Error('Google 拒絕了這個請求（HTTP ' + res.status + '）：網址是對的，但部署時「誰可以存取」不是「所有人」。請到 Apps Script 右上「部署 → 管理部署作業」→ 右邊的鉛筆編輯 →「誰可以存取」選「所有人」（不是「所有已登入 Google 帳戶的使用者」）→ 版本選「新版本」→ 部署。網址不會變');
+      if (res.status === 404) throw new Error('找不到這個網頁應用程式（HTTP 404）：網址可能少貼了一段，或這個部署已經被刪除。請到「部署 → 管理部署作業」重新複製網址');
+      throw new Error('Google 回的不是預期的格式（HTTP ' + res.status + '）：網址可能不是「網頁應用程式」的 /exec 網址');
+    }
     if (!j.ok) throw new Error(j.error || '失敗');
     return j;
   }
