@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.22.1';
+const VERSION = '3.23.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -2015,7 +2015,7 @@ const server = http.createServer(async (req, res) => {
         agents: CONFIG.agents.map(maskAgent), teams: CONFIG.teams.map((t) => ({ ...t, sharedWith: sharedWith(t) })), workflow: CONFIG.teams[0].workflow, maxRelayHops: maxHops(), urgentCooldownMin: urgentCooldownMs() / 60000, approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
         harness: harness.cfg(),
         options: { engines: ENGINES, efforts: EFFORTS, permissionModes: PERMISSION_MODES, sandboxes: SANDBOXES, agyAccess: AGY_ACCESS },
-        appRoot: ROOT,
+        appRoot: ROOT, safeRoot: security.safeRoot,
       });
     }
     if (p === '/api/agents' && req.method === 'POST') {
@@ -2025,6 +2025,26 @@ const server = http.createServer(async (req, res) => {
       CONFIG.agents.push(a);
       saveConfig(); reloadAgents(); harness.docs(); agentsChanged();
       return send(res, 200, { ok: true, id: a.id });
+    }
+    // 📦 一鍵把成員的工作資料夾搬到程式資料夾外面的安全工作區（建資料夾、複製原本的檔案、改設定；原資料夾保留不刪）
+    if ((m0 = p.match(/^\/api\/agents\/([\w-]+)\/move-safe$/)) && req.method === 'POST') {
+      const a = CONFIG.agents.find((x) => x.id === m0[1]);
+      if (!a) return send(res, 404, { error: '找不到這位成員' });
+      if (!security.safeRoot) return send(res, 400, { error: '這台電腦沒有可用的安全工作區（AGENT_SAFE_ROOT）' });
+      if (!insideApp(a.cwd || './workspace')) return send(res, 400, { error: '它的工作資料夾已經在程式資料夾外面了' });
+      if (runs.has(a.id)) return send(res, 409, { error: '這位成員還在工作，先停止再搬' });
+      const cur = path.resolve(ROOT, a.cwd || './workspace'), shared = sameDir(cur, path.join(ROOT, 'workspace'));
+      const base = (shared ? '' : path.basename(cur).replace(/[^\w.-]/g, '')) || a.id.replace(/[^\w.-]/g, '') || 'member';
+      let dest = path.join(security.safeRoot, base);
+      for (let i = 2; fs.existsSync(dest) && fs.readdirSync(dest).length; i++) dest = path.join(security.safeRoot, base + '-' + i);
+      try {
+        fs.mkdirSync(dest, { recursive: true });
+        if (!shared && fs.existsSync(cur)) fs.cpSync(cur, dest, { recursive: true, force: false, errorOnExist: false });
+      } catch (e) { return send(res, 500, { error: '建立資料夾失敗：' + e.message }); }
+      a.cwd = dest; dropSessions(a.id);
+      saveConfig(); reloadAgents(); agentsChanged(); if (lineBotRef) broadcast({ kind: 'line' });
+      console.log('📦 ' + a.name + ' 的工作資料夾搬到 ' + dest);
+      return send(res, 200, { ok: true, cwd: dest });
     }
     if ((m0 = p.match(/^\/api\/agents\/([\w-]+)$/)) && (req.method === 'PUT' || req.method === 'DELETE')) {
       const idx = CONFIG.agents.findIndex((x) => x.id === m0[1]);

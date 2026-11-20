@@ -26,7 +26,7 @@ const SAFE_ENV = new Set([
   // Claude Code 在 Windows 上需要的 Git Bash 路徑
   'CLAUDE_CODE_GIT_BASH_PATH',
 ]);
-const NEVER_CHILD = new Set(['ACCESS_TOKEN', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_API', 'AGENT_ALLOWED_ROOTS',
+const NEVER_CHILD = new Set(['ACCESS_TOKEN', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_API', 'AGENT_ALLOWED_ROOTS', 'AGENT_SAFE_ROOT',
   'AGENT_ENV_ALLOWLIST', 'ALLOWED_HOSTS', 'COOKIE_SECURE']);
 
 // 成員專屬環境變數不能覆蓋這些：系統路徑、密碼與金鑰（避免改走付費 API）、會改變程式行為的變數
@@ -188,6 +188,14 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     if (real === path.parse(real).root) throw new Error('不可將整個磁碟設為工作目錄白名單：' + real);
     return real;
   });
+  // 🔒 安全工作區：程式資料夾外面的固定位置（Windows：程式所在磁碟的 \AgentChatData；其他：~/AgentChatData），永遠允許。
+  // 要對外（LINE 群組）的成員放這裡，就不會跟存密鑰的 agents.json 在同一棵資料夾樹下。不存在也先列入，用到時才建立
+  let safeRoot = path.resolve(env.AGENT_SAFE_ROOT || (process.platform === 'win32' ? path.join(path.parse(path.resolve(root)).root, 'AgentChatData') : path.join(require('os').homedir(), 'AgentChatData')));
+  try {
+    const real = fs.existsSync(safeRoot) ? canonicalExisting(safeRoot) : safeRoot;
+    if (inside(real, canonicalExisting(root)) || inside(canonicalExisting(root), real) || real === path.parse(real).root) safeRoot = '';
+    else { safeRoot = real; if (!allowedRoots.includes(real)) allowedRoots.push(real); }
+  } catch { safeRoot = ''; }
   function assertAllowedDir(raw, { mustExist = false } = {}) {
     const absolute = path.resolve(root, String(raw || ''));
     const canonical = canonicalOrParent(absolute);
@@ -233,6 +241,6 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     return s;
   }
   return { verifyHost, checkOrigin, authenticated, jsonRequest, login, logout, logoutAll, checkAgent,
-    assertAllowedDir, fileWithin, safeEnvironment, redact, allowedRoots: [...allowedRoots], missingRoots };
+    assertAllowedDir, fileWithin, safeEnvironment, redact, allowedRoots: [...allowedRoots], missingRoots, safeRoot };
 }
 module.exports = { createSecurity, inside, isProtectedEnvKey };

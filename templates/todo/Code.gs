@@ -11,7 +11,7 @@
  *
  * 欄位都是用「欄位名稱」找的：你可以調整欄位順序、自己加欄位，不會壞。
  */
-var VERSION = '1.0.1';
+var VERSION = '1.0.2';
 var TASK_SHEET = '待辦', MEMBER_SHEET = '成員', SETTING_SHEET = '設定', LOG_SHEET = '紀錄';
 var TASK_HEADERS = ['編號', '事項', '負責人', '期限', '狀態', '優先', '備註', '提出人', '建立時間', '最後更新', '更新者', '完成時間'];
 var MEMBER_HEADERS = ['姓名', 'Email', '角色', 'LINE 名稱', 'LINE ID'];
@@ -209,6 +209,15 @@ function opRegister_(req) {
   log_('登記成員', '', name, name);
   return { member: { name: name, email: '', role: '成員', lineName: line, userId: uid } };
 }
+// 指定／取消主管：權限由 Agent Chat 檢查（發言者是主管，或是 bot 的擁有者）；這裡只認 LINE ID
+function opSetRole_(req) {
+  var t = readTable_(MEMBER_SHEET), uid = str_(req.userId), role = req.role === '主管' ? '主管' : '成員', by = clean_(req.by, 20);
+  var hit = null; t.rows.forEach(function (r) { if (uid && str_(cell_(t, r, 'LINE ID')) === uid) hit = r; });
+  if (!hit) throw new Error('對方還沒登記，請他先在群組說「我是 姓名」');
+  setCell_(t, hit, '角色', role); var name = str_(cell_(t, hit, '姓名'));
+  log_(role === '主管' ? '指定主管' : '取消主管', '', name, by);
+  return { member: memberOf_(t, hit) };
+}
 function opSetEmail_(req) {
   var t = readTable_(MEMBER_SHEET), email = str_(req.email), uid = str_(req.userId);
   if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(email)) throw new Error('email 格式不對：' + email);
@@ -266,7 +275,7 @@ function opDigest_(req) {
   }
   return { count: mails.length, sent: !!(req && req.send), mails: mails.map(function (m) { return { kind: m.kind, to: m.to, subject: m.subject }; }) };
 }
-var OPS_ = { ping: opPing_, list: opList_, get: opGet_, add: opAdd_, update: opUpdate_, members: opMembers_, register: opRegister_, setEmail: opSetEmail_, digest: opDigest_ };
+var OPS_ = { ping: opPing_, list: opList_, get: opGet_, add: opAdd_, update: opUpdate_, members: opMembers_, register: opRegister_, setRole: opSetRole_, setEmail: opSetEmail_, digest: opDigest_ };
 
 // ---------- 選單與初始化 ----------
 function onOpen() {

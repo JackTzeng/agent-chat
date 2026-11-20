@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.22.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.23.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -824,7 +824,13 @@ const SANDBOX_LABEL = {
   'danger-full-access': 'danger-full-access：不受限制（危險）',
 };
 let CFG = null;
-let ROLES = []; // 🎭 角色範本：從 templates/roles 與 data/roles 的 .md 讀來（/api/roles）
+let ROLES = [];
+// 工作資料夾在不在 Agent Chat 程式資料夾裡（相對路徑一律算在裡面）
+const inAppDir = (d) => { d = String(d || '').replace(/\\/g, '/'); const root = String((CFG && CFG.appRoot) || '').replace(/\\/g, '/').replace(/\/$/, ''); return !/^([a-zA-Z]:)?\//.test(d) || (!!root && (d.toLowerCase() === root.toLowerCase() || d.toLowerCase().startsWith(root.toLowerCase() + '/'))); };
+async function moveSafe(id) {
+  if (!confirm('把這位成員的工作資料夾搬到程式資料夾外面的安全位置？\n原本的檔案會複製過去、舊資料夾保留，之後會開新對話。')) return false;
+  try { const r = await api('/api/agents/' + id + '/move-safe', { method: 'POST', body: '{}' }); toast('📦 已搬到 ' + r.cwd); return true; } catch (e) { toast(e.message); return false; }
+} // 🎭 角色範本：從 templates/roles 與 data/roles 的 .md 讀來（/api/roles）
 let CFG_H = null; // Harness 設定（換班門檻等）
 const AVATAR_SETS = [
   ['人物與職業', '🧑‍💼 👩‍💼 👨‍💼 🧑‍💻 👩‍💻 👨‍💻 🧑‍🔬 👩‍🔬 🧑‍🏫 👩‍🏫 🧑‍⚕️ 👩‍⚕️ 🧑‍⚖️ 🕵️ 👷 🤵 💂 🧙 🦸 🥷 🧑‍🎨 🧑‍🚀 👩‍🍳 🧑‍🔧'],
@@ -993,6 +999,7 @@ async function openAgentForm(id) {
         <label>工作資料夾</label>
         <input id="f_cwd" value="${esc(a.cwd || teamCwd(a.team || TEAM_SEL) || './workspace')}" placeholder="./workspace 或 C:/Users/你/專案">
         <span class="help">同一小組的成員用同一個資料夾才能交接檔案（預設是小組的資料夾）；不同小組請分開。換資料夾後會開新的對話</span>
+        ${editing && CFG.safeRoot && inAppDir(a.cwd || './workspace') ? `<div class="sk-row" style="margin-top:6px"><button type="button" id="f_movesafe">📦 一鍵搬到安全資料夾</button><span class="help">搬到 <code>${esc(CFG.safeRoot)}</code> 底下（程式資料夾外面，不跟存密鑰的設定檔放一起；會對外的成員建議搬）。原本的檔案會複製過去，舊資料夾保留。</span></div>` : ''}
       </div>
       <div class="field full">
         <label>額外可以存取的資料夾</label>
@@ -1152,6 +1159,7 @@ async function openAgentForm(id) {
     if (editing) $('f_reset').checked = true;
     toast(t.toast || '已套用「' + t.button + '」');
   }));
+  if ($('f_movesafe')) $('f_movesafe').onclick = async () => { if (await moveSafe(id)) openAgentForm(id); };
   $('f_cancel').onclick = closeModal;
 
   // 💚 LINE 綁定：勾了就交給它；取消勾選且原本是它，就清掉
@@ -2171,7 +2179,7 @@ async function openLine() {
     <h3 class="sk-h">④ LINE 群組</h3>
     <p class="help" style="margin:0 0 6px">把這個 LINE bot 拉進部門群組（先在官方帳號設定裡打開「允許加入群組」），再把上面的<b>配對碼貼在群組裡</b>，群組就啟用了。之後大家 <b>@它</b> 說話，就交給下面選的成員回覆；這位成員如果有勾「📋 待辦清單能力」，就會幫大家登記、查詢 Google Sheet 的待辦，沒勾就是一般對話。<b>它只處理 @它（或開頭寫呼叫詞）的訊息</b>，群組裡其他聊天不會看、不會記；群組的對話會記在那位成員的對話框裡。</p>
     <div class="sk-row"><b>群組交給：</b><select id="ln_gagent"><option value="">（不使用群組）</option>${members.map((a) => `<option value="${esc(a.id)}" ${a.id === (keep.ln_gagent !== undefined ? keep.ln_gagent : (L.groupAgentId || (members.find((x) => x.todoKeeper) || {}).id || '')) ? 'selected' : ''}>${esc(a.name)}（${esc(a.role || a.engine)}）</option>`).join('')}</select><button class="primary" id="ln_gsave">儲存群組設定</button><span class="help">${L.groupAgentName ? '目前：' + esc(L.groupAgentName) + (L.groupAgentTodo ? '（📋 待辦清單能力）' : '（一般對話）') : '⚠️ 還沒有成員負責群組'}</span></div>
-    ${L.groupRisk && (L.groupRisk.block || L.groupRisk.warn) ? `<div class="sk-bad">🔒 ${esc(L.groupRisk.block ? '群組已停用：' + L.groupRisk.block + '。請換成唯讀的成員。' : L.groupRisk.warn)}</div>` : ''}
+    ${L.groupRisk && (L.groupRisk.block || L.groupRisk.warn) ? `<div class="sk-bad">🔒 ${esc(L.groupRisk.block ? '群組已停用：' + L.groupRisk.block + '。請換成唯讀的成員。' : L.groupRisk.warn)}${!L.groupRisk.block && L.groupAgentEffId ? ' <button id="ln_movesafe">📦 一鍵搬到安全資料夾</button>' : ''}</div>` : ''}
     <div class="sk-row"><b>呼叫詞：</b><input id="ln_gwords" value="${esc(keep.ln_gwords !== undefined ? keep.ln_gwords : L.groupWords || '')}" placeholder="選填，例如：待辦、小幫手（用頓號分隔）" style="flex:1;min-width:180px"><span class="help">訊息開頭寫這些字也算叫它（成員名稱本來就算）；@ 選不到 bot 時很好用。</span></div>
     <div class="sk-row"><span>已啟用 ${L.groups} 個群組${L.groups ? '' : '（還沒有）'}</span>${L.groups ? '<button id="ln_cgroups">清除群組</button>' : ''}<button class="primary" id="ln_todo">📋 待辦清單（Google Sheet）設定…</button></div>
     <p class="help">${q ? `本月主動推播：已用 ${q.used} ${q.type === 'limited' ? '/ ' + q.value : ''} 則（${ago(q.at)} 更新）` : `本程式這個月推播了 ${L.pushedThisMonth} 則`}${L.pushBlocked ? '　⚠️ 本月推播額度已用完，只能回覆你傳來的訊息' : ''}｜最近一次收到訊息：${ago(L.lastEventAt)}</p>
@@ -2185,6 +2193,7 @@ async function openLine() {
   if ($('ln_fix')) $('ln_fix').onclick = () => act(async () => { const r = await api('/api/line/webhook', { method: 'POST', body: JSON.stringify({ publicUrl: t.url }) }); LN_URL_DIRTY = false; toast(r.ok ? '✅ Webhook 重設好了，LINE 測試通過' : '設定好了，但 LINE 測試沒過：' + r.reason); });
   $('ln_save').onclick = () => act(() => api('/api/line', { method: 'PUT', body: JSON.stringify({ agentId: $('ln_agent').value, groupAgentId: $('ln_gagent').value, channelSecret: $('ln_secret').value, channelAccessToken: $('ln_token').value }) }).then(() => { $('ln_secret').value = ''; $('ln_token').value = ''; toast('已儲存'); }));
   $('ln_gsave').onclick = () => act(() => api('/api/line', { method: 'PUT', body: JSON.stringify({ groupAgentId: $('ln_gagent').value, groupWords: $('ln_gwords').value }) }).then(() => toast('已儲存群組設定')));
+  if ($('ln_movesafe')) $('ln_movesafe').onclick = async () => { if (await moveSafe(L.groupAgentEffId)) openLine(); };
   $('ln_check').onclick = () => act(async () => { $('ln_check').textContent = '檢查中…'; LINE_CHECK = await api('/api/line/check', { method: 'POST', body: '{}' }); });
   if ($('ln_clear')) $('ln_clear').onclick = () => { if (confirm('移除 LINE 的所有設定（secret、token、配對）？LINE 上的官方帳號不會被刪除。')) act(async () => { LINE_CHECK = null; await api('/api/line', { method: 'PUT', body: JSON.stringify({ clear: true }) }); }); };
   $('ln_tun_on').onclick = () => act(() => api('/api/line/tunnel', { method: 'POST', body: JSON.stringify({ on: true }) }));

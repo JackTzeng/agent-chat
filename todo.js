@@ -150,6 +150,10 @@ function create(ctx) {
     if (same && same.role === '主管') { const e = new Error('「' + name + '」是名單上的主管，為了安全不能自己認領。請管理員在 Google Sheet「成員」分頁，把你的 LINE ID 填到那一列。'); e.claimUserId = String(userId); throw e; }
     const r = await call('register', { userId, lineName, name }); drop(); return r.member;
   }
+  async function setRole(userId, role, by) {
+    try { const r = await call('setRole', { userId, role, by }); drop(); return r.member; }
+    catch (e) { if (/不認得的動作/.test(e.message)) throw new Error('Google Sheet 的 Apps Script 是舊版，請到「📋 待辦清單」照步驟重貼 Code.gs 並重新部署'); throw e; }
+  }
   async function setEmail(userId, email) { const r = await call('setEmail', { userId, email }); drop(); return r.member; }
 
   // 給模型看的現況：今天、發言者、成員、目前未完成的清單
@@ -240,7 +244,7 @@ function create(ctx) {
   }
   async function ping() { const r = await call('ping'); drop(); return r; }
   async function digest(send) { return call('digest', { send: !!send }); }
-  return { configured, status, update, ping, digest, call, whoIs, register, setEmail, context, execute, items, members, drop };
+  return { configured, status, update, ping, digest, call, whoIs, register, setEmail, setRole, context, execute, items, members, drop };
 }
 
 // 在網頁（Agent Chat 的對話框）跟待辦管家說話的人＝管理這台 Agent Chat 的你：視同主管

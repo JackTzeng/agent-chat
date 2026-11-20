@@ -179,7 +179,7 @@ function create(ctx) {
     const a = groupAgent(), n = (a || {}).name || 'bot';
     const call = '直接 @我 說話就好' + (groupWords().length ? '（或訊息開頭寫「' + groupWords().join('」「') + '」）' : '');
     if (!isKeeper(a)) return '我是 ' + n + '。' + call + '。\n\n我只處理 @我 的訊息，群組裡其他的聊天我不會看、不會記。';
-    return '我是 ' + n + '，在這個群組幫大家登記與追蹤待辦事項。' + call + '，例如：\n・@' + n + ' 週五前 完成校正紀錄（登記在你名下）\n・@' + n + ' 我的待辦\n・@' + n + ' #3 完成了' +
+    return '我是 ' + n + '，在這個群組幫大家登記與追蹤待辦事項。' + call + '，例如：\n・@' + n + ' 週五前 完成校正紀錄（登記在你名下）\n・@' + n + ' 我的待辦\n・@' + n + ' #3 完成了\n・@' + n + ' 設定主管 @某人（主管或 bot 管理者才能用）' +
       (who ? '' : '\n\n第一次使用請先回覆：@' + n + ' 我是 你的姓名') + '\n\n我只處理 @我 的訊息，群組裡其他的聊天我不會看、不會記。';
   };
   // 有沒有在叫我：真正的 @ 提及，或訊息開頭寫「待辦」／我的名字。回傳去掉稱呼後的內容；沒叫我就 hit:false
@@ -260,6 +260,24 @@ function create(ctx) {
     }
     let mm;
     if ((mm = /^信箱\s*[:：]?\s*(\S+@\S+)$/.exec(body))) { try { await ctx.todo.setEmail(uid, mm[1]); return sysSay('✅ 已記下你的 email，之後逾期或快到期會寄信提醒你。', who.name); } catch (e) { return sysSay('⚠️ ' + e.message, who.name); } }
+    // 👑 指定／取消主管：系統直接處理（不經過 AI，避免被話術騙）。只有主管、或 bot 的擁有者（一對一配對過的帳號）可以
+    if ((mm = /^(設定主管|設為主管|指定主管|新增主管|取消主管|移除主管)\s*[:：]?\s*([\s\S]*)$/.exec(body))) {
+      const promote = /設定|設為|指定|新增/.test(mm[1]);
+      if (who.role !== '主管' && !allowed().includes(uid)) return sysSay('🔒 只有主管或 bot 的管理者可以' + mm[1] + '。', who.name);
+      const tagged = ((ev.message.mention || {}).mentionees || []).filter((x) => !x.isSelf && x.userId).map((x) => String(x.userId));
+      let target = null;
+      try {
+        const mem = await ctx.todo.members();
+        if (tagged.length) target = mem.find((x) => x.userId === tagged[0]);
+        else {
+          const n = mm[2].replace(/^@/, '').trim().toLowerCase();
+          if (n) target = mem.find((x) => x.userId && (x.name.toLowerCase() === n || (x.lineName || '').toLowerCase() === n));
+        }
+        if (!target) return sysSay(tagged.length || mm[2].trim() ? '找不到這位成員：對方要先在群組說「@' + agent.name + ' 我是 姓名」登記，再來' + mm[1] + '。' : '請寫要' + mm[1] + '的人，例如：@' + agent.name + ' ' + mm[1] + ' @王小明', who.name);
+        const r = await ctx.todo.setRole(target.userId, promote ? '主管' : '成員', who.name);
+        return sysSay((promote ? '👑 ' + r.name + ' 現在是主管了：可以指派事項給別人、改別人的期限、取消事項，也會收到部門總表 email（要先設定信箱）。' : '✅ ' + r.name + ' 改回一般成員。'), who.name);
+      } catch (e) { return sysSay('⚠️ ' + e.message, who.name); }
+    }
     if (!body || /^(說明|help|\/help|\?|？)$/i.test(body)) return sysSay(groupHelp(who), who.name);
     let context;
     try { context = await ctx.todo.context(who); } catch (e) { return sysSay('⚠️ 讀不到待辦清單：' + e.message, who.name); }
@@ -496,7 +514,7 @@ function create(ctx) {
     return {
       configured: configured(), hasSecret: !!c.channelSecret, hasToken: !!c.channelAccessToken, secretHint,
       agentId: c.agentId || '', agentName: a ? a.name : '', allowedCount: allowed().length, pairing: pairingState(),
-      groups: groupIds().length, groupAgentId: c.groupAgentId || '', groupAgentName: (groupAgent() || {}).name || '', groupAgentTodo: (groupAgent() || {}).todoKeeper === true, groupRisk: groupAgent() && ctx.groupRisk ? ctx.groupRisk(groupAgent()) : null, groupWords: groupWords().join('、'), todo: ctx.todo ? ctx.todo.status() : null,
+      groups: groupIds().length, groupAgentId: c.groupAgentId || '', groupAgentName: (groupAgent() || {}).name || '', groupAgentTodo: (groupAgent() || {}).todoKeeper === true, groupAgentEffId: (groupAgent() || {}).id || '', groupRisk: groupAgent() && ctx.groupRisk ? ctx.groupRisk(groupAgent()) : null, groupWords: groupWords().join('、'), todo: ctx.todo ? ctx.todo.status() : null,
       port: port(), listening, publicUrl: c.publicUrl || '', webhookUrl: c.publicUrl ? c.publicUrl + '/line/webhook' : '',
       webhook: s.webhook || null, bot: s.bot || null, quota: s.quota || null, pushedThisMonth: s.pushedMonth === month() ? s.pushed || 0 : 0, pushBlocked: s.pushBlocked === month(),
       tunnel: { wanted: !!c.tunnel, state: tun.state, url: tun.url, error: tun.error }, lastEventAt: s.lastEventAt || null, lastError: s.lastError || '', lastErrorAt: s.lastErrorAt || null,
