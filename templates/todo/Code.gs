@@ -11,7 +11,7 @@
  *
  * 欄位都是用「欄位名稱」找的：你可以調整欄位順序、自己加欄位，不會壞。
  */
-var VERSION = '1.0.3';
+var VERSION = '1.0.4';
 var TASK_SHEET = '待辦', MEMBER_SHEET = '成員', SETTING_SHEET = '設定', LOG_SHEET = '紀錄';
 var TASK_HEADERS = ['編號', '事項', '負責人', '期限', '狀態', '優先', '備註', '提出人', '建立時間', '最後更新', '更新者', '完成時間'];
 var MEMBER_HEADERS = ['姓名', 'Email', '角色', 'LINE 名稱', 'LINE ID'];
@@ -226,18 +226,24 @@ function opReadSource_(req) {
   if (!src) throw new Error('「設定」分頁沒有登記這份唯讀資料表：' + str_(req.name));
   var book;
   try { book = SpreadsheetApp.openByUrl(src.url); } catch (e) { throw new Error('打不開「' + src.name + '」：請確認建立這份待辦 Sheet 的 Gmail 打得開那份表（至少是檢視者）'); }
-  var sh = src.tab ? book.getSheetByName(src.tab) : book.getSheets()[0];
-  if (!sh) throw new Error('「' + src.name + '」找不到分頁：' + src.tab);
-  var tz = book.getSpreadsheetTimeZone(), rng = sh.getDataRange();
-  var nr = Math.min(rng.getNumRows(), 1001), nc = Math.min(rng.getNumColumns(), 30);
-  if (nr < 1) return { name: src.name, headers: [], rows: [] };
-  var vals = sh.getRange(1, 1, nr, nc).getValues(), disp = sh.getRange(1, 1, nr, nc).getDisplayValues();
-  var cellOf = function (i, j) { var v = vals[i][j]; return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : String(disp[i][j] == null ? '' : disp[i][j]).slice(0, 200); };
-  // 標題列：前 5 列裡第一個「有 2 格以上有字」的列
-  var h = 0; for (var i = 0; i < Math.min(5, nr); i++) { if (disp[i].filter(function (x) { return String(x).trim(); }).length >= 2) { h = i; break; } }
-  var headers = disp[h].map(function (x, j) { return String(x).trim() || ('第' + (j + 1) + '欄'); }), rows = [];
-  for (var r = h + 1; r < nr; r++) { var row = []; for (var c = 0; c < nc; c++) row.push(cellOf(r, c)); if (row.some(function (x) { return x.trim(); })) rows.push(row); }
-  return { name: src.name, sheet: sh.getName(), headers: headers, rows: rows, truncated: rng.getNumRows() > 1001 };
+  // C 欄可以寫多個分頁（例如「一廠,三廠」）；不寫就讀第一個分頁。隱藏列、篩選都不影響：一律讀原始範圍
+  var names = src.tab ? src.tab.split(/[,，、;；]+/).map(function (x) { return x.trim(); }).filter(String) : [''];
+  var tz = book.getSpreadsheetTimeZone(), tabs = [];
+  names.slice(0, 5).forEach(function (n) {
+    var sh = n ? book.getSheetByName(n) : book.getSheets()[0];
+    if (!sh) throw new Error('「' + src.name + '」找不到分頁：' + n);
+    var rng = sh.getDataRange(), nr = Math.min(rng.getNumRows(), 2001), nc = Math.min(rng.getNumColumns(), 30);
+    if (nr < 1 || nc < 1) { tabs.push({ sheet: sh.getName(), headers: [], rows: [] }); return; }
+    var vals = sh.getRange(1, 1, nr, nc).getValues(), disp = sh.getRange(1, 1, nr, nc).getDisplayValues();
+    var cellOf = function (i, j) { var v = vals[i][j]; return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : String(disp[i][j] == null ? '' : disp[i][j]).slice(0, 200); };
+    // 標題列：前 5 列裡第一個「有 3 格以上有字」的列（上面常有一列大標）
+    var h = 0; for (var i = 0; i < Math.min(5, nr); i++) { if (disp[i].filter(function (x) { return String(x).trim(); }).length >= Math.min(3, nc)) { h = i; break; } }
+    var headers = disp[h].map(function (x, j) { return String(x).trim() || ('第' + (j + 1) + '欄'); }), rows = [];
+    for (var r = h + 1; r < nr; r++) { var row = []; for (var c = 0; c < nc; c++) row.push(cellOf(r, c)); if (row.some(function (x) { return x.trim(); })) rows.push(row); }
+    tabs.push({ sheet: sh.getName(), headers: headers, rows: rows, truncated: rng.getNumRows() > 2001 });
+  });
+  // headers／rows／sheet：第一個分頁（舊版 Agent Chat 相容）
+  return { name: src.name, tabs: tabs, sheet: tabs[0].sheet, headers: tabs[0].headers, rows: tabs[0].rows, truncated: tabs[0].truncated };
 }
 
 // 指定／取消主管：權限由 Agent Chat 檢查（發言者是主管，或是 bot 的擁有者）；這裡只認 LINE ID

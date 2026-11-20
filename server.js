@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.24.0';
+const VERSION = '3.25.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1893,6 +1893,25 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/todo' && req.method === 'GET') return send(res, 200, todoBook.status());
     if (p === '/api/todo' && req.method === 'PUT') { try { return send(res, 200, todoBook.update(await readBody(req))); } catch (e) { return send(res, e.status || 400, { error: e.message }); } }
     // 📊 唯讀資料表：列出「設定」分頁登記的表，每份實際讀一次（看得到幾筆、哪幾欄是到期日）
+    if (p === '/api/sources/profile' && req.method === 'GET') {
+      const name = String(url.searchParams.get('name') || '').trim();
+      if (!validSourceName(name)) return send(res, 400, { error: '名稱不對（1～20 字，不能有 \\ / : * ? " < > | .）' });
+      const t = sourceProfileText(name);
+      let example = ''; try { example = fs.readFileSync(path.join(ROOT, 'templates', 'sources', '設備校驗範例.md'), 'utf8'); } catch {}
+      return send(res, 200, { name, text: t ? t.text : '', custom: !!(t && t.custom), example });
+    }
+    if (p === '/api/sources/profile' && (req.method === 'PUT' || req.method === 'DELETE')) {
+      const body = await readBody(req), name = String(body.name || '').trim();
+      if (!validSourceName(name)) return send(res, 400, { error: '名稱不對（1～20 字，不能有 \\ / : * ? " < > | .）' });
+      const f = path.join(SOURCE_DIR, name + '.md');
+      if (req.method === 'DELETE') { try { fs.unlinkSync(f); } catch {} return send(res, 200, { ok: true }); }
+      const text = String(body.text || '');
+      if (text.length > 20000) return send(res, 400, { error: '設定檔太長（上限 20000 字）' });
+      if (text.trim() && !todoLib.parseSourceProfile(text)) return send(res, 400, { error: '格式不對：開頭要有 --- 包起來的設定，而且至少要有「到期欄: H」這一行' });
+      fs.mkdirSync(SOURCE_DIR, { recursive: true });
+      if (!text.trim()) { try { fs.unlinkSync(f); } catch {} } else fs.writeFileSync(f, text.replace(/\r\n/g, '\n'));
+      return send(res, 200, { ok: true });
+    }
     if (p === '/api/todo/sources' && req.method === 'POST') {
       try {
         todoBook.drop(); const list = await todoBook.sources(), out = [];
@@ -2318,7 +2337,17 @@ server.listen(PORT, HOST, () => {
 
 // Telegram 遙控（agents.json 有設定 telegram.botToken 才會啟動）
 const telegram = require('./telegram');
-const todoBook = todoLib.create({ config: CONFIG, saveConfig: () => saveConfig() });
+// 📊 資料表設定檔：data/sources/<名稱>.md（你自己的，不進 git、更新不會蓋掉）；沒有就看 templates/sources/<名稱>.md
+const SOURCE_DIR = path.join(DATA_DIR, 'sources');
+const validSourceName = (n) => typeof n === 'string' && /^[^\\/:*?"<>|.\x00-\x1f]{1,20}$/.test(n.trim());
+function sourceProfileText(name) {
+  if (!validSourceName(name)) return null;
+  for (const [f, custom] of [[path.join(SOURCE_DIR, name.trim() + '.md'), true], [path.join(ROOT, 'templates', 'sources', name.trim() + '.md'), false]]) {
+    try { return { text: fs.readFileSync(f, 'utf8'), custom }; } catch {}
+  }
+  return null;
+}
+const todoBook = todoLib.create({ config: CONFIG, saveConfig: () => saveConfig(), sourceProfile: (n) => { const t = sourceProfileText(n); return t ? todoLib.parseSourceProfile(t.text) : null; } });
 const lineBot = lineLib.create({ todo: todoBook, logExchange, groupRisk, redact: (t) => reporter.redact(t), config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
   agentById, agents: AGENTS, dispatch, stopRun, resetAgent, timers, proctree, ROOT });
 lineBotRef = lineBot;
