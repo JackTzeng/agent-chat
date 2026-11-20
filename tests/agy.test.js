@@ -136,6 +136,9 @@ test('quota: detect exhausted errors and parse the reset time', () => {
   assert.ok(agy.quotaHit('HTTP 429 Too Many Requests'));
   assert.ok(agy.quotaHit('You have reached your usage limit'));
   assert.ok(!agy.quotaHit('invalid model selection'));
+  // 真實訊息（2026-11-20，免費 Starter Quota 用完時 agy 1.5.10 回的）
+  const REAL = 'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 115h31m45s.';
+  assert.ok(agy.quotaHit(REAL)); assert.equal(agy.quotaReset(REAL, now), now + (115 * 3600 + 31 * 60 + 45) * 1000);
   assert.ok(!agy.quotaHit('Command exited with code 1'));
   assert.equal(agy.quotaReset('quota exhausted, retry in 2h30m', now), now + 2.5 * 3600000);
   assert.equal(agy.quotaReset('Usage limit reached. Resets in 3 hours.', now), now + 3 * 3600000);

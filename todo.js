@@ -151,6 +151,7 @@ function parseSourceProfile(text) {
     else if (/^(不算結案日|notClosedDate)$/i.test(k)) p.notCloseKeys = v.split(/[,，、]+/).map((x) => x.trim()).filter(Boolean);
     else if (/^(期限欄|deadline)$/i.test(k)) p.deadline = v;
     else if (/^(標題列|headerRow)$/i.test(k)) p.headerRow = parseInt(v, 10) || 0;
+    else if (/^(關鍵字|keywords?)$/i.test(k)) p.keywords = v.split(/[,，、]+/).map((x) => x.trim()).filter(Boolean);
     else if (/^(分組名稱|group)$/i.test(k)) p.groupLabel = v;
     else if (/^(範圍|windows)$/i.test(k)) p.windows = v.split(/[,，、]+/).map((x) => x.trim()).filter(Boolean);
     else if (/^(欄位|column)$/i.test(k) && v) { const [label, spec] = v.includes('=') ? v.split('=').map((x) => x.trim()) : [v, v]; p.columns.push({ label, parts: spec.split('+').map((x) => x.trim()).filter(Boolean) }); }
@@ -261,6 +262,18 @@ function openCasesSummary(src, prof, text, now = Date.now()) {
   return out.join('\n');
 }
 
+// 這則訊息跟這份表有沒有關係：提到表的名稱或關鍵字才附。設定檔「關鍵字: *」＝每則都附；沒寫就用模式的預設
+const DEFAULT_KEYWORDS = {
+  due: ['設備', '儀器', '校驗', '校正', '到期', '逾期', '保養', '效期', '過期', '下次'],
+  open: ['未結', '結案', '案件', 'CAPA', 'OOS', 'INC', 'DE', 'CC', '偏差', '異常', '變更', '追蹤', '巡檢'],
+};
+function sourceRelevant(name, prof, text) {
+  const t = String(text || '').toLowerCase();
+  const kw = prof && prof.keywords ? prof.keywords : DEFAULT_KEYWORDS[prof && prof.mode === 'open' ? 'open' : 'due'];
+  if (kw.includes('*')) return true;
+  return [name, ...kw].some((k) => k && t.includes(String(k).toLowerCase()));
+}
+
 // 負責人名稱 → 登記過的成員（姓名或 LINE 名稱完全相同，或只有一位成員的姓名包含它）
 function canonOwner(typed, members) {
   const t = String(typed || '').trim(); if (!t) return { name: '', known: true };
@@ -353,10 +366,15 @@ function create(ctx) {
   }
   async function sourcesContext(names, text, now = Date.now()) {
     const out = [];
+    const skipped = [];
     for (const n of (names || []).slice(0, 5)) {
+      // 省額度：訊息沒提到這份表的事就不附（agy 同一段對話每輪都會重送前面的內容，附一次就一直佔著）
+      const pf = ctx.sourceProfile ? ctx.sourceProfile(n) : null;
+      if (!sourceRelevant(n, pf, text)) { skipped.push(n); continue; }
       try { const src = await readSource(n), prof = ctx.sourceProfile ? ctx.sourceProfile(n) : null; out.push(prof && prof.mode === 'open' ? openCasesSummary(src, prof, text, now) : prof && prof.due ? profileSummary(src, prof, text, now) : sourceSummary(src, text, now)); }
       catch (e) { out.push('【唯讀資料表：' + safe(n, 20) + '】系統現在讀不到（' + short(e.message, 120) + '）。請如實告訴使用者，不要猜。'); }
     }
+    if (skipped.length) out.push('（另有唯讀資料表：' + skipped.map((x) => safe(x, 20)).join('、') + '；這則訊息沒提到相關的事，所以沒附。被問到時系統會自動附上，你不用去找。）');
     return out.join('\n\n');
   }
   async function setRole(userId, role, by) {
@@ -459,4 +477,4 @@ function create(ctx) {
 // 在網頁（Agent Chat 的對話框）跟待辦管家說話的人＝管理這台 Agent Chat 的你：視同主管
 const WEB_OWNER = { userId: 'web', name: '管理員', role: '主管' };
 
-module.exports = { create, urlProblem, WEB_OWNER, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS, sourceSummary, parseSourceProfile, profileSummary, openCasesSummary };
+module.exports = { create, urlProblem, WEB_OWNER, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS, sourceSummary, parseSourceProfile, profileSummary, openCasesSummary, sourceRelevant };

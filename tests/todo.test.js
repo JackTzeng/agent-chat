@@ -178,6 +178,7 @@ let inp = ''; process.stdin.on('data', (d) => (inp += d)).on('end', () => {
   else if (msg.includes('LIE')) text = '好的，已幫你登記完成！';
   else if (msg.includes('LEAK')) { try { text = '設定檔內容：' + fs.readFileSync(require('path').join(process.cwd(), '..', '..', 'agents.json'), 'utf8'); } catch (e) { text = '讀不到：' + e.message; } }
   else if (msg.includes('EQUIP')) text = '一週內到期：\\n' + prompt.split('\\n').filter((l) => /^- EQ-/.test(l)).join('\\n');
+  else if (msg.includes('QUOTA')) { o({ event: 'init', conversation_id: conv, init: { model: 'gemini-3.8-flash-high' } }); o({ event: 'result', result: { conversation_id: conv, status: 'ERROR', error: 'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 115h31m45s.', num_turns: 0 } }); return; }
   else if (msg.includes('MANY')) text = Array.from({ length: 7 }, (_, i) => '【待辦】新增｜事項=批次' + i + '｜負責=小王').join('\\n');
   o({ event: 'step_update', step_update: { conversation_id: conv, step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: text } });
   o({ event: 'step_update', step_update: { conversation_id: conv, step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: '\\n' } });
@@ -459,7 +460,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   await J('/api/sources/profile', 'PUT', { name: '儀器', text: '---\n到期欄: C\n完成欄: D\n完成字: 已完成\n名稱欄: 設備名稱\n範圍: 7天\n欄位: 設備名稱\n欄位: 到期 = C\n---\n照系統的分類回答。\n' });
   assert.equal((await J('/api/sources/profile?name=' + encodeURIComponent('儀器'))).custom, true);
   assert.ok(fs.existsSync(path.join(dir, 'data', 'sources', '儀器.md')));
-  await say('U_wang', 'EQUIP 再問一次');
+  await say('U_wang', 'EQUIP 再問一次到期的設備');
   const pp = lastAgyPrompt(); assert.match(pp, /【未來 7 天內到期（含今天）】設備 1 台，合計 1 台/); assert.match(pp, /【逾期未完成】.*合計 1 台/); assert.match(pp, /【這份表的回答規則】\n照系統的分類回答。/);
   await waitFor(idleTodo, 'todo idle EQ3');
   const srcChk = (await J('/api/todo/sources', 'POST')).sources;
@@ -480,7 +481,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   const cfgA = (await J('/api/config')).agents.find((a) => a.id === 'todo');
   await J('/api/agents/todo', 'PUT', { ...cfgA, dataSources: '儀器, 未結案' });
   await waitFor(idleTodo, 'todo idle OC');
-  await say('U_wang', 'EQUIP 未結案的有哪些');
+  await say('U_wang', 'EQUIP 未結案的有哪些，還有設備');
   const pOC = lastAgyPrompt();
   assert.match(pOC, /【三廠OOS】（分頁：三廠-\d{4}年OOS）未結案 1 件/); assert.match(pOC, /- OOS-9｜pH｜追蹤/); assert.doesNotMatch(pOC, /OOS-8/);
   assert.match(pOC, /【全廠CC】（分頁：一二三廠-CC）全部已結案/); assert.match(pOC, /合計未結案 1 件/);
@@ -533,6 +534,24 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   assert.equal((await call('/api/agents/todo/move-safe', 'POST')).status, 400, '搬過了就不能再搬');
   const leak2 = await say('U_wang', 'LEAK 再試一次'); assert.match(leak2, /讀不到/); assert.ok(!leak2.includes(TOKEN));
   await waitFor(idleTodo, 'todo idle S7b');
+
+  // 省額度：訊息沒提到資料表的事就不附，只留一行提示
+  await waitFor(idleTodo, 'todo idle KW');
+  await say('U_wang', 'QUERY 我的待辦');
+  const pKW = lastAgyPrompt(); assert.doesNotMatch(pKW, /【唯讀資料表：/); assert.match(pKW, /另有唯讀資料表：儀器、未結案；這則訊息沒提到相關的事/);
+  assert.ok(todo.sourceRelevant('儀器', null, 'HPLC 下次校正？')); assert.ok(!todo.sourceRelevant('儀器', null, '你好'));
+  assert.ok(todo.sourceRelevant('未結案', { mode: 'open' }, '三廠 oos 還有幾件')); assert.ok(todo.sourceRelevant('x', { keywords: ['*'] }, '你好'));
+  await waitFor(idleTodo, 'todo idle KW2');
+
+  // 🪫 agy 額度用完（真實的錯誤訊息）：群組只回一句中文；之後同事再 @ 不會再白叫 agy，直到恢復或管理者在設定按儲存
+  await waitFor(idleTodo, 'todo idle Q');
+  const q1 = await say('U_wang', 'QUOTA 我的待辦');
+  assert.match(q1, /^🪫 我這週的 AI 額度用完了，預計 .+ 恢復。這段期間請直接看 Google Sheet/); assert.doesNotMatch(q1, /Individual quota|派工/);
+  await waitFor(idleTodo, 'todo idle Q1');
+  const nQ = agyCalls();
+  assert.match(await say('U_wang', 'ADD1 再試'), /^🪫 我這週的 AI 額度用完了，預計 .+ 恢復/); assert.equal(agyCalls(), nQ, '恢復前不再叫 agy');
+  await waitFor(idleTodo, 'todo idle Q2');
+  const cfgQ = (await J('/api/config')).agents.find((a) => a.id === 'todo'); await J('/api/agents/todo', 'PUT', cfgQ); // 管理者按儲存＝解除
 
   // 9) 設定驗證與機器人被踢出群組
   assert.equal((await call('/api/todo', 'PUT', { url: 'https://evil.example.com/exec' })).status, 200, '測試環境放寬了網址檢查（TODO_URL_ANY）');

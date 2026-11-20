@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.27.0';
+const VERSION = '3.27.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1226,7 +1226,8 @@ function agyAfter(agent, run, emit, code, roBefore) {
 // agy 不提供剩餘額度，只能：從錯誤訊息判斷「用完了」（暫停自動派工並通知），以及自己統計本週用了幾輪、多少 tokens。
 const AGY_QUOTA_RETRY_MS = 60 * 60 * 1000; // 錯誤訊息沒寫恢復時間時，先擋一個鐘頭，之後下一則訊息會再試
 // 你自己直接傳的訊息（網頁／Telegram），不是同事轉交、任務、排程、系統自動送的
-const userDirect = (opts) => !opts.from && !opts.system && !opts.resume && !opts.urgent && !opts.taskId && !opts.shift && !(opts.via === 'timer' && !opts.manual);
+// 「你本人直接傳的」才會在額度用完時再試一次；LINE 群組裡的同事不算（不然每 @ 一次就白叫一次 agy）
+const userDirect = (opts) => !opts.from && !opts.system && !opts.resume && !opts.urgent && !opts.taskId && !opts.shift && !(opts.via === 'timer' && !opts.manual) && !(opts.line && opts.line.group);
 function agyQuotaHold(agent) {
   const q = state.agyQuota[agent.id];
   return q && q.until > Date.now() ? q : null;

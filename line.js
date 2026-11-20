@@ -380,6 +380,13 @@ function create(ctx) {
   const onDone = (e) => {
     if (e.via !== 'line' || !e.line || !e.agent) return;
     (async () => {
+      // 額度用完（AI 回的英文錯誤或系統的 🪫 提示）：群組只回一句中文，不把內部說明貼到群組
+      const quota = (e.segments || []).find((s) => s.type === 'error' && /額度用完|quota|rate.?limit|resource.?exhausted/i.test(s.text));
+      if (e.line.group && quota) {
+        const until = (/預計 ([^，,\n]+?) 恢復/.exec((e.segments || []).map((x) => x.text || '').join('\n')) || [])[1];
+        await send(e.line.groupId, '🪫 我這週的 AI 額度用完了' + (until ? '，預計 ' + until + ' 恢復' : '') + '。這段期間請直接看 Google Sheet；額度恢復後再 @我。', e.line);
+        return;
+      }
       if (e.line.group && !e.line.todo) { await send(e.line.groupId, replyText(e.segments), e.line); return; }
       if (e.line.group) {
         // 群組（待辦清單能力）：模型寫的【待辦】動作行由系統檢查權限後實際寫進 Google Sheet，結果補在回覆後面
