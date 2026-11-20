@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.23.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.24.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -992,6 +992,9 @@ async function openAgentForm(id) {
         <span class="help">系統產生的唯讀資料，讓成員知道「現在幾點、有哪些排程、有沒有異常」。適合助理（個人秘書）這種要幫你看排程與行程的成員；每輪多約 300～800 字。</span>
         <label class="opt" style="margin-top:8px"><input type="checkbox" id="f_todokeeper" ${a.todoKeeper ? 'checked' : ''}> 📋 待辦清單能力（把 Google Sheet 的待辦清單附給它，寫入由系統代做）</label>
         <span class="help">它看不到檔案、不能執行指令：每次對話，系統會先讀最新的待辦清單附在訊息裡；它只負責聽懂並寫出動作行，由 Agent Chat 檢查權限後寫進 Sheet。沒勾的成員就是一般對話（在 LINE 群組裡也是）。需要先在「📋 待辦清單」連上 Google Sheet。</span>
+        <label style="margin-top:10px;display:block">📊 唯讀資料表（選填，用逗號分隔）</label>
+        <input id="f_sources" value="${esc((a.dataSources || []).join('、'))}" placeholder="例如：儀器">
+        <span class="help">別人的 Google Sheet（例如儀器設備表），只讀不改。先在你的待辦 Sheet「設定」分頁加一列：A 欄 <code>唯讀資料表：儀器</code>、B 欄那份表的網址、C 欄分頁名稱（選填），這裡就填「儀器」。每次對話系統會先讀最新的表、算好已逾期／7 天內／30 天內到期，再交給它回答。需要先在「📋 待辦清單」連上 Google Sheet（Apps Script 1.0.3 以上）。</span>
         <label class="opt" style="margin-top:8px"><input type="checkbox" id="f_rtk" ${a.rtk ? 'checked' : ''}> 🗜 壓縮指令輸出（rtk，只限 Claude 成員）</label>
         <span class="help" id="f_rtkhelp">成員在 Bash 執行的 git、測試、建置等指令，輸出會先經過 rtk 精簡再交給它，省 token、對話也不會被長長的紀錄撐大。要先在這台電腦裝 rtk（PowerShell：<code>winget install rtk-ai.rtk</code>）。只影響勾選的成員，不會改你自己的 Claude Code 設定；rtk 不能替成員核准指令，權限照原本的設定。獨立成員和有「限制工具」的成員不會使用。</span>
       </div>
@@ -1152,7 +1155,7 @@ async function openAgentForm(id) {
       if (t.cwd) $('f_cwd').value = t.cwd;
       $('f_pfile').value = t.personaFile || ''; $('f_tools').value = t.tools || ''; $('f_allow').value = t.allow || ''; $('f_tgprefix').value = t.tgPrefix || '';
       if (t.env && !$('f_env').value.trim()) $('f_env').value = t.env;
-      $('f_brief').checked = !!t.brief; $('f_todokeeper').checked = !!t.todoKeeper;
+      $('f_brief').checked = !!t.brief; $('f_todokeeper').checked = !!t.todoKeeper; if (t.dataSources) $('f_sources').value = t.dataSources;
       if (t.tgPrefix && TG && TG.allowedIds && TG.allowedIds.length === 1 && !$('f_tgusers').value) $('f_tgusers').value = TG.allowedIds[0];
       syncKind(); syncPermNote();
     }
@@ -1181,7 +1184,7 @@ async function openAgentForm(id) {
       extraDirs: dirs.filter((d) => d.path),
       rtk: engineSel.value === 'claude' && !$('f_standalone').checked && $('f_rtk').checked,
       brief: $('f_brief').checked,
-      todoKeeper: $('f_todokeeper').checked,
+      todoKeeper: $('f_todokeeper').checked, dataSources: $('f_sources').value,
       takeTurns: $('f_turns').checked && !$('f_standalone').checked, canInterrupt: $('f_urgent').checked && !$('f_standalone').checked, team: $('f_team').value,
       standalone: $('f_standalone').checked, personaFile: $('f_pfile').value, env: $('f_env').value,
       tools: $('f_tools').value, allowedTools: $('f_allow').value, disallowedTools: $('f_deny').value,
@@ -2089,9 +2092,10 @@ async function openTodo() {
       <div class="field full"><label>Apps Script 網頁應用程式網址</label><input id="td_url" value="${esc(keepUrl)}" placeholder="${T.configured ? '已設定（' + esc(T.urlHint) + '），要換才貼' : 'https://script.google.com/macros/s/…/exec'}" autocomplete="off"></div>
       <div class="field full"><label>連線密鑰</label><input id="td_key" ${SECRET_ATTR} placeholder="${T.hasKey ? '已設定，要換才貼' : '約 40 個英數字'}"></div>
     </div>
-    <div class="sk-row"><button class="primary" id="td_save">儲存</button><button id="td_ping" ${T.configured ? '' : 'disabled'}>🔍 測試連線</button><button id="td_prev" ${T.configured ? '' : 'disabled'}>👀 預覽提醒信（不寄）</button><button id="td_send" ${T.configured ? '' : 'disabled'}>✉️ 現在寄一次</button>${T.configured ? '<button id="td_clear">移除設定</button>' : ''}</div>
+    <div class="sk-row"><button class="primary" id="td_save">儲存</button><button id="td_ping" ${T.configured ? '' : 'disabled'}>🔍 測試連線</button><button id="td_src" ${T.configured ? '' : 'disabled'} title="讀讀看「設定」分頁登記的唯讀資料表（例如儀器表）">📊 檢查唯讀資料表</button><button id="td_prev" ${T.configured ? '' : 'disabled'}>👀 預覽提醒信（不寄）</button><button id="td_send" ${T.configured ? '' : 'disabled'}>✉️ 現在寄一次</button>${T.configured ? '<button id="td_clear">移除設定</button>' : ''}</div>
     <div class="ln-check" id="td_out"></div>
     <p class="help">LINE 群組怎麼用：成員勾「📋 待辦清單能力」（或套用「待辦管家」範本），再到「💚 LINE」④ 把群組交給它並啟用群組。同事 <code>@待辦管家 週五前 完成校正紀錄</code> 就會登記；<code>@待辦管家 我的待辦</code>、<code>#12 完成</code>、<code>#12 延到下週一</code>。成員只能改自己負責的，<b>主管</b>才能指派給別人、改別人的期限、取消事項。</p>
+    <p class="help">📊 <b>唯讀資料表</b>（例如別人的儀器設備表，只讀不改）：在這份 Sheet 的「設定」分頁加一列，A 欄 <code>唯讀資料表：儀器</code>、B 欄那份表的網址、C 欄分頁名稱（選填）；建立這份 Sheet 的 Gmail 要打得開那份表。再到成員設定的「📊 唯讀資料表」填「儀器」。</p>
     <p class="help">⚠️ 這份清單是「方便追蹤的輔助工具」，不是正式紀錄。Google Sheet 在你的 Gmail 帳號底下，同事的訊息會經過 LINE、Google（agy）；事項裡請不要放機密資料。</p>
     <div class="modal-actions"><span class="spacer"></span><button id="td_close">關閉</button></div>`);
   $('modal').classList.add('wide');
@@ -2104,6 +2108,10 @@ async function openTodo() {
   };
   $('td_save').onclick = () => act(async () => { await api('/api/todo', { method: 'PUT', body: JSON.stringify({ url: $('td_url').value, key: $('td_key').value }) }); toast('已儲存'); openTodo(); });
   $('td_ping').onclick = () => act(async () => { out('連線中…'); const r = await api('/api/todo/ping', { method: 'POST', body: '{}' }); out(`✅ 連上了：Apps Script 版本 ${esc(r.version)}，時區 ${esc(r.tz)}，「待辦」分頁目前有 ${r.open} 筆未完成（共 ${r.total} 筆）。<br><small>Agent Chat 只讀名叫「待辦」的分頁（欄位：編號、事項、負責人、期限、狀態…）；其他分頁的內容它看不到。</small>`); });
+  $('td_src').onclick = () => act(async () => {
+    out('讀取中…'); const r = await api('/api/todo/sources', { method: 'POST', body: '{}' });
+    out(r.sources.length ? r.sources.map((s) => s.ok ? `✅ <b>${esc(s.name)}</b>：讀到 ${s.rows} 筆（分頁「${esc(s.sheet)}」）｜欄位：${esc(s.headers.join('、'))}｜到期日欄：${s.dueCols.length ? esc(s.dueCols.join('、')) : '⚠️ 找不到（標題要含「到期」「期限」「效期」「下次」之一）'}` : `❌ <b>${esc(s.name)}</b>：${esc(s.error)}`).join('<br>') : '「設定」分頁還沒有登記任何唯讀資料表（A 欄寫「唯讀資料表：名稱」、B 欄寫網址）');
+  });
   const digest = (send) => act(async () => {
     if (send && !confirm('現在就寄出提醒信給負責人與主管？（只有「已逾期或快到期」的事項才會寄；今天是週末且設定為週末不寄的話不會寄）')) return;
     out('處理中…'); const r = await api('/api/todo/digest', { method: 'POST', body: JSON.stringify({ send }) });

@@ -11,7 +11,7 @@
  *
  * 欄位都是用「欄位名稱」找的：你可以調整欄位順序、自己加欄位，不會壞。
  */
-var VERSION = '1.0.2';
+var VERSION = '1.0.3';
 var TASK_SHEET = '待辦', MEMBER_SHEET = '成員', SETTING_SHEET = '設定', LOG_SHEET = '紀錄';
 var TASK_HEADERS = ['編號', '事項', '負責人', '期限', '狀態', '優先', '備註', '提出人', '建立時間', '最後更新', '更新者', '完成時間'];
 var MEMBER_HEADERS = ['姓名', 'Email', '角色', 'LINE 名稱', 'LINE ID'];
@@ -209,6 +209,37 @@ function opRegister_(req) {
   log_('登記成員', '', name, name);
   return { member: { name: name, email: '', role: '成員', lineName: line, userId: uid } };
 }
+// 📊 唯讀資料表：別人的 Google Sheet（例如儀器設備表），只要你的 Gmail 打得開就讀得到。
+// 只讀不寫：這裡只有 open + getValues，沒有任何寫入。只讀「設定」分頁登記過的表（A 欄「唯讀資料表：名稱」、B 欄網址、C 欄分頁名稱選填），
+// 就算連線密鑰外洩，也不能拿你的帳號去讀其他檔案
+function sourceList_() {
+  var s = ss_().getSheetByName(SETTING_SHEET), out = []; if (!s) return out;
+  s.getDataRange().getValues().forEach(function (r) {
+    var m = /^唯讀資料表[:：]\s*(.{1,20})$/.exec(str_(r[0]));
+    if (m && /^https:\/\/docs\.google\.com\/spreadsheets\/d\//.test(str_(r[1]))) out.push({ name: m[1].trim(), url: str_(r[1]), tab: str_(r[2]) });
+  });
+  return out;
+}
+function opSources_() { return { sources: sourceList_().map(function (x) { return { name: x.name, tab: x.tab }; }) }; }
+function opReadSource_(req) {
+  var src = sourceList_().filter(function (x) { return x.name === str_(req.name); })[0];
+  if (!src) throw new Error('「設定」分頁沒有登記這份唯讀資料表：' + str_(req.name));
+  var book;
+  try { book = SpreadsheetApp.openByUrl(src.url); } catch (e) { throw new Error('打不開「' + src.name + '」：請確認建立這份待辦 Sheet 的 Gmail 打得開那份表（至少是檢視者）'); }
+  var sh = src.tab ? book.getSheetByName(src.tab) : book.getSheets()[0];
+  if (!sh) throw new Error('「' + src.name + '」找不到分頁：' + src.tab);
+  var tz = book.getSpreadsheetTimeZone(), rng = sh.getDataRange();
+  var nr = Math.min(rng.getNumRows(), 1001), nc = Math.min(rng.getNumColumns(), 30);
+  if (nr < 1) return { name: src.name, headers: [], rows: [] };
+  var vals = sh.getRange(1, 1, nr, nc).getValues(), disp = sh.getRange(1, 1, nr, nc).getDisplayValues();
+  var cellOf = function (i, j) { var v = vals[i][j]; return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : String(disp[i][j] == null ? '' : disp[i][j]).slice(0, 200); };
+  // 標題列：前 5 列裡第一個「有 2 格以上有字」的列
+  var h = 0; for (var i = 0; i < Math.min(5, nr); i++) { if (disp[i].filter(function (x) { return String(x).trim(); }).length >= 2) { h = i; break; } }
+  var headers = disp[h].map(function (x, j) { return String(x).trim() || ('第' + (j + 1) + '欄'); }), rows = [];
+  for (var r = h + 1; r < nr; r++) { var row = []; for (var c = 0; c < nc; c++) row.push(cellOf(r, c)); if (row.some(function (x) { return x.trim(); })) rows.push(row); }
+  return { name: src.name, sheet: sh.getName(), headers: headers, rows: rows, truncated: rng.getNumRows() > 1001 };
+}
+
 // 指定／取消主管：權限由 Agent Chat 檢查（發言者是主管，或是 bot 的擁有者）；這裡只認 LINE ID
 function opSetRole_(req) {
   var t = readTable_(MEMBER_SHEET), uid = str_(req.userId), role = req.role === '主管' ? '主管' : '成員', by = clean_(req.by, 20);
@@ -275,7 +306,7 @@ function opDigest_(req) {
   }
   return { count: mails.length, sent: !!(req && req.send), mails: mails.map(function (m) { return { kind: m.kind, to: m.to, subject: m.subject }; }) };
 }
-var OPS_ = { ping: opPing_, list: opList_, get: opGet_, add: opAdd_, update: opUpdate_, members: opMembers_, register: opRegister_, setRole: opSetRole_, setEmail: opSetEmail_, digest: opDigest_ };
+var OPS_ = { ping: opPing_, list: opList_, get: opGet_, add: opAdd_, update: opUpdate_, members: opMembers_, register: opRegister_, setRole: opSetRole_, sources: opSources_, readSource: opReadSource_, setEmail: opSetEmail_, digest: opDigest_ };
 
 // ---------- 選單與初始化 ----------
 function onOpen() {

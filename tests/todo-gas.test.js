@@ -2,7 +2,7 @@
 // 待辦機器人的 Apps Script（templates/todo/Code.gs）：用假的 Google 環境（試算表、信箱、鎖、設定）載入真正要貼進 Sheet 的那份檔案來測。
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { makeEnv, iso } = require('./helpers/fakegoogle');
+const { makeEnv, iso, Sheet } = require('./helpers/fakegoogle');
 
 const sheetRows = (env, name) => env.sheets.get(name).data;
 
@@ -120,4 +120,24 @@ test('digest weekend rule and the daily trigger', () => {
   assert.equal(env.triggers.length, 1, '重複安裝只會有一個');
   env.g.removeDigestTrigger(); assert.equal(env.triggers.length, 0);
   env.g.installDigestTrigger(); env.g.dailyDigest(); // 不會丟錯
+});
+
+test('唯讀資料表：只讀「設定」登記過的表，日期轉成 YYYY-MM-DD，不會寫入', () => {
+  const env = makeEnv(); env.g.setup();
+  const URL = 'https://docs.google.com/spreadsheets/d/EQUIP/edit';
+  const eq = new Sheet('儀器'); eq.data = [['ES-QA 儀器清單'], ['設備名稱', '編號', '校正到期日', '狀態'], ['HPLC', 'EQ-01', new Date(2026, 10, 27), '使用中'], ['天平', 'EQ-02', new Date(2026, 11, 31), '停用'], ['', '', '', '']];
+  eq.readOnly = true;
+  env.books.set(URL, { sheets: [new Sheet('封面'), eq] });
+  assert.deepEqual(env.call('sources').sources, []);
+  assert.match(env.call('readSource', { name: '儀器' }).error, /沒有登記/);
+  const set = env.sheets.get('設定');
+  set.appendRow(['唯讀資料表：儀器', URL, '儀器']);
+  set.appendRow(['唯讀資料表：亂來', 'https://evil.example.com/x']); // 不是 Google 試算表網址 → 不算
+  assert.deepEqual(env.call('sources').sources, [{ name: '儀器', tab: '儀器' }]);
+  const r = env.call('readSource', { name: '儀器' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.deepEqual(r.headers, ['設備名稱', '編號', '校正到期日', '狀態'], '跳過標題上面的大標');
+  assert.deepEqual(r.rows, [['HPLC', 'EQ-01', '2026-11-27', '使用中'], ['天平', 'EQ-02', '2026-12-31', '停用']], '空白列略過、日期統一格式');
+  set.data[set.data.length - 2][2] = '不存在'; assert.match(env.call('readSource', { name: '儀器' }).error, /找不到分頁/);
+  set.data[set.data.length - 2][1] = 'https://docs.google.com/spreadsheets/d/NOACCESS/edit'; assert.match(env.call('readSource', { name: '儀器' }).error, /打不開.*檢視者/);
 });

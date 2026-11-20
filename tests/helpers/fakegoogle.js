@@ -14,20 +14,22 @@ class Sheet {
   getName() { return this.name; }
   getLastRow() { return this.data.length; }
   getLastColumn() { return this.data.reduce((m, r) => Math.max(m, r.length), 0); }
-  getDataRange() { const w = this.getLastColumn(); return { getValues: () => this.data.map((r) => { const c = r.slice(); while (c.length < w) c.push(''); return c; }) }; }
+  getDataRange() { const w = this.getLastColumn(); return { getNumRows: () => this.data.length, getNumColumns: () => w, getValues: () => this.data.map((r) => { const c = r.slice(); while (c.length < w) c.push(''); return c; }) }; }
   getRange(r, c, nr = 1, nc = 1) {
     const self = this;
     return {
       getValues() { const out = []; for (let i = 0; i < nr; i++) { const row = []; for (let j = 0; j < nc; j++) { const v = (self.data[r - 1 + i] || [])[c - 1 + j]; row.push(v === undefined ? '' : v); } out.push(row); } return out; },
+      getDisplayValues() { return this.getValues().map((row) => row.map((v) => (v instanceof Date ? v.getFullYear() + '/' + (v.getMonth() + 1) + '/' + v.getDate() : String(v)))); },
       setValue(v) { self._set(r, c, v); return this; },
       setDataValidation() { return this; }, setNumberFormat() { return this; },
     };
   }
-  _set(r, c, v) { while (this.data.length < r) this.data.push([]); const row = this.data[r - 1]; while (row.length < c) row.push(''); row[c - 1] = v; }
+  _set(r, c, v) { if (this.readOnly) throw new Error('不該寫入唯讀的表：' + this.name); while (this.data.length < r) this.data.push([]); const row = this.data[r - 1]; while (row.length < c) row.push(''); row[c - 1] = v; }
   appendRow(a) { this.data.push(a.slice()); }
   setFrozenRows() {}
 }
 function makeEnv({ mailQuota = 100 } = {}) {
+  const books = new Map(); // 別人的試算表：網址 → { sheets: [Sheet] }（openByUrl 讀得到的）
   const sheets = new Map(), props = {}, sent = [], alerts = [], triggers = [];
   const ss = {
     getSheetByName: (n) => sheets.get(n) || null,
@@ -39,6 +41,7 @@ function makeEnv({ mailQuota = 100 } = {}) {
     console, Object, JSON, Math, Number, String, Array, Date, Error, parseInt, isNaN, RegExp,
     SpreadsheetApp: {
       getActiveSpreadsheet: () => ss,
+      openByUrl: (u) => { const b = books.get(u); if (!b) throw new Error('沒有權限'); return { getSheetByName: (n) => b.sheets.find((x) => x.name === n) || null, getSheets: () => b.sheets, getSpreadsheetTimeZone: () => 'Asia/Taipei' }; },
       getUi: () => ({ createMenu: () => proxy, alert: (m) => alerts.push(m) }),
       newDataValidation: () => ({ requireValueInList() { return this; }, setAllowInvalid() { return this; }, build() { return {}; } }),
     },
@@ -60,7 +63,7 @@ function makeEnv({ mailQuota = 100 } = {}) {
   vm.createContext(g);
   vm.runInContext(CODE, g);
   const call = (op, args = {}, key) => JSON.parse(g.doPost({ postData: { contents: JSON.stringify({ key: key === undefined ? props.KEY : key, op, ...args }) } }).text);
-  return { g, call, sheets, props, sent, alerts, triggers, ss };
+  return { g, call, sheets, props, sent, alerts, triggers, ss, books };
 }
 
 module.exports = { makeEnv, iso, Sheet };
