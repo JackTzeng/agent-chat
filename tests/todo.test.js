@@ -325,6 +325,14 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   assert.equal(replies().length, n8e, '「待辦」不再是寫死的呼叫詞');
   await waitFor(async () => !(await J('/api/agents')).find((a) => a.id === 'chat').busy, 'chat idle');
   await J('/api/line', 'PUT', { groupAgentId: 'todo' });
+  // 呼叫詞改了，補問按鈕送出的字也跟著改，而且真的叫得到它
+  await waitFor(idleTodo, 'todo idle 8f');
+  await say('U_wang', 'ASKDUE 訂耗材');
+  const qr2 = replies().at(-1).body.messages.at(-1).quickReply.items; assert.equal(qr2[0].action.text, '幫手 明天');
+  const n8f = replies().length; assert.equal(await hook([gmsg('U_wang', qr2[0].action.text, { mention: false })]), 200);
+  await waitFor(() => replies().length > n8f, '按鈕的字叫得到 bot');
+  await waitFor(idleTodo, 'todo idle 8g');
+  await J('/api/line', 'PUT', { groupWords: '待辦' });
 
   // 🔒 S) 攻擊情境
   // S1 誘導模型讀設定檔（prompt injection）：就算模型真的讀到 agents.json，送出 LINE 前也會遮蔽密鑰

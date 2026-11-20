@@ -118,7 +118,7 @@ function create(ctx) {
   function buildMessages(texts, options, group) {
     const msgs = texts.map((text) => ({ type: 'text', text }));
     const opts = (options || []).slice(0, 13);
-    if (opts.length && msgs.length) msgs[msgs.length - 1].quickReply = { items: opts.map((o) => ({ type: 'action', action: { type: 'message', label: String(o).slice(0, 20), text: (group ? '待辦 ' : '') + String(o).slice(0, 280) } })) };
+    if (opts.length && msgs.length) msgs[msgs.length - 1].quickReply = { items: opts.map((o) => ({ type: 'action', action: { type: 'message', label: String(o).slice(0, 20), text: (group ? callPrefix() : '') + String(o).slice(0, 280) } })) };
     return msgs;
   }
   async function reply(replyToken, texts, options, group) {
@@ -172,6 +172,8 @@ function create(ctx) {
   const groupWords = () => (Array.isArray(cfg().groupWords) ? cfg().groupWords : []).map(String).filter(Boolean);
   const rate = new Map(); // 群組裡每個人最近叫 bot 的時間
   const RATE_MAX = Number(process.env.LINE_GROUP_RATE_MAX) || 8, RATE_WINDOW_MS = 10 * 60 * 1000;
+  // 群組補問按鈕送出的字要能叫到 bot：用第一個呼叫詞，沒設就用成員名稱（以前寫死「待辦」，改了呼叫詞按鈕就失效）
+  const callPrefix = () => (groupWords()[0] || (groupAgent() || {}).name || '') + ' ';
   const groupIds = () => (cfg().groups || []).map(String);
   const groupHelp = (who) => {
     const a = groupAgent(), n = (a || {}).name || 'bot';
