@@ -10,6 +10,7 @@
 - `agy.js` Google agy 的參數、權限對應、stream-json 解析；`security.js` 路徑與權限檢查
 - `todo.js` 📋 部門待辦：解析模型的動作行（`【待辦】新增｜事項=…`、`【選項】`）、權限（成員／主管）、呼叫 Apps Script、組給模型看的「目前待辦清單」；`templates/todo/Code.gs` 是貼進使用者 Google Sheet 的 Apps Script（寫表＋每日寄信）。模型是 agy 唯讀、**不執行任何指令、也不讀寫檔**（`agy.NO_FILES_NOTE`），寫入一律由系統做；`isTodoKeeper(agent)`＝成員有 `todoKeeper` 旗標或是 LINE 群組對象，網頁對話（`opts.todoWeb`）與 LINE 群組都會附清單並由系統代寫（網頁＝管理員／主管）
 - `line.js` 💚 LINE bot：獨立連接埠的 webhook（驗簽章）、配對、reply／push、cloudflared 一鍵通道；設定畫面「💚 LINE」。`LINE_API_BASE`、`LINE_PORT`、`CLOUDFLARED_BIN` 可換（測試用）
+- `templates/roles/*.md` 🎭 成員範本（front-matter＋人設；`data/roles/` 可覆蓋），由 server.js `loadRoleTemplates()`／`/api/roles` 提供，前端 `ROLES` 產生按鈕。LINE 群組通用：`groupAgentId`＋`groupWords`；待辦流程只看成員的 `todoKeeper`（`isTodoKeeper`），不認名字
 - `skills.js` 🧩 Skill：成員回覆【安裝 Skill】→ 下載 GitHub tar.gz（`SKILL_TARBALL_BASE` 可換，測試用）→ 檢查（檔案、腳本）→ 使用者核准 → 複製到 `.claude/skills`；移除＝搬到 `data/skills-trash`
 - `clistatus.js` 🧰 CLI 狀態頁（登入、MCP、成員用得到哪些；只看不改，只跑不耗額度的查詢指令，不回傳指令參數／網址／金鑰）
 - `diag.js`／`updater.js`／`launcher.js`／`localsettings.js`／`proctree.js` 問題回報、一鍵更新、啟動器（結束碼 75＝重新啟動）、個人設定、子程式樹關閉

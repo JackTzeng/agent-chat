@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.20.2';
+const VERSION = '3.21.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -207,6 +207,16 @@ function agyWriteRisk(a) {
 }
 // AGENTS 是執行中使用的清單（cwd 已轉成完整路徑）；CONFIG.agents 是原始設定。
 // 修改時就地更新陣列，其他模組（Telegram）拿到的參照才會跟著變。
+// v3.21 遷移（只做一次）：以前「被指定為 LINE 群組成員」或「名叫待辦管家」就自動有待辦清單能力；
+// 現在只看成員自己的「📋 待辦清單能力」。舊設定裡這些成員補勾一次，之後完全照勾選
+if (!CONFIG.todoKeeperMigrated) {
+  const gid = CONFIG.line && CONFIG.line.groupAgentId;
+  for (const a of CONFIG.agents) if (a.todoKeeper === undefined && ((gid && a.id === gid) || a.name === '待辦管家')) a.todoKeeper = true;
+  // 以前群組裡訊息開頭寫「待辦」也算叫它；現在呼叫詞可以自己設（💚 LINE ④），舊的群組先保留「待辦」
+  if (CONFIG.line && CONFIG.line.groupWords === undefined && (CONFIG.line.groups || []).length) CONFIG.line.groupWords = ['待辦'];
+  CONFIG.todoKeeperMigrated = true;
+  try { if (fs.existsSync(AGENTS_FILE)) saveConfig(); } catch {}
+}
 const AGENTS = CONFIG.agents.map(prepAgent);
 function reloadAgents() {
   AGENTS.splice(0, AGENTS.length, ...CONFIG.agents.map(prepAgent));
@@ -318,7 +328,7 @@ function allowedTargets(agent) {
 // 成員可以存取的資料夾（每一輪都告訴它）
 // 待辦管家：把待辦清單附在訊息裡，寫入由系統代做（模型不能讀寫檔、不能執行指令）。LINE 群組指定的成員自動算；也可以在成員設定勾選
 let lineBotRef = null; // 建好 lineBot 之後才有值
-const isTodoKeeper = (a) => { if (!a) return false; if (a.todoKeeper === true) return true; const g = lineBotRef && lineBotRef.groupAgent(); return !!g && g.id === a.id; };
+const isTodoKeeper = (a) => !!a && a.todoKeeper === true; // 📋 待辦清單能力：只看成員自己的勾選（LINE 群組交給誰是另一件事）
 function accessText(agent) {
   const base = accessBase(agent) + (rtkWanted(agent) && rtkBin() ? '\n【指令輸出精簡】你在 Bash 執行的常見指令（git、測試、建置、列出檔案等）輸出會先經過 rtk 精簡。如果需要完整的原始輸出才能判斷，請在回覆中說明，使用者可以暫時關掉這個選項。' : '');
   return agent.engine === 'agy' ? base + '\n' + (agy.access(agent) === 'read' ? (isTodoKeeper(agent) || agent.brief ? agy.NO_FILES_NOTE : agy.READ_ONLY_NOTE) : agy.WRITE_NOTE) : base;
@@ -332,6 +342,41 @@ function accessBase(agent) {
 
 // 自由聊天模式每一輪附上的說明（身分、團隊、@ 規則）
 // 角色設定檔（獨立成員常用）：每一輪重新讀取，改了檔案下一句就生效
+// ---------- 🎭 角色範本（.md）：templates/roles 是內建的，data/roles 是你自己的（同檔名會取代內建的）----------
+// 檔案開頭 --- 之間是「欄位: 值」（同一欄位寫多行會累加，例如 allow），下面是人設，{name} 會換成成員名稱
+const ROLE_KEYS = ['kind', 'button', 'name', 'avatar', 'role', 'standalone', 'engine', 'model', 'perm', 'cwd', 'personaFile', 'tgPrefix', 'tools', 'allow', 'env', 'brief', 'todoKeeper', 'toast'];
+function parseRoleMd(text, file) {
+  const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
+  const t = { file, persona: (m ? m[2] : text).trim() };
+  if (m) for (const line of m[1].split(/\r?\n/)) {
+    const mm = /^\s*([A-Za-z]+)\s*:\s?(.*)$/.exec(line); if (!mm || !ROLE_KEYS.includes(mm[1])) continue;
+    const v = mm[2].trim();
+    if (mm[1] === 'allow' || mm[1] === 'env') t[mm[1]] = t[mm[1]] ? t[mm[1]] + '\n' + v : v;
+    else t[mm[1]] = v === 'true' ? true : v === 'false' ? false : v;
+  }
+  if (!t.button) t.button = path.basename(file, '.md').replace(/^\d+-/, '');
+  t.kind = t.kind === 'team' ? 'team' : 'member';
+  return t;
+}
+function loadRoleTemplates() {
+  const byFile = new Map();
+  for (const [dir, custom] of [[path.join(ROOT, 'templates', 'roles'), false], [path.join(DATA_DIR, 'roles'), true]]) {
+    let names = []; try { names = fs.readdirSync(dir).filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md'); } catch {}
+    for (const f of names) {
+      try { const txt = fs.readFileSync(path.join(dir, f), 'utf8'); if (txt.length > 50000) continue; byFile.set(f, { ...parseRoleMd(txt, f), custom }); } catch {}
+    }
+  }
+  return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file));
+}
+
+// 系統直接回覆（沒有叫用 AI）的對話，例如 LINE 群組的登記、說明、寫入 Sheet 的結果：也記進成員的對話框
+function logExchange(agent, inText, outText) {
+  if (!agent) return;
+  const ts = Date.now();
+  if (inText) appendHistory(agent.id, { role: 'user', text: inText, via: 'line', ts });
+  if (outText) appendHistory(agent.id, { role: 'assistant', segments: [{ type: 'text', text: outText }], meta: '系統直接回覆（沒有叫用 AI）', ts });
+  broadcast({ agentId: agent.id, kind: 'history' });
+}
 function personaFileText(agent) {
   if (!agent.personaFile) return '';
   try {
@@ -1951,6 +1996,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/clistatus/refresh' && req.method === 'POST') { cliStatus.refresh().catch((e) => console.error('CLI 狀態檢查失敗：' + e.message)); return send(res, 200, { ok: true }); }
     if (p === '/api/usage/refresh' && req.method === 'POST') { probeUsage(); return send(res, 200, { ok: true }); }
+    if (p === '/api/roles' && req.method === 'GET') return send(res, 200, { roles: loadRoleTemplates(), dir: path.join(DATA_DIR, 'roles') });
     if (p === '/api/config' && req.method === 'GET') {
       return send(res, 200, {
         agents: CONFIG.agents.map(maskAgent), teams: CONFIG.teams.map((t) => ({ ...t, sharedWith: sharedWith(t) })), workflow: CONFIG.teams[0].workflow, maxRelayHops: maxHops(), urgentCooldownMin: urgentCooldownMs() / 60000, approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
@@ -2218,7 +2264,7 @@ server.listen(PORT, HOST, () => {
 // Telegram 遙控（agents.json 有設定 telegram.botToken 才會啟動）
 const telegram = require('./telegram');
 const todoBook = todoLib.create({ config: CONFIG, saveConfig: () => saveConfig() });
-const lineBot = lineLib.create({ todo: todoBook, config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
+const lineBot = lineLib.create({ todo: todoBook, logExchange, config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
   agentById, agents: AGENTS, dispatch, stopRun, resetAgent, timers, proctree, ROOT });
 lineBotRef = lineBot;
 const tgCtx = {
