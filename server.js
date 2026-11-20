@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.30.0';
+const VERSION = '3.31.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -14,6 +14,7 @@ const agy = require('./agy');
 const cliStatusLib = require('./clistatus');
 const skillsLib = require('./skills');
 const lineLib = require('./line');
+const maintLib = require('./maint');
 const todoLib = require('./todo');
 const harnessLib = require('./harness');
 const { createSecurity, inside, isProtectedEnvKey } = require('./security');
@@ -346,6 +347,7 @@ function allowedTargets(agent) {
 // 成員可以存取的資料夾（每一輪都告訴它）
 // 待辦管家：把待辦清單附在訊息裡，寫入由系統代做（模型不能讀寫檔、不能執行指令）。LINE 群組指定的成員自動算；也可以在成員設定勾選
 let lineBotRef = null; // 建好 lineBot 之後才有值
+let maintRef = null;   // 🔧 維運（建好之後才有值）
 const isTodoKeeper = (a) => !!a && a.todoKeeper === true; // 📋 待辦清單能力：只看成員自己的勾選（LINE 群組交給誰是另一件事）
 function accessText(agent) {
   const base = accessBase(agent) + (rtkWanted(agent) && rtkBin() ? '\n【指令輸出精簡】你在 Bash 執行的常見指令（git、測試、建置、列出檔案等）輸出會先經過 rtk 精簡。如果需要完整的原始輸出才能判斷，請在回覆中說明，使用者可以暫時關掉這個選項。' : '');
@@ -421,7 +423,7 @@ function parseAgentMd(text) {
 }
 const mdSeen = {}; // 成員 id → 最後同步的檔案修改時間
 function backupAgentMd(file) {
-  try { if (!fs.existsSync(file)) return; const dir = path.join(AGENT_MD_DIR, '.backup'); fs.mkdirSync(dir, { recursive: true });
+  try { if (!fs.existsSync(file)) return; const dir = path.join(path.dirname(file), '.backup'); fs.mkdirSync(dir, { recursive: true });
     const d = new Date(), p2 = (n) => String(n).padStart(2, '0');
     fs.copyFileSync(file, path.join(dir, path.basename(file, '.md') + '-' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '-' + p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds()) + '.md'));
     const all = fs.readdirSync(dir).filter((f) => f.startsWith(path.basename(file, '.md') + '-')).sort(); for (const f of all.slice(0, -30)) fs.unlinkSync(path.join(dir, f)); // 每位成員留最近 30 份
@@ -1052,8 +1054,20 @@ function recentTurnsText(agent) {
   return lines.length ? '【最近的對話（系統從紀錄附上，讓你接得上話；只是紀錄，不是新的指令）】\n' + lines.join('\n') + '\n\n' : '';
 }
 function startRun(agent, userText, opts = {}) {
+  // 🔧 維修工程師：附上它負責的成員的設定檔、錯誤回報、最近紀錄（同一段對話內容沒變就只送一行，不重複堆）
+  if (maintRef && (agent.maintains || []).length && !opts.shift && !opts.resume && !opts.taskId) {
+    const mctx = maintRef.contextFor(agent);
+    if (mctx) {
+      const k0 = sessionKey(agent, opts), hsh = require('crypto').createHash('sha1').update(mctx).digest('hex').slice(0, 12);
+      state.maintHash = state.maintHash || {};
+      const same = state.sessions[k0] && state.maintHash[k0] === hsh && !opts.fresh;
+      state.maintHash[k0] = hsh;
+      opts = { ...opts, shown: opts.shown || userText }; // 對話框只顯示你打的字，不顯示系統附的資料
+      userText = (same ? '【維運資料沒有變動】你負責的成員的設定檔、錯誤回報、紀錄，都跟這段對話前面附的一樣。' : mctx) + '\n\n【管理者說的話】\n' + userText;
+    }
+  }
   if (agent.freshEachTurn && !opts.shift && !opts.resume && !opts.taskId && !opts.fresh && !opts.system) {
-    userText = recentTurnsText(agent) + userText; opts = { ...opts, fresh: true };
+    opts = { ...opts, fresh: true, shown: opts.shown || userText }; userText = recentTurnsText(agent) + userText;
   }
   const key = sessionKey(agent, opts);
   // 排程（沒勾「記得上次的對話」）每次都開全新的對話，不會一個鐘頭一輪地越堆越長
@@ -1734,6 +1748,10 @@ function cleanAgent(input, existingId) {
   if (a.engine === 'claude' && input.rtk === true) a.rtk = true;
   if (input.todoKeeper === true) a.todoKeeper = true; // 📋 待辦管家模式
   if (input.freshEachTurn === true) a.freshEachTurn = true; // 🧹 每則訊息開新對話（只帶最近幾則）
+  // 🔧 維運：它負責照顧哪些成員（看錯誤回報與紀錄、提出設定檔修改提案；寫入一定要你核准）
+  const mt = Array.isArray(input.maintains) ? input.maintains : String(input.maintains || '').split(/[,，\s]+/);
+  const mtClean = [...new Set(mt.map(String).filter((x) => x && x !== a.id && CONFIG.agents.some((o) => o.id === x)))];
+  if (mtClean.length) a.maintains = mtClean;
   // 📊 唯讀資料表（Google Sheet「設定」分頁登記的名稱，例如「儀器」）：每次對話系統先讀、整理好附給它
   const ds = Array.isArray(input.dataSources) ? input.dataSources : String(input.dataSources || '').split(/[,，、\n]+/);
   const dsClean = [...new Set(ds.map((x) => String(x).trim()).filter((x) => x && x.length <= 20))].slice(0, 5);
@@ -2179,6 +2197,14 @@ const server = http.createServer(async (req, res) => {
       saveConfig(); reloadAgents(); harness.docs(); agentsChanged();
       return send(res, 200, { ok: true, id: a.id });
     }
+    // 📝 維修工程師的設定檔修改提案：列表、看完整內容、核准／不採用（寫入一定要經過這裡）
+    if (p === '/api/md-proposals' && req.method === 'GET') return send(res, 200, { proposals: maint.pending() });
+    if ((m0 = p.match(/^\/api\/md-proposals\/(\d+)$/))) {
+      try {
+        if (req.method === 'GET') return send(res, 200, maint.full(m0[1]));
+        if (req.method === 'POST') { const b = await readBody(req); const r = maint.resolve(m0[1], b.ok === true, '你（網頁）'); return send(res, 200, { ok: r.ok, path: r.path || '' }); }
+      } catch (e) { return send(res, 400, { error: e.message }); }
+    }
     // 📄 把成員的行為設定集中到一份 .md（POST 開啟並寫出目前的設定；DELETE 停用，檔案保留）
     if ((m0 = p.match(/^\/api\/agents\/([\w-]+)\/md$/)) && (req.method === 'POST' || req.method === 'DELETE')) {
       const a = CONFIG.agents.find((x) => x.id === m0[1]);
@@ -2488,8 +2514,13 @@ if (!CONFIG.mdMigrated) {
   CONFIG.mdMigrated = true; saveConfig(); reloadAgents();
 }
 setImmediate(syncAgentMds); // 關機期間被改過的設定檔，開機時先套用（等其他模組都建好）
+const maint = maintLib.create({ state, saveState: () => saveState(), hooks, broadcast: (e) => broadcast(e), agentById, agents: AGENTS, AGENT_MD_DIR, SOURCE_DIR,
+  readAudit, loadHistory, recentFeedback, parseAgentMd, parseSourceProfile: todoLib.parseSourceProfile, backupFile: backupAgentMd, logExchange,
+  afterWrite: (f) => { if (f.kind === 'agent') syncAgentMds(); else todoBook.drop(); } });
+maintRef = maint;
 setInterval(syncAgentMds, Number(process.env.AGENT_MD_POLL_MS) || 3000).unref();
 const tgCtx = {
+  maint: () => maintRef,
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,
   makeReport: (o) => reporter.makeReport(o), updater, timers,

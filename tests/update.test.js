@@ -22,7 +22,7 @@ async function freePort() {
     s.listen(0, '127.0.0.1', () => { const port = s.address().port; s.close(() => resolve(port)); });
   });
 }
-const FILES = ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'xlsx.js', 'launcher.js',
+const FILES = ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'maint.js', 'xlsx.js', 'launcher.js',
   'agents.example.json', 'start.bat', 'local-settings.example.txt', '.gitignore'];
 
 test('one-click update, start.bat migration, rollback, restart and problem report', { timeout: 120000 }, async (t) => {

@@ -359,6 +359,7 @@ try { localStorage.removeItem('agentchat_token'); } catch {}
 if (location.search) history.replaceState(null, '', location.pathname + location.hash);
 const withToken = (u) => u;
 let UPD_BADGE = false;
+let MD_BADGE = 0; // 📝 待核准的設定檔修改提案數
 let TIMER_BADGE = 0; // 待核准的排程建議數 // 有新版本時，側邊欄的「⬆️ 更新」顯示「新」
 
 const $ = (id) => document.getElementById(id);
@@ -366,7 +367,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.30.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.31.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1003,6 +1004,11 @@ async function openAgentForm(id) {
           <div class="sk-row"><button type="button" class="primary" data-spsave="${i}">儲存設定檔</button><span data-spexs="${i}"></span><span class="help" id="f_sp_st_${i}"></span></div>
           <span class="help">存在 Agent Chat 的 <code>data/sources/${esc(n)}.md</code>（不進 git、更新不會蓋掉），跟這份表有關的成員共用。沒有設定檔時，系統會自己猜到期日欄。存檔後下一則訊息就生效，不用重開對話。</span></details>`).join('')}
       </div>
+      <div class="field full">
+        <label>🔧 維運：它負責照顧哪些成員（選填）</label>
+        <div class="tpl" id="f_maint">${others.length ? others.map((o) => `<label class="opt" style="margin-right:10px"><input type="checkbox" value="${esc(o.id)}" ${(a.maintains || []).includes(o.id) ? 'checked' : ''}> ${esc(o.name)}</label>`).join('') : '<span class="help">（還沒有其他成員）</span>'}</div>
+        <span class="help">勾了之後，每次你找它，系統會附上那些成員的設定檔、錯誤回報、最近紀錄；它想改設定檔只能「提出修改提案」，<b>一定要你核准</b>（網頁「📝 待核准修改」或 Telegram <code>/md 編號 ok</code>）系統才寫入。它不需要、也拿不到 Agent Chat 資料夾與密鑰的存取權。適合「維修工程師」這種成員（有範本可以套用）。</span>
+      </div>
       <div class="field full claude-only">
         <label class="opt" style="margin-top:8px"><input type="checkbox" id="f_rtk" ${a.rtk ? 'checked' : ''}> 🗜 壓縮指令輸出（rtk，只限 Claude 成員）</label>
         <span class="help" id="f_rtkhelp">成員在 Bash 執行的 git、測試、建置等指令，輸出會先經過 rtk 精簡再交給它，省 token、對話也不會被長長的紀錄撐大。要先在這台電腦裝 rtk（PowerShell：<code>winget install rtk-ai.rtk</code>）。只影響勾選的成員，不會改你自己的 Claude Code 設定；rtk 不能替成員核准指令，權限照原本的設定。獨立成員和有「限制工具」的成員不會使用。</span>
@@ -1213,7 +1219,7 @@ async function openAgentForm(id) {
       extraDirs: dirs.filter((d) => d.path),
       rtk: engineSel.value === 'claude' && !$('f_standalone').checked && $('f_rtk').checked,
       brief: $('f_brief').checked,
-      todoKeeper: $('f_todokeeper').checked, freshEachTurn: $('f_fresh').checked, dataSources: $('f_sources').value,
+      todoKeeper: $('f_todokeeper').checked, freshEachTurn: $('f_fresh').checked, maintains: [...document.querySelectorAll('#f_maint input:checked')].map((x) => x.value), dataSources: $('f_sources').value,
       takeTurns: $('f_turns').checked && !$('f_standalone').checked, canInterrupt: $('f_urgent').checked && !$('f_standalone').checked, team: $('f_team').value,
       standalone: $('f_standalone').checked, personaFile: $('f_pfile').value, env: $('f_env').value,
       tools: $('f_tools').value, allowedTools: $('f_allow').value, disallowedTools: $('f_deny').value,
@@ -1788,6 +1794,7 @@ function renderUsage() {
     `<div class="ulink" id="updLine" title="檢查新版本、一鍵更新並重新啟動">⬆️ 更新${UPD_BADGE ? ' <span class="hn-dot">新</span>' : ''}</div>` +
     `<div class="ulink" id="cliLine" title="三個 CLI 的登入狀態、MCP、Skill（含安裝申請）">🧰 CLI 狀態${SKILL_PENDING ? ' <span class="hn-dot" title="有 Skill 安裝申請等你核准">' + SKILL_PENDING + '</span>' : ''}</div>` +
     '<div class="ulink" id="lineLink" title="讓助理（或任何成員）用 LINE 跟你對話、收提醒">💚 LINE</div>' +
+    (MD_BADGE ? '<div class="ulink" id="mdLine" title="維修工程師提出的設定檔修改，核准後才會寫入">📝 待核准修改 <span class="hn-dot">' + MD_BADGE + '</span></div>' : '') +
     '<div class="ulink" id="repLine" title="出問題時產生一個回報檔，帶給 Claude 排查">🐞 問題回報</div>' +
     '<div class="ulink" id="logoutLine" title="登出這個瀏覽器；可以選擇登出所有裝置">🔒 登出</div></div>';
   $('usageToggle').onclick = () => { setUsageOpen(!usageOpen()); renderUsage(); };
@@ -1795,6 +1802,7 @@ function renderUsage() {
   $('updLine').onclick = () => openUpdate();
   $('timerLine').onclick = () => openTimers();
   $('repLine').onclick = () => openReport();
+  if ($('mdLine')) $('mdLine').onclick = () => openMdProposals();
   $('lineLink').onclick = () => openLine();
   $('cliLine').onclick = () => (SKILL_PENDING ? openSkills() : openCliStatus());
   $('logoutLine').onclick = openLogout;
@@ -2005,6 +2013,7 @@ function connectEvents() {
     if (ev.kind === 'telegram') { loadTelegram(); return; }
     if (ev.kind === 'task') { loadTasks(); return; }
     if (ev.kind === 'harness' || ev.kind === 'harness-run') { loadHarness(ev.kind === 'harness-run'); return; }
+    if (ev.kind === 'mdprop') { refreshMdBadge(); if (modalShowing('md_close')) openMdProposals(); return; }
     if (ev.kind === 'timers') { refreshTimerBadge(); if (modalShowing('tmr_list')) openTimers(true); return; }
     if (ev.kind === 'update-available') { if (!UPD_BADGE) { UPD_BADGE = true; renderUsage(); } return; }
     if (ev.kind === 'queue') { refreshQueue(); if ((PAUSE.pauses || []).length) loadPause(); return; }
@@ -2036,6 +2045,7 @@ async function init() {
   }).catch(() => staleWarning('舊版'));
   // 伺服器定期在背景檢查更新，有新版就在側邊欄提示
   refreshTimerBadge();
+  refreshMdBadge();
   api('/api/update').then((u) => { UPD_BADGE = !!(u.last && u.last.behind > 0); if (u.failed) toast('⚠️ 上次更新失敗，已自動退回原本的版本（按側邊欄「⬆️ 更新」看詳情）'); renderUsage(); }).catch(() => {});
   connectEvents();
   loadUsage();
@@ -2409,6 +2419,26 @@ window.addEventListener('unhandledrejection', (e) => reportClientError('promise'
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
 const TIMER_STATUS = { ok: '✅ 無異常', alert: '🔔 有異常', failed: '❌ 失敗', stopped: '⏹ 停止', interrupted: '⚠️ 中斷', skipped: '⏭ 略過', queued: '🕒 排隊', started: '⚙️ 開始',
   idle: '💤 沒有待辦（沒叫醒成員）', paused: '⏸ 成員暫停', resumed: '▶️ 自動恢復' };
+// ---------- 📝 設定檔修改提案（維修工程師提出，你核准才寫入）----------
+async function refreshMdBadge() { try { const n = (await api('/api/md-proposals')).proposals.length; if (n !== MD_BADGE) { MD_BADGE = n; renderUsage(); } } catch {} }
+async function openMdProposals() {
+  let P; try { P = (await api('/api/md-proposals')).proposals; } catch (e) { toast(e.message); return; }
+  openModal(`<h2>📝 設定檔修改提案</h2>
+    <p class="lead">維修工程師只能「提出」修改，<b>你核准了系統才會寫入</b>（寫入前備份舊版；提案之後檔案被別人改過就不會寫）。也可以在 Telegram 用 <code>/md 編號 ok</code> 核准。</p>
+    ${P.length ? P.map((p) => `<div class="md-prop" style="border:1px solid var(--line,#ddd);border-radius:10px;padding:10px;margin:8px 0">
+      <div><b>#${p.id}</b> ${esc(p.byName)} → <code>${esc(p.file)}</code>（${esc(p.targetName)}）＋${p.add} －${p.del} 行　<span class="help">${fmtTime(p.at)}</span></div>
+      ${p.reason ? `<div class="help">原因：${esc(p.reason)}</div>` : ''}
+      <pre style="white-space:pre-wrap;font-size:12px;max-height:260px;overflow:auto;margin:6px 0">${esc(p.diff)}</pre>
+      <details><summary>看完整的新內容</summary><pre data-mdfull="${p.id}" style="white-space:pre-wrap;font-size:12px;max-height:320px;overflow:auto">載入中…</pre></details>
+      <div class="sk-row"><button class="primary" data-mdok="${p.id}">✅ 核准並寫入</button><button data-mdno="${p.id}">不採用</button></div></div>`).join('') : '<p class="help">目前沒有等你核准的修改。</p>'}
+    <div class="modal-actions"><span class="spacer"></span><button id="md_close">關閉</button></div>`);
+  $('modal').classList.add('wide');
+  $('md_close').onclick = closeModal;
+  document.querySelectorAll('[data-mdfull]').forEach((el) => el.closest('details').addEventListener('toggle', async () => { if (el.dataset.loaded) return; try { el.textContent = (await api('/api/md-proposals/' + el.dataset.mdfull)).text; el.dataset.loaded = 1; } catch (e) { el.textContent = e.message; } }));
+  const act = (id, ok) => async () => { try { const r = await api('/api/md-proposals/' + id, { method: 'POST', body: JSON.stringify({ ok }) }); toast(ok ? '✅ 已寫入（舊版已備份），下一則訊息就生效' : '已不採用'); } catch (e) { toast(e.message); } refreshMdBadge(); openMdProposals(); };
+  document.querySelectorAll('[data-mdok]').forEach((b) => (b.onclick = act(b.dataset.mdok, true)));
+  document.querySelectorAll('[data-mdno]').forEach((b) => (b.onclick = act(b.dataset.mdno, false)));
+}
 async function refreshTimerBadge() {
   try { const t = await api('/api/timers'); const n = t.proposals.length; if (n !== TIMER_BADGE) { TIMER_BADGE = n; renderUsage(); } } catch {}
 }

@@ -13,6 +13,7 @@
 - `templates/roles/*.md` 🎭 成員範本（front-matter＋人設；`data/roles/` 可覆蓋），由 server.js `loadRoleTemplates()`／`/api/roles` 提供，前端 `ROLES` 產生按鈕。LINE 群組通用：`groupAgentId`＋`groupWords`；待辦流程只看成員的 `todoKeeper`（`isTodoKeeper`），不認名字
 - `xlsx.js` 📊 零相依讀 .xlsx（zip＋XML、刪除線、日期、`pickSheet` 分頁關鍵字）：唯讀資料表是 Excel 檔時，Apps Script（`Code.gs` 的 `opReadSource_`）`openByUrl` 失敗就用 DriveApp 原檔下載 base64，`todo.js` 的 `readSource` 解析；設定檔 `data/sources/*.md`（`parseSourceProfile`：到期模式 `profileSummary`、未結案模式 `openCasesSummary`）
 - 📄 成員設定檔 `data/agents/<名稱>.md`（`agent.configMd`；server.js 的 `renderAgentMd`／`parseAgentMd`／`syncAgentMds` 每 3 秒比對修改時間，`AGENT_MD_POLL_MS` 可調）：人設、職責、唯讀資料表、勾選項目、群組呼叫詞；網頁儲存寫回、改前備份到 `.backup/`。安全設定（引擎、權限、資料夾、密鑰）不放進去
+- `maint.js` 🔧 維運：`agent.maintains`（照顧哪些成員）；`contextFor` 附設定檔／錯誤回報／稽核紀錄（server.js `startRun` 注入、hash 去重）；回覆裡的「【修改設定檔】」→ `state.mdProposals` 提案 → 核准才寫入（`/api/md-proposals`、Telegram `/md`、hook `md-proposal`），寫前備份、檔案 hash 不同就拒絕
 - `skills.js` 🧩 Skill：成員回覆【安裝 Skill】→ 下載 GitHub tar.gz（`SKILL_TARBALL_BASE` 可換，測試用）→ 檢查（檔案、腳本）→ 使用者核准 → 複製到 `.claude/skills`；移除＝搬到 `data/skills-trash`
 - `clistatus.js` 🧰 CLI 狀態頁（登入、MCP、成員用得到哪些；只看不改，只跑不耗額度的查詢指令，不回傳指令參數／網址／金鑰）
 - `diag.js`／`updater.js`／`launcher.js`／`localsettings.js`／`proctree.js` 問題回報、一鍵更新、啟動器（結束碼 75＝重新啟動）、個人設定、子程式樹關閉
@@ -21,7 +22,7 @@
 
 ## 開發慣例
 - 不加任何 npm 相依套件；Node 18+。
-- **跑測試**：逐檔跑 `node --test tests/xxx.test.js`（`node --test tests/` 會失敗）。全部：`for f in tests/*.test.js; do node --test $f; done`。目前 22 檔全過。
+- **跑測試**：逐檔跑 `node --test tests/xxx.test.js`（`node --test tests/` 會失敗）。全部：`for f in tests/*.test.js; do node --test $f; done`。目前 23 檔全過。
 - 新增 `.js` 模組時，要把檔名加進**每個測試檔的 FILES／檔案清單**（它們會把原始碼複製到暫存資料夾跑真的伺服器），否則 `require` 找不到。
 - 測試用「假 CLI」（`tests/*.test.js` 裡的 MOCK_*）加真的伺服器，環境變數：`CLAUDE_BIN`／`CODEX_BIN`／`AGY_BIN`、`AGENTCHAT_NO_UPDATE_CHECK=1`、`AGENT_ENV_ALLOWLIST`。
 - 發版：同步改 `server.js` 的 `VERSION`、`public/index.html` 的 `UI_VERSION`、`CHANGELOG.md`（最上面加一節）、必要時 `README.md`；commit 訊息用「v3.x.y：做了什麼」；推到 `main`。使用者在網頁按「⬆️ 更新／重新啟動」取得新版（updater 遇到已追蹤檔案被改動會拒絕更新，所以**開發請用另一個 clone，不要直接改正在跑的那個資料夾**）。

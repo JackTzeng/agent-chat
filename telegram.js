@@ -37,6 +37,7 @@ const HELP =
   '/usage　Claude / Codex 用量額度、agy 本週用量\n' +
   '/skills　🧩 Skill 安裝申請；/skill 編號 ok（會再問一次）／no\n' +
   '/timers　⏰ 看所有排程；/timer 編號 run／on／off／ok／no\n' +
+  '/md　📝 維修工程師的設定檔修改提案；/md 編號 看內容、/md 編號 ok 核准、/md 編號 no 不採用\n' +
   '/report 描述　🐞 產生問題回報檔傳給你（轉給 Claude 排查）\n' +
   '/update　⬆️ 檢查更新，有新版就更新並重新啟動\n' +
   '/restart　🔄 重新啟動伺服器\n' +
@@ -468,6 +469,10 @@ exports.start = function start(ctx) {
     for (const id of pushRecipients()) await say(id, icon + ' 排程「' + timer.name + '」（' + (agent ? agent.name : '') + '）' + (status === 'failed' ? '失敗' : '') + '：\n' + summary +
       '\n\n想看完整內容就切到 ' + (agent ? agent.name : '那位成員') + '（/to ' + (agent ? agent.name : '') + '），或傳 /timers 看所有排程');
   });
+  listen('md-proposal', async ({ proposal: p }) => {
+    for (const id of pushRecipients()) await say(id, '📝 ' + p.byName + ' 提出修改提案 #' + p.id + '：' + p.file + '（＋' + p.add + ' －' + p.del + ' 行）' + (p.reason ? '\n原因：' + p.reason : '') +
+      '\n\n' + p.diff + '\n\n核准請傳 /md ' + p.id + ' ok，不要請傳 /md ' + p.id + ' no（核准後才會寫入，舊版會備份）');
+  });
   listen('timer-proposal', async ({ proposal, agent, desc }) => {
     for (const id of pushRecipients()) await say(id, '⏰ ' + (agent ? agent.name : '成員') + ' 建議新增排程（#' + proposal.id + '）：\n' + desc + '｜' + proposal.prompt +
       '\n\n同意請傳 /timer ' + proposal.id + ' ok，不要請傳 /timer ' + proposal.id + ' no（也可以到網頁「⏰ 排程」修改後再核准）');
@@ -572,6 +577,16 @@ exports.start = function start(ctx) {
           return say(chatId, ctx.resetAgent(a.id) ? '🆕 ' + label(a) + ' 已開新對話' : a.name + ' 工作中，請先 /stop');
         }
         case 'usage': return say(chatId, usageText());
+        case 'md': {
+          const mt = ctx.maint && ctx.maint(); if (!mt) return say(chatId, '維運功能還沒啟動');
+          const mm = arg.trim().match(/^#?(\d+)(?:\s+(ok|no))?$/i);
+          if (!mm) { const ps = mt.pending(); return say(chatId, ps.length ? '📝 等你核准的設定檔修改：\n' + ps.map((p) => '#' + p.id + ' ' + p.byName + '→' + p.file + '（＋' + p.add + ' －' + p.del + '）' + (p.reason ? '：' + p.reason : '')).join('\n') + '\n\n/md 編號 看內容｜/md 編號 ok 核准｜/md 編號 no 不採用' : '目前沒有等你核准的設定檔修改。'); }
+          try {
+            if (!mm[2]) { const p = mt.full(mm[1]); return say(chatId, '📝 #' + p.id + ' ' + p.byName + '→' + p.file + (p.reason ? '\n原因：' + p.reason : '') + '\n\n改了這些：\n' + p.diff + '\n\n/md ' + p.id + ' ok 核准｜/md ' + p.id + ' no 不採用'); }
+            const r = mt.resolve(mm[1], /^ok$/i.test(mm[2]), '你（Telegram）');
+            return say(chatId, r.ok ? '✅ 已寫入 ' + r.proposal.file + '（舊版已備份），下一則訊息就生效' : '🚫 不採用修改提案 #' + r.proposal.id);
+          } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+        }
         case 'timers': {
           const snap = ctx.timers.snapshot();
           if (!snap.timers.length && !snap.proposals.length) return say(chatId, '目前沒有排程。可以在網頁左下角「⏰ 排程」新增，或請成員用【排程建議】提出。');
