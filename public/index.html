@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.25.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.25.2'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -2093,6 +2093,13 @@ async function openTodo() {
     <p class="lead">部門待辦存在<b>你自己的 Google Sheet</b>：人可以直接改，LINE 群組裡 @待辦管家 也能登記、查詢、更新。<b>每天早上由 Google 自動寄 email 提醒</b>（負責人收自己的、主管收總表），不用 AI、不耗額度，電腦關機也會寄。</p>
     <div class="ln-chips"><span class="cli-chip">${T.urlProblem ? '❌ 網址不對' : T.configured ? '✅ 已設定' : '❔ 還沒設定'}${T.urlHint && !T.urlProblem ? '：' + esc(T.urlHint) : ''}</span></div>
     ${T.urlProblem ? `<div class="sk-bad">${esc(T.urlProblem)}</div>` : ''}
+    ${T.configured ? `<details class="ln-guide"><summary><b>⬆️ 更新 Google 端的程式（Code.gs）</b>：Agent Chat 更新後如果要求「重貼 Code.gs」，看這裡</summary>
+      <ol>
+        <li><button id="td_copy2">📋 複製最新程式碼</button> <span class="help" id="td_copyres2"></span></li>
+        <li>打開你的待辦 Google Sheet → 上方選單「擴充功能 → Apps Script」→ 在程式畫面按 <code>Ctrl+A</code> 全選、<code>Delete</code> 刪掉、<code>Ctrl+V</code> 貼上 → 按 💾 存檔。</li>
+        <li>右上「部署 → 管理部署作業」→ 按鉛筆 ✏️ →「版本」選「<b>新版本</b>」→「部署」。網址不會變，這裡不用改。（Google 要求授權就選你的帳號 →「進階」→「前往（不安全）」→「允許」）</li>
+        <li>回來按「🔍 測試連線」，看版本是不是最新的。</li>
+      </ol></details>` : ''}
     <details class="ln-guide" ${T.configured ? '' : 'open'}><summary><b>🧭 第一次設定：照這 7 步做（約 10 分鐘，全在瀏覽器）</b></summary>
       <ol>
         <li>用你的 Gmail 開一份新的 Google 試算表（網址列輸入 <code>sheets.new</code>），取名例如「部門待辦」。</li>
@@ -2117,15 +2124,19 @@ async function openTodo() {
   const out = (html) => { $('td_out').innerHTML = html; };
   const act = async (fn) => { try { await fn(); } catch (e) { out('<div class="sk-bad">' + esc(e.message) + '</div>'); } };
   $('td_close').onclick = closeModal;
+  if ($('td_copy2')) $('td_copy2').onclick = async () => {
+    try { const { code, version } = await api('/api/todo/script'); await navigator.clipboard.writeText(code); $('td_copyres2').textContent = '✅ 已複製（版本 ' + version + '），到 Apps Script 貼上'; }
+    catch (e) { $('td_copyres2').textContent = '複製失敗：' + e.message + '（請展開下面的「第一次設定」第 2 步，用文字框手動複製）'; }
+  };
   $('td_copy').onclick = async () => {
     try { const { code } = await api('/api/todo/script'); await navigator.clipboard.writeText(code); $('td_copyres').textContent = '✅ 已複製（' + code.split('\n').length + ' 行），到 Apps Script 貼上'; }
     catch (e) { $('td_copyres').textContent = '複製失敗：' + e.message + '（請改用下面的文字框手動複製）'; try { const { code } = await api('/api/todo/script'); $('td_copyres').insertAdjacentHTML('afterend', '<textarea readonly rows="8" style="width:100%;margin-top:6px;font-family:monospace;font-size:12px">' + esc(code) + '</textarea>'); } catch {} }
   };
   $('td_save').onclick = () => act(async () => { await api('/api/todo', { method: 'PUT', body: JSON.stringify({ url: $('td_url').value, key: $('td_key').value }) }); toast('已儲存'); openTodo(); });
-  $('td_ping').onclick = () => act(async () => { out('連線中…'); const r = await api('/api/todo/ping', { method: 'POST', body: '{}' }); out(`✅ 連上了：Apps Script 版本 ${esc(r.version)}，時區 ${esc(r.tz)}，「待辦」分頁目前有 ${r.open} 筆未完成（共 ${r.total} 筆）。<br><small>Agent Chat 只讀名叫「待辦」的分頁（欄位：編號、事項、負責人、期限、狀態…）；其他分頁的內容它看不到。</small>`); });
+  $('td_ping').onclick = () => act(async () => { out('連線中…'); const r = await api('/api/todo/ping', { method: 'POST', body: '{}' }); const latest = (await api('/api/todo/script').catch(() => ({}))).version; out((latest && r.version !== latest ? `⚠️ <b>Google 端的程式是 ${esc(r.version)}，最新是 ${esc(latest)}</b>：請展開上面的「⬆️ 更新 Google 端的程式」照做。<br>` : '') + `✅ 連上了：Apps Script 版本 ${esc(r.version)}，時區 ${esc(r.tz)}，「待辦」分頁目前有 ${r.open} 筆未完成（共 ${r.total} 筆）。<br><small>Agent Chat 只讀名叫「待辦」的分頁（欄位：編號、事項、負責人、期限、狀態…）；其他分頁的內容它看不到。</small>`); });
   $('td_src').onclick = () => act(async () => {
     out('讀取中…'); const r = await api('/api/todo/sources', { method: 'POST', body: '{}' });
-    out(r.sources.length ? r.sources.map((s) => s.ok ? `✅ <b>${esc(s.name)}</b>：讀到 ${s.rows} 筆（分頁「${esc(s.sheet)}」）｜欄位：${esc(s.headers.join('、'))}｜到期日欄：${s.dueCols.length ? esc(s.dueCols.join('、')) : '⚠️ 找不到（標題要含「到期」「期限」「效期」「下次」之一）'}` : `❌ <b>${esc(s.name)}</b>：${esc(s.error)}`).join('<br>') : '「設定」分頁還沒有登記任何唯讀資料表（A 欄寫「唯讀資料表：名稱」、B 欄寫網址）');
+    out(r.sources.length ? r.sources.map((s) => s.ok ? `✅ <b>${esc(s.name)}</b>：讀到 ${s.rows} 筆（分頁「${esc(s.sheet)}」）｜欄位：${esc(s.headers.join('、'))}｜到期日欄：${s.dueCols.length ? esc(s.dueCols.join('、')) : '⚠️ 找不到（標題要含「到期」「期限」「效期」「下次」之一）'}` : `❌ <b>${esc(s.name)}</b>：${esc(s.error)}`).join('<br>') : '還沒有任何唯讀資料表：到成員設定的「📊 唯讀資料表」填名稱並儲存，再在「✏️ 設定檔」寫上網址與分頁');
   });
   const digest = (send) => act(async () => {
     if (send && !confirm('現在就寄出提醒信給負責人與主管？（只有「已逾期或快到期」的事項才會寄；今天是週末且設定為週末不寄的話不會寄）')) return;

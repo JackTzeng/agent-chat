@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.25.1';
+const VERSION = '3.25.2';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1927,7 +1927,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/todo/ping' && req.method === 'POST') { try { return send(res, 200, { ...(await todoBook.ping()), status: todoBook.status() }); } catch (e) { return send(res, 400, { error: e.message }); } }
     if (p === '/api/todo/digest' && req.method === 'POST') { try { const b = await readBody(req); return send(res, 200, await todoBook.digest(b.send === true)); } catch (e) { return send(res, 400, { error: e.message }); } }
-    if (p === '/api/todo/script' && req.method === 'GET') { try { return send(res, 200, { code: fs.readFileSync(path.join(ROOT, 'templates', 'todo', 'Code.gs'), 'utf8') }); } catch (e) { return send(res, 500, { error: '找不到 Apps Script 範本：' + e.message }); } }
+    if (p === '/api/todo/script' && req.method === 'GET') { try { return send(res, 200, { code: fs.readFileSync(path.join(ROOT, 'templates', 'todo', 'Code.gs'), 'utf8'), version: (/var VERSION = '([\d.]+)'/.exec(fs.readFileSync(path.join(ROOT, 'templates', 'todo', 'Code.gs'), 'utf8')) || [])[1] || '' }); } catch (e) { return send(res, 500, { error: '找不到 Apps Script 範本：' + e.message }); } }
     // ---- 💚 LINE ----
     if (p === '/api/line' && req.method === 'GET') return send(res, 200, lineBot.status());
     if (p === '/api/line' && req.method === 'PUT') { try { return send(res, 200, lineBot.update(await readBody(req))); } catch (e) { return send(res, e.status || 400, { error: e.message }); } }
