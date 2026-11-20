@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { makeEnv, iso, Sheet } = require('./helpers/fakegoogle');
+const { makeXlsx } = require('./helpers/makexlsx');
 
 const sheetRows = (env, name) => env.sheets.get(name).data;
 
@@ -166,4 +167,19 @@ test('唯讀資料表：分頁關鍵字（挑今年的）、刪除線、跳過�
   assert.deepEqual(r.tabs[0].strikes, [[1, 0]], '第 2 筆的第 1 欄有刪除線');
   assert.deepEqual(r.tabs[2].rows, [], '沒有資料的分頁也要回來（報告要顯示全部已結案）');
   assert.match(env.call('readSource', { name: '未結案', url: URL, tab: '五廠+OOS' }).error, /找不到分頁：五廠\+OOS/);
+});
+
+test('唯讀資料表：Excel 檔（.xlsx）打不開 → 從雲端硬碟原檔唯讀下載交給 Agent Chat', () => {
+  const env = makeEnv(); env.g.setup();
+  const bytes = makeXlsx({ 'A': [['編號', '狀態'], ['X-1', '追蹤']] });
+  env.driveFiles.set('XLSXFILE', { name: 'CAPA總表.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', bytes });
+  const r = env.call('readSource', { name: '未結案', url: 'https://docs.google.com/spreadsheets/d/XLSXFILE/edit?gid=1' });
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 200));
+  assert.equal(Buffer.from(r.xlsx, 'base64').equals(bytes), true, '原檔一個 byte 都沒變');
+  assert.equal(r.fileName, 'CAPA總表.xlsx'); assert.equal(r.modified, '2026-11-19 17:30');
+  env.driveFiles.set('PDF', { name: 'a.pdf', mime: 'application/pdf', bytes: Buffer.from('x') });
+  assert.match(env.call('readSource', { name: 'x', url: 'https://docs.google.com/spreadsheets/d/PDF/edit' }).error, /不是試算表/);
+  env.driveFiles.set('DENY', { name: 'a.xlsx', mime: 'application/vnd.ms-excel', bytes: Buffer.from('x'), denied: true });
+  assert.match(env.call('readSource', { name: 'x', url: 'https://docs.google.com/spreadsheets/d/DENY/edit' }).error, /① 初始化.*允許/);
+  assert.match(env.call('readSource', { name: 'x', url: 'https://docs.google.com/spreadsheets/d/NOPE/edit' }).error, /打不開/);
 });

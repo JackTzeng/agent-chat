@@ -11,6 +11,7 @@
 - `todo.js` 📋 部門待辦：解析模型的動作行（`【待辦】新增｜事項=…`、`【選項】`）、權限（成員／主管）、呼叫 Apps Script、組給模型看的「目前待辦清單」；`templates/todo/Code.gs` 是貼進使用者 Google Sheet 的 Apps Script（寫表＋每日寄信）。模型是 agy 唯讀、**不執行任何指令、也不讀寫檔**（`agy.NO_FILES_NOTE`），寫入一律由系統做；`isTodoKeeper(agent)`＝成員有 `todoKeeper` 旗標或是 LINE 群組對象，網頁對話（`opts.todoWeb`）與 LINE 群組都會附清單並由系統代寫（網頁＝管理員／主管）
 - `line.js` 💚 LINE bot：獨立連接埠的 webhook（驗簽章）、配對、reply／push、cloudflared 一鍵通道；設定畫面「💚 LINE」。`LINE_API_BASE`、`LINE_PORT`、`CLOUDFLARED_BIN` 可換（測試用）
 - `templates/roles/*.md` 🎭 成員範本（front-matter＋人設；`data/roles/` 可覆蓋），由 server.js `loadRoleTemplates()`／`/api/roles` 提供，前端 `ROLES` 產生按鈕。LINE 群組通用：`groupAgentId`＋`groupWords`；待辦流程只看成員的 `todoKeeper`（`isTodoKeeper`），不認名字
+- `xlsx.js` 📊 零相依讀 .xlsx（zip＋XML、刪除線、日期、`pickSheet` 分頁關鍵字）：唯讀資料表是 Excel 檔時，Apps Script（`Code.gs` 的 `opReadSource_`）`openByUrl` 失敗就用 DriveApp 原檔下載 base64，`todo.js` 的 `readSource` 解析；設定檔 `data/sources/*.md`（`parseSourceProfile`：到期模式 `profileSummary`、未結案模式 `openCasesSummary`）
 - `skills.js` 🧩 Skill：成員回覆【安裝 Skill】→ 下載 GitHub tar.gz（`SKILL_TARBALL_BASE` 可換，測試用）→ 檢查（檔案、腳本）→ 使用者核准 → 複製到 `.claude/skills`；移除＝搬到 `data/skills-trash`
 - `clistatus.js` 🧰 CLI 狀態頁（登入、MCP、成員用得到哪些；只看不改，只跑不耗額度的查詢指令，不回傳指令參數／網址／金鑰）
 - `diag.js`／`updater.js`／`launcher.js`／`localsettings.js`／`proctree.js` 問題回報、一鍵更新、啟動器（結束碼 75＝重新啟動）、個人設定、子程式樹關閉
@@ -19,7 +20,7 @@
 
 ## 開發慣例
 - 不加任何 npm 相依套件；Node 18+。
-- **跑測試**：逐檔跑 `node --test tests/xxx.test.js`（`node --test tests/` 會失敗）。全部：`for f in tests/*.test.js; do node --test $f; done`。目前 21 檔全過。
+- **跑測試**：逐檔跑 `node --test tests/xxx.test.js`（`node --test tests/` 會失敗）。全部：`for f in tests/*.test.js; do node --test $f; done`。目前 22 檔全過。
 - 新增 `.js` 模組時，要把檔名加進**每個測試檔的 FILES／檔案清單**（它們會把原始碼複製到暫存資料夾跑真的伺服器），否則 `require` 找不到。
 - 測試用「假 CLI」（`tests/*.test.js` 裡的 MOCK_*）加真的伺服器，環境變數：`CLAUDE_BIN`／`CODEX_BIN`／`AGY_BIN`、`AGENTCHAT_NO_UPDATE_CHECK=1`、`AGENT_ENV_ALLOWLIST`。
 - 發版：同步改 `server.js` 的 `VERSION`、`public/index.html` 的 `UI_VERSION`、`CHANGELOG.md`（最上面加一節）、必要時 `README.md`；commit 訊息用「v3.x.y：做了什麼」；推到 `main`。使用者在網頁按「⬆️ 更新／重新啟動」取得新版（updater 遇到已追蹤檔案被改動會拒絕更新，所以**開發請用另一個 clone，不要直接改正在跑的那個資料夾**）。

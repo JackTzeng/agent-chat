@@ -1,4 +1,5 @@
 'use strict';
+const xlsxLib = require('./xlsx');
 // 📋 部門待辦清單：Agent Chat ↔ Google Sheet（透過貼在 Sheet 裡的 Apps Script 網頁應用程式，見 templates/todo/Code.gs）。
 //
 // 安全設計：模型（例如 agy）**不能執行任何指令、不能寫檔**。它只負責「聽懂」，在回覆裡另起一行寫動作行：
@@ -229,7 +230,7 @@ function openCasesSummary(src, prof, text, now = Date.now()) {
   out.push('判斷規則（系統已照這個判斷好，直接照下面的件數與清單回答，不要自己重算）：編號有刪除線＝作廢不算；狀態欄完全等於「' + safe(closedText, 10) + '」＝已結案；實際結案日欄有值＝已結案；其餘＝未結案。');
   tabs.forEach((tab, ti) => {
     const H = tab.headers || [], label = (prof.tabList && prof.tabList[ti] && prof.tabList[ti].label) || tab.spec || tab.sheet;
-    const idI = (() => { for (const k of prof.idCols || ['編號', '單號']) { const i = H.findIndex((h) => h.includes(k)); if (i >= 0) return i; } return -1; })();
+    const idI = (() => { for (const k of prof.idCols || ['編號', '單號', 'NO']) { const i = H.findIndex((h) => h.toUpperCase().includes(k.toUpperCase())); if (i >= 0) return i; } return -1; })();
     const stI = H.findIndex((h) => h.includes(prof.statusCol || '狀態'));
     let closeI = -1; for (let i = H.length - 1; i >= 0; i--) if (has(H[i], closeKeys) && !has(H[i], notKeys)) { closeI = i; break; }
     const dlI = H.findIndex((h) => h.includes(prof.deadline || '應結案'));
@@ -238,6 +239,8 @@ function openCasesSummary(src, prof, text, now = Date.now()) {
       : [idI, H.findIndex((h) => /主旨|標題|事件|說明|描述|內容|品名|產品/.test(h)), H.findIndex((h) => /負責|承辦|開立人|擔當/.test(h)), dlI, stI].filter((i, k, a) => i >= 0 && a.indexOf(i) === k).map((i) => ({ label: H[i], idx: [i] }));
     const open = [];
     (tab.rows || []).forEach((r, ri) => {
+      // 分隔列（例如整列合併的「2026年度」）：有字的格子不到 2 格，不是案件
+      if (r.filter((v) => String(v || '').trim()).length < 2) return;
       const id = idI >= 0 ? String(r[idI] || '').trim() : '';
       if (idI >= 0 && (!id || struck.has(ri + ':' + idI))) return; // 沒有編號，或編號有刪除線（作廢）
       if (stI >= 0 && String(r[stI] || '').trim() === closedText) return;
@@ -328,12 +331,24 @@ function create(ctx) {
     cache.sAt = Date.now(); return cache.sources;
   }
   async function readSource(name) {
-    const k = 'src:' + name, c = cache[k];
-    if (c && Date.now() - c.at < 120000) return c.data;
+    // 快取 2 分鐘；設定檔的網址、分頁、標題列一改就重讀（不用等）
     const prof = ctx.sourceProfile ? ctx.sourceProfile(name) : null;
+    const k = 'src:' + name + '|' + (prof ? [prof.url, prof.tabs, prof.headerRow].join('|') : ''), c = cache[k];
+    if (c && Date.now() - c.at < 120000) return c.data;
     let data;
     try { data = await call('readSource', prof && prof.url ? { name, url: prof.url, tab: prof.tabs || '', headerRow: prof.headerRow || 0 } : { name, headerRow: (prof && prof.headerRow) || 0 }); }
     catch (e) { if (prof && prof.url && /沒有登記/.test(e.message)) throw new Error('Google Sheet 的 Apps Script 是舊版，看不懂設定檔裡的網址：請重貼 Code.gs（1.0.5）並部署新版本'); throw e; }
+    if (data.xlsx) {
+      // Excel 檔（.xlsx）：Google 端只負責原檔唯讀下載，這裡解開、挑分頁、讀刪除線
+      const book = xlsxLib.open(Buffer.from(data.xlsx, 'base64'));
+      const specs = prof && prof.tabs ? prof.tabs.split(',') : [''];
+      const tabs = specs.slice(0, 12).map((sp) => {
+        const n = xlsxLib.pickSheet(book.sheets, sp);
+        if (!n) throw new Error('「' + name + '」找不到分頁：' + sp + '（檔案裡的分頁：' + book.sheets.slice(0, 30).join('、') + '）');
+        return { spec: sp, ...xlsxLib.toTab(book, n, (prof && prof.headerRow) || 0) };
+      });
+      data = { name, tabs, sheet: tabs[0].sheet, headers: tabs[0].headers, rows: tabs[0].rows, fileName: data.fileName, modified: data.modified, size: data.size, allSheets: book.sheets };
+    }
     cache[k] = { at: Date.now(), data }; return data;
   }
   async function sourcesContext(names, text, now = Date.now()) {

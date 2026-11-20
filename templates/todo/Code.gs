@@ -11,7 +11,7 @@
  *
  * 欄位都是用「欄位名稱」找的：你可以調整欄位順序、自己加欄位，不會壞。
  */
-var VERSION = '1.0.6';
+var VERSION = '1.0.7';
 var TASK_SHEET = '待辦', MEMBER_SHEET = '成員', SETTING_SHEET = '設定', LOG_SHEET = '紀錄';
 var TASK_HEADERS = ['編號', '事項', '負責人', '期限', '狀態', '優先', '備註', '提出人', '建立時間', '最後更新', '更新者', '完成時間'];
 var MEMBER_HEADERS = ['姓名', 'Email', '角色', 'LINE 名稱', 'LINE ID'];
@@ -227,7 +227,20 @@ function opReadSource_(req) {
   if (!src && /^https:\/\/docs\.google\.com\/spreadsheets\/d\/[\w-]+/.test(str_(req.url))) src = { name: clean_(req.name, 20) || '資料表', url: str_(req.url), tab: str_(req.tab) };
   if (!src) throw new Error('沒有這份唯讀資料表的網址：' + str_(req.name) + '（在 Agent Chat 的設定檔寫「網址:」，或在「設定」分頁登記）');
   var book;
-  try { book = SpreadsheetApp.openByUrl(src.url); } catch (e) { throw new Error('打不開「' + src.name + '」：請確認建立這份待辦 Sheet 的 Gmail 打得開那份表（至少是檢視者）。如果檔名旁邊有「.XLSX」標籤，它是 Excel 檔，要先在那份表按「檔案 → 另存為 Google 試算表」'); }
+  try { book = SpreadsheetApp.openByUrl(src.url); }
+  catch (e) {
+    // 用 Google 試算表開著看、其實是 Excel 檔（檔名旁有「.XLSX」標籤）的：從雲端硬碟把原檔唯讀下載，交給 Agent Chat 解析（不轉檔、不產生任何新檔案）
+    var id = (/\/d\/([\w-]+)/.exec(src.url) || [])[1], f = null;
+    try { f = DriveApp.getFileById(id); }
+    catch (e2) {
+      if (/權限|permission|authoriz|授權/i.test(String(e2))) throw new Error('「' + src.name + '」是 Excel 檔，需要「讀取雲端硬碟檔案」的權限：請到待辦 Sheet 選單「待辦機器人 → ① 初始化」執行一次並按「允許」');
+      throw new Error('打不開「' + src.name + '」：請確認建立這份待辦 Sheet 的 Gmail 打得開那份表（至少是檢視者）');
+    }
+    var mt = f.getMimeType();
+    if (!/spreadsheetml|ms-excel/.test(mt)) throw new Error('「' + src.name + '」不是試算表（' + mt + '）');
+    if (f.getSize() > 30 * 1024 * 1024) throw new Error('「' + src.name + '」檔案太大（超過 30MB）');
+    return { name: src.name, xlsx: Utilities.base64Encode(f.getBlob().getBytes()), fileName: f.getName(), modified: Utilities.formatDate(f.getLastUpdated(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm'), size: f.getSize() };
+  }
 
   // 分頁可以寫多個（「一廠,三廠」）；每個也可以寫關鍵字「三廠+OOS」＝名稱同時含這些字，有好幾頁就挑今年的、再來是年份最大的
   // （分頁名稱常帶年份，明年換頁不用改設定）。不寫就讀第一個分頁。隱藏列、篩選都不影響：一律讀原始範圍

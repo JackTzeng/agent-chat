@@ -31,6 +31,7 @@ class Sheet {
 }
 function makeEnv({ mailQuota = 100 } = {}) {
   const books = new Map(); // 別人的試算表：網址 → { sheets: [Sheet] }（openByUrl 讀得到的）
+  const driveFiles = new Map(); // 雲端硬碟上的檔案（例如 .xlsx）：檔案 ID → { name, mime, bytes: Buffer }；openByUrl 打不開這些
   const sheets = new Map(), props = {}, sent = [], alerts = [], triggers = [];
   const ss = {
     getSheetByName: (n) => sheets.get(n) || null,
@@ -52,8 +53,10 @@ function makeEnv({ mailQuota = 100 } = {}) {
     Session: { getScriptTimeZone: () => 'Asia/Taipei' },
     Utilities: {
       getUuid: () => crypto.randomUUID(),
+      base64Encode: (b) => Buffer.from(b).toString('base64'),
       formatDate: (d, _tz, fmt) => d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + (fmt.includes('HH') ? ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) : ''),
     },
+    DriveApp: { getFileById: (id) => { const f = driveFiles.get(id); if (!f) throw new Error('找不到檔案'); if (f.denied) throw new Error('You do not have permission to call DriveApp.getFileById'); return { getMimeType: () => f.mime, getSize: () => f.bytes.length, getName: () => f.name, getLastUpdated: () => new Date(2026, 10, 19, 17, 30), getBlob: () => ({ getBytes: () => f.bytes }) }; } },
     MailApp: { sendEmail: (o) => sent.push(o), getRemainingDailyQuota: () => mailQuota },
     ScriptApp: {
       newTrigger: (fn) => { const t = { fn, timeBased() { return this; }, atHour() { return this; }, nearMinute() { return this; }, everyDays() { return this; }, create() { triggers.push({ fn }); return this; } }; return t; },
@@ -64,7 +67,7 @@ function makeEnv({ mailQuota = 100 } = {}) {
   vm.createContext(g);
   vm.runInContext(CODE, g);
   const call = (op, args = {}, key) => JSON.parse(g.doPost({ postData: { contents: JSON.stringify({ key: key === undefined ? props.KEY : key, op, ...args }) } }).text);
-  return { g, call, sheets, props, sent, alerts, triggers, ss, books };
+  return { g, call, sheets, props, sent, alerts, triggers, ss, books, driveFiles };
 }
 
 module.exports = { makeEnv, iso, Sheet };
