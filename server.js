@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.29.0';
+const VERSION = '3.30.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -386,6 +386,72 @@ function loadRoleTemplates() {
   }
   return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file));
 }
+
+// 📄 成員設定檔：一位成員「會常改的行為」集中在 data/agents/<名稱>.md（人設、職責、唯讀資料表、勾選項目、LINE 群組呼叫詞）。
+// 用記事本或維修工程師改完存檔，幾秒內生效（不用更新 Agent Chat）；在網頁的成員設定按儲存也會寫回這份檔案。
+// 引擎、模型、權限、資料夾、密鑰「不」放在這裡（安全設定只在網頁改）。改之前會自動備份到 data/agents/.backup/
+const AGENT_MD_DIR = path.join(DATA_DIR, 'agents');
+const MD_FLAGS = [['待辦清單能力', 'todoKeeper'], ['每則開新對話', 'freshEachTurn'], ['現況摘要', 'brief']];
+const yes = (v) => /^(是|true|yes|on|1|開)$/i.test(String(v).trim());
+function agentMdFile(a) { return a && a.configMd ? path.join(AGENT_MD_DIR, a.configMd) : null; }
+function renderAgentMd(a) {
+  const isGroup = CONFIG.line && CONFIG.line.groupAgentId === a.id;
+  return ['---',
+    '# 「' + a.name + '」的行為設定：改完存檔，幾秒內生效。人設寫在下面兩條 --- 之後。',
+    '# 引擎、模型、權限、資料夾、密鑰不在這裡（安全設定只在 Agent Chat 網頁改）。',
+    '職責: ' + String(a.role || '').replace(/\n/g, ' '),
+    '唯讀資料表: ' + (a.dataSources || []).join(', '),
+    ...MD_FLAGS.map(([k, f]) => k + ': ' + (a[f] ? '是' : '否')),
+    ...(isGroup ? ['群組呼叫詞: ' + ((CONFIG.line.groupWords || []).join(', '))] : []),
+    '---', String(a.persona || '').trim(), ''].join('\n');
+}
+function parseAgentMd(text) {
+  const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(String(text || ''));
+  if (!m) return null;
+  const o = { persona: m[2].replace(/\r\n/g, '\n').trim() };
+  for (const line of m[1].split(/\r?\n/)) {
+    const kv = /^\s*([^:：#]+?)\s*[:：]\s*(.*)$/.exec(line); if (!kv) continue;
+    const k = kv[1], v = kv[2].trim();
+    if (k === '職責') o.role = v.slice(0, 200);
+    else if (k === '唯讀資料表') o.dataSources = [...new Set(v.split(/[,，、]+/).map((x) => x.trim()).filter((x) => x && x.length <= 20))].slice(0, 5);
+    else if (k === '群組呼叫詞') o.groupWords = [...new Set(v.split(/[,，、\s]+/).map((w) => w.replace(/^@/, '').trim()).filter((w) => w && w.length <= 12))].slice(0, 5);
+    else { const f = MD_FLAGS.find(([kk]) => kk === k); if (f) o[f[1]] = yes(v); }
+  }
+  return o;
+}
+const mdSeen = {}; // 成員 id → 最後同步的檔案修改時間
+function backupAgentMd(file) {
+  try { if (!fs.existsSync(file)) return; const dir = path.join(AGENT_MD_DIR, '.backup'); fs.mkdirSync(dir, { recursive: true });
+    const d = new Date(), p2 = (n) => String(n).padStart(2, '0');
+    fs.copyFileSync(file, path.join(dir, path.basename(file, '.md') + '-' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '-' + p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds()) + '.md'));
+    const all = fs.readdirSync(dir).filter((f) => f.startsWith(path.basename(file, '.md') + '-')).sort(); for (const f of all.slice(0, -30)) fs.unlinkSync(path.join(dir, f)); // 每位成員留最近 30 份
+  } catch {}
+}
+function writeAgentMd(a) {
+  const f = agentMdFile(a); if (!f) return;
+  try { fs.mkdirSync(AGENT_MD_DIR, { recursive: true }); const text = renderAgentMd(a); if (fs.existsSync(f) && fs.readFileSync(f, 'utf8') === text) return; backupAgentMd(f); fs.writeFileSync(f, text); mdSeen[a.id] = fs.statSync(f).mtimeMs; }
+  catch (e) { console.error('成員設定檔寫入失敗：' + e.message); }
+}
+// 檔案被改了（記事本、維修工程師）：讀進來套用。格式壞掉就不套用，記一筆提醒
+function syncAgentMds() {
+  let changed = false;
+  for (const a of CONFIG.agents) {
+    const f = agentMdFile(a); if (!f) continue;
+    let st; try { st = fs.statSync(f); } catch { continue; }
+    if (mdSeen[a.id] === st.mtimeMs) continue;
+    mdSeen[a.id] = st.mtimeMs;
+    const o = parseAgentMd(fs.readFileSync(f, 'utf8'));
+    if (!o) { console.warn('📄 ' + a.name + ' 的設定檔格式不對（開頭要有兩條 --- 包住設定），先不套用：' + f); continue; }
+    if (o.persona) a.persona = o.persona.slice(0, 20000);
+    if (o.role !== undefined) a.role = o.role;
+    if (o.dataSources) { if (o.dataSources.length) a.dataSources = o.dataSources; else delete a.dataSources; }
+    for (const [, fl] of MD_FLAGS) if (o[fl] !== undefined) { if (o[fl]) a[fl] = true; else delete a[fl]; }
+    if (o.groupWords && CONFIG.line && CONFIG.line.groupAgentId === a.id) CONFIG.line.groupWords = o.groupWords;
+    changed = true; console.log('📄 套用 ' + a.name + ' 的設定檔：' + path.basename(f));
+  }
+  if (changed) { saveConfig(); reloadAgents(); agentsChanged(); }
+}
+function mdName(a) { const base = String(a.name || a.id).replace(/[\\/:*?"<>|.\x00-\x1f]/g, '').trim() || a.id; let n = base + '.md', i = 2; while (CONFIG.agents.some((x) => x !== a && x.configMd === n)) n = base + '-' + i++ + '.md'; return n; }
 
 // 🐞 使用者錯誤回報（LINE 上說「錯誤回報 …」）：記在 data/feedback.jsonl，連同 bot 上一則的回覆；「🐞 問題回報」會附上最近 20 則
 const FEEDBACK_FILE = path.join(DATA_DIR, 'feedback.jsonl');
@@ -1980,7 +2046,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/todo/script' && req.method === 'GET') { try { return send(res, 200, { code: fs.readFileSync(path.join(ROOT, 'templates', 'todo', 'Code.gs'), 'utf8'), version: (/var VERSION = '([\d.]+)'/.exec(fs.readFileSync(path.join(ROOT, 'templates', 'todo', 'Code.gs'), 'utf8')) || [])[1] || '' }); } catch (e) { return send(res, 500, { error: '找不到 Apps Script 範本：' + e.message }); } }
     // ---- 💚 LINE ----
     if (p === '/api/line' && req.method === 'GET') return send(res, 200, lineBot.status());
-    if (p === '/api/line' && req.method === 'PUT') { try { return send(res, 200, lineBot.update(await readBody(req))); } catch (e) { return send(res, e.status || 400, { error: e.message }); } }
+    if (p === '/api/line' && req.method === 'PUT') { try { const r = lineBot.update(await readBody(req)); const ga = CONFIG.agents.find((x) => x.id === (CONFIG.line || {}).groupAgentId); if (ga && ga.configMd) writeAgentMd(ga); return send(res, 200, r); } catch (e) { return send(res, e.status || 400, { error: e.message }); } }
     if (p === '/api/line/check' && req.method === 'POST') { try { return send(res, 200, { ...(await lineBot.check()), status: lineBot.status() }); } catch (e) { return send(res, 400, { error: e.message }); } }
     if (p === '/api/line/pair' && req.method === 'POST') { if (!lineBot.status().configured) return send(res, 400, { error: '請先貼上 Channel secret 與 Channel access token 並儲存' }); lineBot.newPairCode(); return send(res, 200, lineBot.status()); }
     if (p === '/api/line/unpair' && req.method === 'POST') return send(res, 200, lineBot.unpair());
@@ -2113,6 +2179,15 @@ const server = http.createServer(async (req, res) => {
       saveConfig(); reloadAgents(); harness.docs(); agentsChanged();
       return send(res, 200, { ok: true, id: a.id });
     }
+    // 📄 把成員的行為設定集中到一份 .md（POST 開啟並寫出目前的設定；DELETE 停用，檔案保留）
+    if ((m0 = p.match(/^\/api\/agents\/([\w-]+)\/md$/)) && (req.method === 'POST' || req.method === 'DELETE')) {
+      const a = CONFIG.agents.find((x) => x.id === m0[1]);
+      if (!a) return send(res, 404, { error: '找不到這位成員' });
+      if (req.method === 'DELETE') { delete a.configMd; delete mdSeen[a.id]; }
+      else { if (!a.configMd) a.configMd = mdName(a); writeAgentMd(a); }
+      saveConfig(); reloadAgents(); agentsChanged();
+      return send(res, 200, { ok: true, file: a.configMd ? path.join(AGENT_MD_DIR, a.configMd) : '' });
+    }
     // 📦 一鍵把成員的工作資料夾搬到程式資料夾外面的安全工作區（建資料夾、複製原本的檔案、改設定；原資料夾保留不刪）
     if ((m0 = p.match(/^\/api\/agents\/([\w-]+)\/move-safe$/)) && req.method === 'POST') {
       const a = CONFIG.agents.find((x) => x.id === m0[1]);
@@ -2157,7 +2232,9 @@ const server = http.createServer(async (req, res) => {
           if (runs.has(a.id)) return send(res, 409, { error: '這位成員還在工作，先停止再換工作資料夾' });
           dropSessions(a.id);
         }
+        if (old.configMd) a.configMd = old.configMd; // 📄 有設定檔的成員：在網頁按儲存也寫回那份 .md
         CONFIG.agents[idx] = a;
+        if (a.configMd) writeAgentMd(a);
         if (state.agyHold && state.agyHold[a.id]) { delete state.agyHold[a.id]; saveState(); } // 在設定按儲存＝確認過了，解除唯讀違規的暫停
         if (state.agyQuota[a.id]) { delete state.agyQuota[a.id]; saveState(); } // 也解除「額度用完」（例如你知道額度已經恢復）
         normalizeTeams();
@@ -2404,6 +2481,14 @@ const todoBook = todoLib.create({ config: CONFIG, saveConfig: () => saveConfig()
 const lineBot = lineLib.create({ todo: todoBook, logExchange, feedback: addFeedback, groupRisk, redact: (t) => reporter.redact(t), config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
   agentById, agents: AGENTS, dispatch, stopRun, resetAgent, timers, proctree, ROOT });
 lineBotRef = lineBot;
+// 📄 v3.30 遷移（只做一次）：會對外的 bot（有待辦清單能力、唯讀資料表，或接了 LINE）把行為設定集中到一份 .md
+if (!CONFIG.mdMigrated) {
+  const L = CONFIG.line || {};
+  for (const a of CONFIG.agents) if (!a.configMd && (a.todoKeeper || (a.dataSources || []).length || a.id === L.groupAgentId || a.id === L.agentId)) { a.configMd = mdName(a); writeAgentMd(a); console.log('📄 ' + a.name + ' 的行為設定集中到 ' + path.join(AGENT_MD_DIR, a.configMd)); }
+  CONFIG.mdMigrated = true; saveConfig(); reloadAgents();
+}
+setImmediate(syncAgentMds); // 關機期間被改過的設定檔，開機時先套用（等其他模組都建好）
+setInterval(syncAgentMds, Number(process.env.AGENT_MD_POLL_MS) || 3000).unref();
 const tgCtx = {
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,

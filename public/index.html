@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.29.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.30.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1029,6 +1029,8 @@ async function openAgentForm(id) {
       </div>
       <div class="field full">
         <label>人設與工作說明</label>
+        ${editing ? (a.configMd ? `<div class="help" style="margin:0 0 6px">📄 這位成員的<b>人設、職責、唯讀資料表、勾選項目</b>以設定檔 <code>data/agents/${esc(a.configMd)}</code> 為準：用記事本（或請維修工程師）改完存檔，幾秒內生效；在這裡按儲存也會寫回那份檔案，舊版自動備份在 <code>data/agents/.backup</code>。 <button type="button" id="f_md_off">不再使用設定檔</button></div>`
+          : `<div class="help" style="margin:0 0 6px"><button type="button" id="f_md_on">📄 把行為設定集中到一份 .md</button> 人設、職責、唯讀資料表、勾選項目改用一份文字檔管理（記事本就能改，存檔幾秒內生效，不用更新 Agent Chat）。</div>`) : ''}
         <textarea id="f_persona" rows="7" placeholder="例如：你叫小安，是 QA。依 PLAN.md 的驗收標準實際測試，不通過就退回工程師……">${esc(a.persona || '')}</textarea>
       </div>
     </div>
@@ -1187,6 +1189,8 @@ async function openAgentForm(id) {
       catch (e) { st.textContent = '❌ ' + e.message; }
     };
   });
+  if ($('f_md_on')) $('f_md_on').onclick = async () => { try { const r = await api('/api/agents/' + id + '/md', { method: 'POST', body: '{}' }); toast('📄 已建立 ' + r.file); openAgentForm(id); } catch (e) { toast(e.message); } };
+  if ($('f_md_off')) $('f_md_off').onclick = async () => { if (!confirm('不再使用設定檔？（檔案會保留，之後只在網頁改）')) return; try { await api('/api/agents/' + id + '/md', { method: 'DELETE' }); toast('已停用設定檔'); openAgentForm(id); } catch (e) { toast(e.message); } };
   if ($('f_movesafe')) $('f_movesafe').onclick = async () => { if (await moveSafe(id)) openAgentForm(id); };
   $('f_cancel').onclick = closeModal;
 

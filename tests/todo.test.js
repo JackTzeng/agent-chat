@@ -260,7 +260,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   const proc = spawn(process.execPath, ['server.js'], {
     cwd: dir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), ACCESS_TOKEN: 'todo-test-password-long', TELEGRAM_BOT_TOKEN: '', CLAUDE_BIN: '', CODEX_BIN: '', AGY_BIN: path.join(bin, 'agy'),
-      LINE_API_BASE: 'http://127.0.0.1:' + api.address().port, LINE_PORT: String(linePort), LINE_GROUP_RATE_MAX: '40', AGENT_SAFE_ROOT: path.join(dir, '..', path.basename(dir) + '-safe'), TODO_URL_ANY: '1', MOCKLOG: log, AGENT_ENV_ALLOWLIST: 'MOCKLOG', AGENTCHAT_NO_UPDATE_CHECK: '1' },
+      LINE_API_BASE: 'http://127.0.0.1:' + api.address().port, LINE_PORT: String(linePort), LINE_GROUP_RATE_MAX: '40', AGENT_MD_POLL_MS: '150', AGENT_SAFE_ROOT: path.join(dir, '..', path.basename(dir) + '-safe'), TODO_URL_ANY: '1', MOCKLOG: log, AGENT_ENV_ALLOWLIST: 'MOCKLOG', AGENTCHAT_NO_UPDATE_CHECK: '1' },
   });
   let stderr = ''; proc.stderr.on('data', (s) => { stderr += s; });
   t.after(async () => {
@@ -299,6 +299,24 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   let st = await J('/api/line'); assert.equal(st.groups, 0); assert.equal(st.groupAgentName, '待辦管家'); assert.equal(st.todo.configured, true);
   const raw = JSON.stringify(st) + JSON.stringify(await J('/api/todo')) + JSON.stringify(await J('/api/config'));
   assert.ok(!raw.includes(g.props.KEY) && !raw.includes(SECRET) && !raw.includes(TOKEN), '不回傳任何密鑰');
+  // 📄 成員設定檔：會對外的 bot 自動集中到 data/agents/<名稱>.md；改檔幾秒內生效、格式壞掉不套用、網頁儲存寫回並留備份
+  const mdFile = path.join(dir, 'data', 'agents', '待辦管家.md');
+  assert.ok(fs.existsSync(mdFile), '遷移：自動建立設定檔');
+  let md = fs.readFileSync(mdFile, 'utf8');
+  assert.match(md, /^唯讀資料表: 儀器$/m); assert.match(md, /^待辦清單能力: 是$/m); assert.match(md, /^每則開新對話: 是$/m); assert.match(md, /^群組呼叫詞: 待辦$/m);
+  assert.ok(!/channelSecret|channelAccessToken|agyAccess|gemini/.test(md), '設定檔裡沒有密鑰、引擎、權限');
+  fs.writeFileSync(mdFile, md.replace(/^職責: .*$/m, '職責: 部門待辦 MD').replace(/\n---\n[\s\S]*$/, '\n---\nMDMARK 你是待辦管家，用繁體中文。\n'));
+  await waitFor(async () => /MDMARK/.test((await J('/api/config')).agents.find((a) => a.id === 'todo').persona || ''), '改檔生效');
+  assert.equal((await J('/api/config')).agents.find((a) => a.id === 'todo').role, '部門待辦 MD');
+  fs.writeFileSync(mdFile, '亂寫一通，沒有 --- 包住'); await sleep(500);
+  assert.match((await J('/api/config')).agents.find((a) => a.id === 'todo').persona, /MDMARK/, '格式壞掉不套用');
+  const cfgMd = (await J('/api/config')).agents.find((a) => a.id === 'todo');
+  await J('/api/agents/todo', 'PUT', { ...cfgMd, freshEachTurn: false });
+  md = fs.readFileSync(mdFile, 'utf8'); assert.match(md, /^每則開新對話: 否$/m); assert.match(md, /MDMARK/, '網頁儲存寫回設定檔');
+  assert.ok(fs.readdirSync(path.join(dir, 'data', 'agents', '.backup')).some((f) => f.startsWith('待辦管家-')), '改之前留備份');
+  await J('/api/agents/todo', 'PUT', { ...cfgMd, freshEachTurn: true });
+  assert.equal((await J('/api/agents/pm/md', 'POST')).file.endsWith(path.join('agents', 'PM.md')), true, '任何成員都可以開設定檔');
+
   const ping = await J('/api/todo/ping', 'POST'); assert.equal(ping.open, 0); assert.equal(ping.version, '1.0.7');
 
   // 2) 還沒啟用的群組：任何訊息都不處理、不回應；配對碼才能啟用

@@ -12,6 +12,7 @@
 - `line.js` 💚 LINE bot：獨立連接埠的 webhook（驗簽章）、配對、reply／push、cloudflared 一鍵通道；設定畫面「💚 LINE」。`LINE_API_BASE`、`LINE_PORT`、`CLOUDFLARED_BIN` 可換（測試用）
 - `templates/roles/*.md` 🎭 成員範本（front-matter＋人設；`data/roles/` 可覆蓋），由 server.js `loadRoleTemplates()`／`/api/roles` 提供，前端 `ROLES` 產生按鈕。LINE 群組通用：`groupAgentId`＋`groupWords`；待辦流程只看成員的 `todoKeeper`（`isTodoKeeper`），不認名字
 - `xlsx.js` 📊 零相依讀 .xlsx（zip＋XML、刪除線、日期、`pickSheet` 分頁關鍵字）：唯讀資料表是 Excel 檔時，Apps Script（`Code.gs` 的 `opReadSource_`）`openByUrl` 失敗就用 DriveApp 原檔下載 base64，`todo.js` 的 `readSource` 解析；設定檔 `data/sources/*.md`（`parseSourceProfile`：到期模式 `profileSummary`、未結案模式 `openCasesSummary`）
+- 📄 成員設定檔 `data/agents/<名稱>.md`（`agent.configMd`；server.js 的 `renderAgentMd`／`parseAgentMd`／`syncAgentMds` 每 3 秒比對修改時間，`AGENT_MD_POLL_MS` 可調）：人設、職責、唯讀資料表、勾選項目、群組呼叫詞；網頁儲存寫回、改前備份到 `.backup/`。安全設定（引擎、權限、資料夾、密鑰）不放進去
 - `skills.js` 🧩 Skill：成員回覆【安裝 Skill】→ 下載 GitHub tar.gz（`SKILL_TARBALL_BASE` 可換，測試用）→ 檢查（檔案、腳本）→ 使用者核准 → 複製到 `.claude/skills`；移除＝搬到 `data/skills-trash`
 - `clistatus.js` 🧰 CLI 狀態頁（登入、MCP、成員用得到哪些；只看不改，只跑不耗額度的查詢指令，不回傳指令參數／網址／金鑰）
 - `diag.js`／`updater.js`／`launcher.js`／`localsettings.js`／`proctree.js` 問題回報、一鍵更新、啟動器（結束碼 75＝重新啟動）、個人設定、子程式樹關閉
