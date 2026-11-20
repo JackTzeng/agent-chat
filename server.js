@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.28.0';
+const VERSION = '3.29.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -154,7 +154,7 @@ const reporter = require('./diag').create({
   get CONFIG() { return late(() => CONFIG); }, get AGENTS() { return late(() => AGENTS) || []; },
   agentById: (id) => agentById(id), publicAgent: (a) => publicAgent(a), loadHistory: (id) => loadHistory(id),
   tasks: { actives: () => tasks.actives(), list: () => tasks.list(), detail: (id) => tasks.detail(id) },
-  harnessCfg: () => harness.cfg(), harnessRuns: (n) => harness.recentRuns(n), telegramStatus: () => telegram.status(),
+  harnessCfg: () => harness.cfg(), harnessRuns: (n) => harness.recentRuns(n), telegramStatus: () => telegram.status(), feedback: (n) => recentFeedback(n),
   getBin: (e) => getBin(e), safeEnv: () => security.safeEnvironment(),
   localSettings: () => ({ ...LOCAL, missingRoots: security.missingRoots }),
   updateStatus: () => late(() => updater.status()),
@@ -387,6 +387,22 @@ function loadRoleTemplates() {
   return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file));
 }
 
+// 🐞 使用者錯誤回報（LINE 上說「錯誤回報 …」）：記在 data/feedback.jsonl，連同 bot 上一則的回覆；「🐞 問題回報」會附上最近 20 則
+const FEEDBACK_FILE = path.join(DATA_DIR, 'feedback.jsonl');
+function addFeedback({ agent, via, who, userId, text }) {
+  state.feedbackSeq = (state.feedbackSeq || 0) + 1; saveState();
+  const id = state.feedbackSeq;
+  const last = loadHistory(agent.id).filter((m) => m.role === 'assistant' && !/系統直接回覆/.test(m.meta || '')).slice(-1)[0];
+  const rec = { id, ts: Date.now(), agent: agent.id, agentName: agent.name, via, who: String(who || '').slice(0, 40), userId: userId || '', text: short(text, 1000),
+    lastReply: last ? short((last.segments || []).filter((s) => s.type === 'text' || s.type === 'error').map((s) => s.text).join('\n'), 600) : '' };
+  try { fs.appendFileSync(FEEDBACK_FILE, JSON.stringify(rec) + '\n'); } catch (e) { console.error('錯誤回報寫入失敗：' + e.message); }
+  console.log('🐞 收到錯誤回報 #' + id + '（' + via + '，' + rec.who + '）：' + short(text, 80));
+  broadcast({ kind: 'feedback', id, who: rec.who, agent: agent.name, text: short(text, 80) });
+  return id;
+}
+function recentFeedback(n = 20) {
+  try { return fs.readFileSync(FEEDBACK_FILE, 'utf8').trim().split('\n').filter(Boolean).slice(-n).map((l) => JSON.parse(l)); } catch { return []; }
+}
 // 系統直接回覆（沒有叫用 AI）的對話，例如 LINE 群組的登記、說明、寫入 Sheet 的結果：也記進成員的對話框
 function logExchange(agent, inText, outText) {
   if (!agent) return;
@@ -1182,7 +1198,7 @@ function startRun(agent, userText, opts = {}) {
       try {
         const parsed = todoLib.parseReply(replyText);
         if (parsed.actions.length) for (const n of await todoBook.execute(todoLib.WEB_OWNER, parsed.actions)) emit({ kind: 'tool', text: '📋 ' + n });
-        else if (/(已|幫你|我).{0,8}(登記|新增|記下|更新|改成|完成了|取消)/.test(parsed.text)) emit({ kind: 'tool', text: '📋 （提醒：這則回覆沒有產生任何寫入，清單沒有變動，請再說一次。）' });
+        else if (todoLib.claimsWrite(parsed.text)) emit({ kind: 'tool', text: '📋 （提醒：這則回覆沒有產生任何寫入，清單沒有變動，請再說一次。）' });
       } catch (e) { emit({ kind: 'tool', text: '📋 ⚠️ 寫入待辦失敗：' + e.message }); }
     }
     const targets = opts.taskId || run.stopped || !replyText ? [] : findMentions(agent, replyText);
@@ -2385,7 +2401,7 @@ function sourceProfileText(name) {
   return null;
 }
 const todoBook = todoLib.create({ config: CONFIG, saveConfig: () => saveConfig(), sourceProfile: (n) => { const t = sourceProfileText(n); return t ? todoLib.parseSourceProfile(t.text) : null; } });
-const lineBot = lineLib.create({ todo: todoBook, logExchange, groupRisk, redact: (t) => reporter.redact(t), config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
+const lineBot = lineLib.create({ todo: todoBook, logExchange, feedback: addFeedback, groupRisk, redact: (t) => reporter.redact(t), config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
   agentById, agents: AGENTS, dispatch, stopRun, resetAgent, timers, proctree, ROOT });
 lineBotRef = lineBot;
 const tgCtx = {

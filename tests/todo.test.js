@@ -555,6 +555,20 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   assert.equal((pF.match(/^(對方|你)：/gm) || []).length, 6, '只帶最近 3 來 3 往');
   await waitFor(idleTodo, 'todo idle F2');
 
+  // 🐞 錯誤回報：系統直接記下來（不經過 AI），附上 bot 上一則的回覆，問題回報會一起附上
+  const nFB = agyCalls();
+  assert.match(await say('U_wang', '錯誤回報'), /請在後面寫發生了什麼/);
+  assert.match(await say('U_wang', '錯誤回報：剛剛的期限錯了'), /📝 已收到錯誤回報 #1，已轉給管理者/);
+  assert.match(await say('U_nobody', '問題回報 它都不理我'), /已收到錯誤回報 #2/, '沒登記也能回報');
+  assert.equal(agyCalls(), nFB, '錯誤回報不經過 AI');
+  const fbLines = fs.readFileSync(path.join(dir, 'data', 'feedback.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(fbLines[0].text, '剛剛的期限錯了'); assert.equal(fbLines[0].via, 'LINE 群組'); assert.ok(fbLines[0].lastReply.length > 0, '附上 bot 上一則的回覆');
+  const rep = await J('/api/diag/report', 'POST', { description: 'test' });
+  assert.match(fs.readFileSync(rep.path, 'utf8'), /## 8b\. 使用者錯誤回報[\s\S]*#1 [\s\S]*剛剛的期限錯了[\s\S]*bot 上一則回覆：/);
+  // 誤報修正：「我只負責待辦登記」不算聲稱已寫入
+  assert.equal(todo.claimsWrite('我只負責部門待辦登記與追蹤，無法撰寫或留存錯誤回報報告。'), false);
+  assert.equal(todo.claimsWrite('好的，已幫你登記完成！'), true); assert.equal(todo.claimsWrite('登記好了'), true); assert.equal(todo.claimsWrite('好的，我來登記。'), false);
+
   // 🪫 agy 額度用完（真實的錯誤訊息）：群組只回一句中文；之後同事再 @ 不會再白叫 agy，直到恢復或管理者在設定按儲存
   await waitFor(idleTodo, 'todo idle Q');
   const q1 = await say('U_wang', 'QUOTA 我的待辦');

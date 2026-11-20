@@ -274,6 +274,14 @@ function sourceRelevant(name, prof, text) {
   return [name, ...kw].some((k) => k && t.includes(String(k).toLowerCase()));
 }
 
+// AI 的回覆「聲稱已經寫入」嗎？（沒有動作行卻這樣說＝清單其實沒變，要提醒）
+// 只認完成式的說法（已登記、幫你新增、記下了、登記好了…）；「我只負責待辦登記」「無法登記」這種不算
+function claimsWrite(text) {
+  const t = String(text || '');
+  if (/(無法|不能|沒辦法|不可以|不會|只負責|請先|要先|需要先)[^。！!？?\n]{0,10}(登記|新增|記下|更新|改成|完成|取消)/.test(t) && !/(已經?|幫你|替你)(登記|新增|記下|更新|改|完成|取消)/.test(t)) return false;
+  return /(已經?|幫你|替你|為你|為您|幫您)(登記|新增|記下|更新|改成|改為|標記|完成|取消|撤銷)|(登記|新增|記下|更新|修改|取消)(好了|完成了|成功)|記下了/.test(t);
+}
+
 // 負責人名稱 → 登記過的成員（姓名或 LINE 名稱完全相同，或只有一位成員的姓名包含它）
 function canonOwner(typed, members) {
   const t = String(typed || '').trim(); if (!t) return { name: '', known: true };
@@ -477,4 +485,4 @@ function create(ctx) {
 // 在網頁（Agent Chat 的對話框）跟待辦管家說話的人＝管理這台 Agent Chat 的你：視同主管
 const WEB_OWNER = { userId: 'web', name: '管理員', role: '主管' };
 
-module.exports = { create, urlProblem, WEB_OWNER, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS, sourceSummary, parseSourceProfile, profileSummary, openCasesSummary, sourceRelevant };
+module.exports = { create, urlProblem, WEB_OWNER, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS, claimsWrite, sourceSummary, parseSourceProfile, profileSummary, openCasesSummary, sourceRelevant };

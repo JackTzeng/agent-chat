@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.28.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.29.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1994,6 +1994,7 @@ function connectEvents() {
     if (window.Office && ev.agentId !== '*') Office.event(ev);
     if (ev.kind === 'agents-changed') { refreshAgents(); loadWorkflow().then(() => current === ALL && updateTop()); return; }
     if (ev.kind === 'usage') { loadUsage(); return; }
+    if (ev.kind === 'feedback') { toast('🐞 收到錯誤回報 #' + ev.id + '（' + ev.who + '→' + ev.agent + '）：' + ev.text); return; }
     if (ev.kind === 'line') { if (modalShowing('ln_close')) openLine(); return; }
     if (ev.kind === 'skills') { loadSkillPending(); if (CLI_OPEN && CLI_TAB === 'skill' && modalShowing('cli_close')) openSkills(); return; }
     if (ev.kind === 'clistatus') { if (CLI_OPEN && modalShowing('cli_close')) openCliStatus(CLI_TAB); return; }

@@ -162,6 +162,8 @@ function create(ctx) {
   function pairingState() { return pairing && pairing.expires > Date.now() ? { code: pairing.code, expires: pairing.expires } : null; }
   function newPairCode() { pairFails = 0; pairing = { code: String(crypto.randomInt(100000, 1000000)), expires: Date.now() + 10 * 60 * 1000 }; changed(); return pairingState(); }
 
+  // 錯誤回報的說法（只認明確的詞；單獨的「回報」不算，免得跟「回報 #3 的進度」搞混）
+  const FEEDBACK_RE = /^(錯誤回報|問題回報|回報錯誤|回報問題|回報bug|bug回報|報錯|bug)\s*[:：]?\s*([\s\S]*)$/i;
   const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // 群組交給誰：有指定就用；沒指定（或指定的成員不見了）就找有「📋 待辦清單能力」的成員（不看名字）
   const groupAgent = () => {
@@ -181,7 +183,7 @@ function create(ctx) {
     const a = groupAgent(), n = (a || {}).name || 'bot';
     const call = '直接 @我 說話就好' + (groupWords().length ? '（或訊息開頭寫「' + groupWords().join('」「') + '」）' : '');
     if (!isKeeper(a)) return '我是 ' + n + '。' + call + '。\n\n我只處理 @我 的訊息，群組裡其他的聊天我不會看、不會記。';
-    return '我是 ' + n + '，在這個群組幫大家登記與追蹤待辦事項。' + call + '，例如：\n・@' + n + ' 週五前 完成校正紀錄（登記在你名下）\n・@' + n + ' 我的待辦\n・@' + n + ' #3 完成了\n・@' + n + ' 設定主管 @某人（主管或 bot 管理者才能用）' +
+    return '我是 ' + n + '，在這個群組幫大家登記與追蹤待辦事項。' + call + '，例如：\n・@' + n + ' 週五前 完成校正紀錄（登記在你名下）\n・@' + n + ' 我的待辦\n・@' + n + ' #3 完成了\n・@' + n + ' 設定主管 @某人（主管或 bot 管理者才能用）\n・@' + n + ' 錯誤回報 發生了什麼（我答錯或怪怪的時候用）' +
       (who ? '' : '\n\n第一次使用請先回覆：@' + n + ' 我是 你的姓名') + '\n\n我只處理 @我 的訊息，群組裡其他的聊天我不會看、不會記。';
   };
   // 有沒有在叫我：真正的 @ 提及，或訊息開頭寫「待辦」／我的名字。回傳去掉稱呼後的內容；沒叫我就 hit:false
@@ -239,6 +241,14 @@ function create(ctx) {
     const body = t.text;
     // 系統直接回的話（沒叫 AI）也記進這位成員的對話框，網頁上才看得到群組裡發生什麼
     const sysSay = (msg, who) => { if (ctx.logExchange) ctx.logExchange(agent, '💬（LINE 群組）' + (who || '某位成員') + '：' + (body || text), msg); return send(gid, msg, tok); };
+    // 🐞 錯誤回報：系統直接記下來轉給管理者（不經過 AI）；不用先登記也能回報
+    const fb = FEEDBACK_RE.exec(body);
+    if (fb) {
+      const name = (uid && await memberName(gid, uid).catch(() => '')) || '群組成員';
+      if (!fb[2].trim()) return sysSay('請在後面寫發生了什麼，例如：@' + agent.name + ' 錯誤回報 剛剛登記的期限錯了', name);
+      const id = ctx.feedback ? ctx.feedback({ agent, via: 'LINE 群組', who: name, userId: uid, text: fb[2].trim() }) : 0;
+      return sysSay('📝 已收到錯誤回報' + (id ? ' #' + id : '') + '，已轉給管理者，謝謝！', name);
+    }
     if (!isKeeper(agent)) {
       // 一般成員：群組訊息就是一般對話
       if (agent.todoKeeper === true) return sysSay('⚠️ 待辦清單（Google Sheet）還沒設定好，請管理者到 Agent Chat 的「📋 待辦清單」設定。');
@@ -324,6 +334,11 @@ function create(ctx) {
     // 指令
     let mm;
     if (/^\/(help|start)$/i.test(text) || text === '說明') return say(helpText());
+    if ((mm = FEEDBACK_RE.exec(text))) {
+      if (!mm[2].trim()) return say('請在後面寫發生了什麼，例如：錯誤回報 剛剛的提醒時間錯了');
+      const id = ctx.feedback ? ctx.feedback({ agent, via: 'LINE 一對一', who: 'LINE 擁有者', userId: uid, text: mm[2].trim() }) : 0;
+      return say('📝 已收到錯誤回報' + (id ? ' #' + id : '') + '，產生「🐞 問題回報」時會一起附上。');
+    }
     if (/^\/new$/i.test(text)) return say(ctx.resetAgent(agent.id) ? '🆕 已開新對話' : '我正在工作，請先傳 /stop');
     if (/^\/stop$/i.test(text)) { ctx.stopRun(agent.id); return say('⏹ 已停止'); }
     if ((mm = /^(同意|核准|ok)\s*#?(\d+)$/i.exec(text))) {
@@ -394,7 +409,7 @@ function create(ctx) {
         const parsed = todoLib.parseReply(segs.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n'));
         const notes = parsed.actions.length ? await ctx.todo.execute(e.line.sender, parsed.actions) : [];
         const body = plain(parsed.text);
-        if (!parsed.actions.length && /(已|幫你|我).{0,8}(登記|新增|記下|更新|改成|完成了|取消)/.test(body)) notes.push('（提醒：這則回覆沒有產生任何寫入，清單沒有變動，請再說一次。）');
+        if (!parsed.actions.length && todoLib.claimsWrite(body)) notes.push('（提醒：這則回覆沒有產生任何寫入，清單沒有變動，請再說一次。）');
         const errs = segs.filter((s) => s.type === 'error').map((s) => '⚠️ ' + s.text);
         if (notes.length && ctx.logExchange) ctx.logExchange(e.agent, '', '📋 系統寫入 Google Sheet 的結果：\n' + notes.join('\n'));
         await send(e.line.groupId, [body, ...notes, ...errs].filter(Boolean).join('\n\n') || '（沒有回覆內容）', e.line, parsed.options);
