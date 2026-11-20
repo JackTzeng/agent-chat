@@ -286,6 +286,13 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   await J('/api/chat/todo', 'POST', { text: 'LIE 網頁' });
   await waitFor(async () => /沒有產生任何寫入/.test(await histText()), 'web lie warning'); assert.equal(tasks().length, nWeb + 1);
 
+  // 8d) 沒指定「群組交給誰」（下拉預先選好、沒按儲存）：自動用名叫「待辦管家」的成員，不會整個沒反應
+  await waitFor(idleTodo, 'todo idle 4');
+  await J('/api/line', 'PUT', { groupAgentId: '' });
+  assert.equal((await J('/api/line')).groupAgentId, ''); assert.equal((await J('/api/line')).groupAgentName, '待辦管家');
+  assert.match(await say('U_wang', 'QUERY 備援'), /你的待辦：/);
+  await waitFor(idleTodo, 'todo idle 5');
+
   // 9) 設定驗證與機器人被踢出群組
   assert.equal((await call('/api/todo', 'PUT', { url: 'https://evil.example.com/exec' })).status, 200, '測試環境放寬了網址檢查（TODO_URL_ANY）');
   assert.equal((await call('/api/todo', 'PUT', { key: 'short' })).status, 400);

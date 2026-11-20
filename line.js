@@ -155,7 +155,12 @@ function create(ctx) {
   function newPairCode() { pairing = { code: String(crypto.randomInt(100000, 1000000)), expires: Date.now() + 10 * 60 * 1000 }; changed(); return pairingState(); }
 
   const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const groupAgent = () => ctx.agentById(cfg().groupAgentId);
+  // 部門群組交給誰：有指定就用；沒指定（或指定的成員不見了）就自動找「勾了待辦管家模式」或「名叫待辦管家」的成員。
+  // （設定畫面的下拉會預先選好待辦管家，但沒按儲存就沒存下來；不要因為這樣讓群組整個沒反應）
+  const groupAgent = () => {
+    const list = typeof ctx.agents === 'function' ? ctx.agents() : ctx.agents || [];
+    return ctx.agentById(cfg().groupAgentId) || list.find((a) => a.todoKeeper === true) || list.find((a) => a.name === '待辦管家');
+  };
   const groupIds = () => (cfg().groups || []).map(String);
   const groupHelp = (who) => {
     const n = (groupAgent() || {}).name || '待辦管家';
@@ -195,7 +200,7 @@ function create(ctx) {
     const agent = groupAgent();
     const t = stripTrigger(ev.message, text, agent);
     if (!t.hit) return; // 沒叫我：不處理、不記錄、不送給 AI
-    if (!agent) return send(gid, '⚠️ 這個 LINE bot 還沒指定「群組要交給哪位成員」，請管理者到 Agent Chat「💚 LINE」設定。', tok);
+    if (!agent) return send(gid, '⚠️ 我還不知道這個群組要交給哪位成員處理。請管理者到 Agent Chat：① 新增成員並按「📋 套用待辦管家設定」，② 在「💚 LINE」把「部門群組」選成那位成員並按「儲存」。', tok);
     if (!ctx.todo || !ctx.todo.configured()) return send(gid, '⚠️ 待辦清單（Google Sheet）還沒設定好，請管理者到 Agent Chat 的「📋 待辦清單」設定。', tok);
     const uid = src.userId ? String(src.userId) : '';
     if (!uid) return send(gid, '我看不到你是誰（LINE 沒有提供你的帳號資料）。請先把我加為好友，再重新傳一次。', tok);
@@ -483,7 +488,7 @@ function create(ctx) {
   function stop() { ctx.hooks.off('done', onDone); ctx.hooks.off('timer-alert', onTimerAlert); stopTunnel(); stopServer(); }
 
   return { start, stop, status, update, check, setupWebhook, newPairCode, unpair, startTunnel: () => { cfg().tunnel = true; ctx.saveConfig(); startTunnel(); return status(); },
-    stopTunnel: () => { cfg().tunnel = false; ctx.saveConfig(); stopTunnel(); return status(); }, handleBody, port };
+    stopTunnel: () => { cfg().tunnel = false; ctx.saveConfig(); stopTunnel(); return status(); }, handleBody, port, groupAgent };
 }
 
 module.exports = { create, verifySignature, plain, chunk, replyText, cleanPublicUrl };

@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.20.0';
+const VERSION = '3.20.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -317,7 +317,8 @@ function allowedTargets(agent) {
 
 // 成員可以存取的資料夾（每一輪都告訴它）
 // 待辦管家：把待辦清單附在訊息裡，寫入由系統代做（模型不能讀寫檔、不能執行指令）。LINE 群組指定的成員自動算；也可以在成員設定勾選
-const isTodoKeeper = (a) => !!a && (a.todoKeeper === true || (!!CONFIG.line && !!a.id && CONFIG.line.groupAgentId === a.id));
+let lineBotRef = null; // 建好 lineBot 之後才有值
+const isTodoKeeper = (a) => { if (!a) return false; if (a.todoKeeper === true) return true; const g = lineBotRef && lineBotRef.groupAgent(); return !!g && g.id === a.id; };
 function accessText(agent) {
   const base = accessBase(agent) + (rtkWanted(agent) && rtkBin() ? '\n【指令輸出精簡】你在 Bash 執行的常見指令（git、測試、建置、列出檔案等）輸出會先經過 rtk 精簡。如果需要完整的原始輸出才能判斷，請在回覆中說明，使用者可以暫時關掉這個選項。' : '');
   return agent.engine === 'agy' ? base + '\n' + (agy.access(agent) === 'read' ? (isTodoKeeper(agent) || agent.brief ? agy.NO_FILES_NOTE : agy.READ_ONLY_NOTE) : agy.WRITE_NOTE) : base;
@@ -2219,6 +2220,7 @@ const telegram = require('./telegram');
 const todoBook = todoLib.create({ config: CONFIG, saveConfig: () => saveConfig() });
 const lineBot = lineLib.create({ todo: todoBook, config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
   agentById, agents: AGENTS, dispatch, stopRun, resetAgent, timers, proctree, ROOT });
+lineBotRef = lineBot;
 const tgCtx = {
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,
