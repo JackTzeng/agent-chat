@@ -10,7 +10,7 @@ const p2 = (n) => String(n).padStart(2, '0');
 const iso = (offset = 0) => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + offset); return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()); };
 
 class Sheet {
-  constructor(name) { this.name = name; this.data = []; }
+  constructor(name) { this.name = name; this.data = []; this.strikes = new Set(); } // strikes：'列,欄'（1 起算）有刪除線
   getName() { return this.name; }
   getLastRow() { return this.data.length; }
   getLastColumn() { return this.data.reduce((m, r) => Math.max(m, r.length), 0); }
@@ -19,6 +19,7 @@ class Sheet {
     const self = this;
     return {
       getValues() { const out = []; for (let i = 0; i < nr; i++) { const row = []; for (let j = 0; j < nc; j++) { const v = (self.data[r - 1 + i] || [])[c - 1 + j]; row.push(v === undefined ? '' : v); } out.push(row); } return out; },
+      getFontLines() { const out = []; for (let i = 0; i < nr; i++) { const row = []; for (let j = 0; j < nc; j++) row.push(self.strikes.has((r + i) + ',' + (c + j)) ? 'line-through' : 'none'); out.push(row); } return out; },
       getDisplayValues() { return this.getValues().map((row) => row.map((v) => (v instanceof Date ? v.getFullYear() + '/' + (v.getMonth() + 1) + '/' + v.getDate() : String(v)))); },
       setValue(v) { self._set(r, c, v); return this; },
       setDataValidation() { return this; }, setNumberFormat() { return this; },

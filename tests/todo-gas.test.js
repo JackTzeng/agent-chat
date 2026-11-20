@@ -149,3 +149,21 @@ test('唯讀資料表：只讀「設定」登記過的表，日期轉成 YYYY-MM
   set.data[set.data.length - 2][2] = '不存在'; assert.match(env.call('readSource', { name: '儀器' }).error, /找不到分頁/);
   set.data[set.data.length - 2][1] = 'https://docs.google.com/spreadsheets/d/NOACCESS/edit'; assert.match(env.call('readSource', { name: '儀器' }).error, /打不開.*檢視者/);
 });
+
+test('唯讀資料表：分頁關鍵字（挑今年的）、刪除線、跳過上面的大標', () => {
+  const env = makeEnv(); env.g.setup();
+  const URL = 'https://docs.google.com/spreadsheets/d/CTRL/edit';
+  const y = String(new Date().getFullYear());
+  const mk = (name, rows) => Object.assign(new Sheet(name), { data: rows });
+  const oos = mk('三廠-' + y + '年OOS', [['三廠 OOS 管制表'], ['', '', '更新：每週'], ['OOS編號', '說明', '狀態', '應結案日期(30個工作天)', '實際結案日期'], ['OOS-01', 'pH 異常', '追蹤', new Date(2026, 10, 1), ''], ['OOS-02', '已作廢', '追蹤', '', ''], ['OOS-03', '含量', '結案', '', '']]);
+  oos.strikes.add('5,1'); // OOS-02 的編號有刪除線
+  env.books.set(URL, { sheets: [mk('三廠-' + (+y - 1) + '年OOS', [['OOS編號', '狀態'], ['OLD-1', '追蹤']]), oos, mk('一二三廠-CC', [['CC編號', '狀態'], ['CC-1', '追蹤']]), mk('一廠-DE', [['DE編號', '狀態']])] });
+  const r = env.call('readSource', { name: '未結案', url: URL, tab: '三廠+OOS,一二三廠+CC,一廠+DE' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.deepEqual(r.tabs.map((t) => t.sheet), ['三廠-' + y + '年OOS', '一二三廠-CC', '一廠-DE'], '有好幾頁時挑今年的');
+  assert.deepEqual(r.tabs[0].headers, ['OOS編號', '說明', '狀態', '應結案日期(30個工作天)', '實際結案日期'], '跳過大標與說明列');
+  assert.equal(r.tabs[0].rows.length, 3); assert.equal(r.tabs[0].rows[0][3], '2026-11-01');
+  assert.deepEqual(r.tabs[0].strikes, [[1, 0]], '第 2 筆的第 1 欄有刪除線');
+  assert.deepEqual(r.tabs[2].rows, [], '沒有資料的分頁也要回來（報告要顯示全部已結案）');
+  assert.match(env.call('readSource', { name: '未結案', url: URL, tab: '五廠+OOS' }).error, /找不到分頁：五廠\+OOS/);
+});

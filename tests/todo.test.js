@@ -95,6 +95,37 @@ test('資料表設定檔：多分頁、固定欄位、完成判斷、範圍、�
   assert.match(bad, /A：找不到欄位「廠牌」/);
 });
 
+test('未結案模式：照 weekly-open-cases-report Skill 的四條規則判斷，九個區段都要出現', () => {
+  const prof = todo.parseSourceProfile(fs.readFileSync(path.join(__dirname, '..', 'templates', 'sources', '未結案巡檢範例.md'), 'utf8'));
+  assert.equal(prof.mode, 'open'); assert.equal(prof.tabList.length, 9); assert.deepEqual(prof.tabList[8], { label: '全廠CC', spec: '一二三廠+CC' });
+  const now = new Date(2026, 10, 20, 9).getTime();
+  const H = ['OOS編號', '發生日期', '說明', '負責人', '狀態', '應結案日期(30個工作天)', '備註', '實際完成日 (結案日期)'];
+  const tabs = prof.tabList.map((t) => ({ spec: t.spec, sheet: t.label + '分頁', headers: H, rows: [], strikes: [] }));
+  tabs[7].sheet = '三廠-2026年OOS';
+  tabs[7].rows = [
+    ['OOS-01', '2026-10-01', 'pH 異常', '王小明', '追蹤', '2026-11-12', '', ''],       // 未結案（逾期 8 天）
+    ['OOS-02', '2026-10-02', '作廢', '王小明', '追蹤', '', '', ''],                   // 編號刪除線 → 排除
+    ['OOS-03', '2026-10-03', '含量', '李小華', '結案', '', '', ''],                   // 狀態＝結案
+    ['OOS-04', '2026-10-04', '水分', '李小華', '追蹤', '2026-11-30', '', '2026-11-10'], // 實際結案日有值
+    ['OOS-05', '2026-10-05', '溶離', '李小華', '結案中', '2026-11-30', '', ''],         // 「結案中」不等於「結案」→ 未結案
+    ['', '', '', '', '', '', '', ''],
+  ];
+  tabs[7].strikes = [[1, 0]];
+  tabs[8].rows = [['CC-1', '', '變更', '陳', '', '', '', ''], ['CC-2', '', '變更2', '陳', '追蹤', '', '', '-']];
+  const out = todo.openCasesSummary({ name: '未結案', tabs }, prof, '', now);
+  for (const t of prof.tabList) assert.match(out, new RegExp('【' + t.label + '】'), '九個區段都要出現：' + t.label);
+  assert.match(out, /【一廠異常INC】（分頁：一廠異常INC分頁）全部已結案/);
+  assert.match(out, /【三廠OOS】（分頁：三廠-2026年OOS）未結案 2 件/);
+  assert.match(out, /- OOS-01｜pH 異常｜王小明｜2026-11-12（逾期 8 天）｜追蹤/);
+  assert.match(out, /OOS-05/); assert.doesNotMatch(out, /OOS-02|OOS-03|OOS-04/);
+  assert.match(out, /【全廠CC】.*未結案 2 件/, '結案日寫「-」不算有值');
+  assert.match(out, /【彙總】.*三廠OOS 2、全廠CC 2；合計未結案 4 件/);
+  assert.match(out, /【這份表的回答規則】/);
+  // 找不到欄位要說出來
+  const odd = todo.openCasesSummary({ name: 'x', tabs: [{ sheet: 'A', headers: ['名稱', '日期'], rows: [['a', '']] }] }, prof, '', now);
+  assert.match(odd, /找不到編號欄、找不到狀態欄、找不到實際結案日欄/);
+});
+
 test('normDate / fmtDue / canonOwner / safe', () => {
   const now = new Date(2026, 10, 19, 8, 52).getTime(); // 2026/11/19 週四
   assert.equal(todo.normDate('2026-11-27', now), '2026-11-27'); assert.equal(todo.normDate('2026/1/5', now), '2026-01-05');
@@ -262,7 +293,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   let st = await J('/api/line'); assert.equal(st.groups, 0); assert.equal(st.groupAgentName, '待辦管家'); assert.equal(st.todo.configured, true);
   const raw = JSON.stringify(st) + JSON.stringify(await J('/api/todo')) + JSON.stringify(await J('/api/config'));
   assert.ok(!raw.includes(g.props.KEY) && !raw.includes(SECRET) && !raw.includes(TOKEN), '不回傳任何密鑰');
-  const ping = await J('/api/todo/ping', 'POST'); assert.equal(ping.open, 0); assert.equal(ping.version, '1.0.5');
+  const ping = await J('/api/todo/ping', 'POST'); assert.equal(ping.open, 0); assert.equal(ping.version, '1.0.6');
 
   // 2) 還沒啟用的群組：任何訊息都不處理、不回應；配對碼才能啟用
   assert.equal(await hook([gmsg('U_wang', 'ADD1')]), 200); await sleep(400);
@@ -432,6 +463,24 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   await J('/api/sources/profile', 'PUT', { name: '設備2', text: '---\n網址: ' + EQ_URL + '\n分頁: 設備\n---\n' });
   const srcChk2 = (await J('/api/todo/sources', 'POST')).sources;
   assert.deepEqual(srcChk2.map((x) => [x.name, x.ok, x.rows]), [['儀器', true, 3], ['設備2', true, 3]]);
+  // 未結案巡檢：線上 Google 試算表、分頁關鍵字、刪除線 → 照規則判斷好再交給模型
+  const CTRL = 'https://docs.google.com/spreadsheets/d/CTRLSHEET/edit';
+  const yNow = String(new Date().getFullYear());
+  const oosT = Object.assign(new Sheet('三廠-' + yNow + '年OOS'), { data: [['OOS編號', '說明', '狀態', '實際結案日期'], ['OOS-9', 'pH', '追蹤', ''], ['OOS-8', '作廢', '追蹤', ''], ['OOS-7', '含量', '結案', '']] });
+  oosT.strikes.add('3,1'); oosT.readOnly = true;
+  g.books.set(CTRL, { sheets: [oosT, Object.assign(new Sheet('一二三廠-CC'), { data: [['CC編號', '狀態', '實際結案日期'], ['CC-1', '追蹤', '2026-11-01']] })] });
+  const tpl = (await J('/api/sources/profile?name=' + encodeURIComponent('未結案'))).examples['未結案巡檢'];
+  assert.ok(tpl, '有未結案巡檢範例');
+  await J('/api/sources/profile', 'PUT', { name: '未結案', text: tpl.replace(/^網址:.*$/m, '網址: ' + CTRL).replace(/^分頁:.*$/m, '分頁: 三廠OOS = 三廠+OOS, 全廠CC = 一二三廠+CC') });
+  const cfgA = (await J('/api/config')).agents.find((a) => a.id === 'todo');
+  await J('/api/agents/todo', 'PUT', { ...cfgA, dataSources: '儀器, 未結案' });
+  await waitFor(idleTodo, 'todo idle OC');
+  await say('U_wang', 'EQUIP 未結案的有哪些');
+  const pOC = lastAgyPrompt();
+  assert.match(pOC, /【三廠OOS】（分頁：三廠-\d{4}年OOS）未結案 1 件/); assert.match(pOC, /- OOS-9｜pH｜追蹤/); assert.doesNotMatch(pOC, /OOS-8/);
+  assert.match(pOC, /【全廠CC】（分頁：一二三廠-CC）全部已結案/); assert.match(pOC, /合計未結案 1 件/);
+  assert.match(pOC, /【唯讀資料表：儀器/, '兩份表都附上');
+  await waitFor(idleTodo, 'todo idle OC2');
   // 網址寫錯、還是範例的佔位字、或用 /u/0/d/ 的網址：檢查畫面要說清楚卡在哪
   await J('/api/sources/profile', 'PUT', { name: '設備3', text: '---\n網址: https://evil.example.com/x\n---\n' });
   await J('/api/sources/profile', 'PUT', { name: '設備4', text: '---\n網址: https://docs.google.com/spreadsheets/d/把這裡換成儀器清單的網址\n到期欄: H\n---\n' });

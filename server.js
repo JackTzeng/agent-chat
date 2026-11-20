@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.25.5';
+const VERSION = '3.26.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1897,8 +1897,9 @@ const server = http.createServer(async (req, res) => {
       const name = String(url.searchParams.get('name') || '').trim();
       if (!validSourceName(name)) return send(res, 400, { error: '名稱不對（1～20 字，不能有 \\ / : * ? " < > | .）' });
       const t = sourceProfileText(name);
-      let example = ''; try { example = fs.readFileSync(path.join(ROOT, 'templates', 'sources', '設備校驗範例.md'), 'utf8'); } catch {}
-      return send(res, 200, { name, text: t ? t.text : '', custom: !!(t && t.custom), example });
+      // 範例：templates/sources/*範例.md（按鈕名稱＝檔名去掉「範例」）
+      const examples = {}; try { for (const f of fs.readdirSync(path.join(ROOT, 'templates', 'sources')).filter((x) => /範例\.md$/.test(x)).sort()) examples[f.replace(/範例\.md$/, '')] = fs.readFileSync(path.join(ROOT, 'templates', 'sources', f), 'utf8'); } catch {}
+      return send(res, 200, { name, text: t ? t.text : '', custom: !!(t && t.custom), example: examples['設備校驗'] || '', examples });
     }
     if (p === '/api/sources/profile' && (req.method === 'PUT' || req.method === 'DELETE')) {
       const body = await readBody(req), name = String(body.name || '').trim();

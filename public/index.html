@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.25.5'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.26.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -998,7 +998,7 @@ async function openAgentForm(id) {
         <span class="help">別人的 Google Sheet（例如儀器設備表），只讀不改、那份表不用動。這裡填一個名稱（例如「儀器」）並儲存，再打開下面的「✏️ 設定檔」寫上那份表的網址與分頁（或按「套用範例」）。每次對話系統會先讀最新的表、算好已逾期／7 天內／30 天內到期，再交給它回答。建立待辦 Sheet 的 Gmail 要打得開那份表；需要先在「📋 待辦清單」連上 Google Sheet（Apps Script 1.0.5 以上）。</span>
         ${(a.dataSources || []).map((n, i) => `<details class="ln-guide" style="margin-top:6px"><summary>✏️ 「${esc(n)}」的設定檔（到期欄、完成判斷、範圍、要顯示的欄位、回答規則）</summary>
           <textarea id="f_sp_${i}" rows="14" style="width:100%;font-family:monospace;font-size:12px" placeholder="載入中…"></textarea>
-          <div class="sk-row"><button type="button" class="primary" data-spsave="${i}">儲存設定檔</button><button type="button" data-spex="${i}">套用範例（設備校驗）</button><span class="help" id="f_sp_st_${i}"></span></div>
+          <div class="sk-row"><button type="button" class="primary" data-spsave="${i}">儲存設定檔</button><span data-spexs="${i}"></span><span class="help" id="f_sp_st_${i}"></span></div>
           <span class="help">存在 Agent Chat 的 <code>data/sources/${esc(n)}.md</code>（不進 git、更新不會蓋掉），跟這份表有關的成員共用。沒有設定檔時，系統會自己猜到期日欄。存檔後下一則訊息就生效，不用重開對話。</span></details>`).join('')}
       </div>
       <div class="field full claude-only">
@@ -1171,10 +1171,15 @@ async function openAgentForm(id) {
   }));
   // 📊 資料表設定檔：每份表一個 .md，在這裡直接編輯（獨立存檔，不用按成員的「儲存」）
   (a.dataSources || []).forEach(async (n, i) => {
-    const ta = $('f_sp_' + i), st = $('f_sp_st_' + i); let ex = '';
-    try { const r = await api('/api/sources/profile?name=' + encodeURIComponent(n)); ta.value = r.text; ex = r.example; ta.placeholder = '還沒有設定檔（系統會自己猜到期日欄）。可以按「套用範例」再修改。'; st.textContent = r.text ? (r.custom ? '✅ 使用你的設定檔' : '使用內建設定檔') : ''; }
+    const ta = $('f_sp_' + i), st = $('f_sp_st_' + i); let exs = {};
+    try { const r = await api('/api/sources/profile?name=' + encodeURIComponent(n)); ta.value = r.text; exs = r.examples || {}; ta.placeholder = '還沒有設定檔（系統會自己猜到期日欄）。可以按「套用範例」再修改。'; st.textContent = r.text ? (r.custom ? '✅ 使用你的設定檔' : '使用內建設定檔') : ''; }
     catch (e) { st.textContent = '讀取失敗：' + e.message; }
-    document.querySelector('[data-spex="' + i + '"]').onclick = () => { if (ta.value.trim() && !confirm('用範例取代目前的內容？')) return; ta.value = ex; st.textContent = '已填入範例，記得按「儲存設定檔」'; };
+    const box = document.querySelector('[data-spexs="' + i + '"]');
+    for (const [label, text] of Object.entries(exs)) {
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = '套用範例（' + label + '）';
+      b.onclick = () => { if (ta.value.trim() && !confirm('用範例取代目前的內容？\n（網址那一行會保留你原本寫的）')) return; const keep = (/^網址\s*[:：].*$/m.exec(ta.value) || [])[0]; ta.value = keep ? text.replace(/^網址\s*[:：].*$/m, keep) : text; st.textContent = '已填入範例，記得按「儲存設定檔」'; };
+      box.appendChild(b);
+    }
     document.querySelector('[data-spsave="' + i + '"]').onclick = async () => {
       try { await api('/api/sources/profile', { method: 'PUT', body: JSON.stringify({ name: n, text: ta.value }) }); st.textContent = ta.value.trim() ? '✅ 已儲存' : '✅ 已清除（改回系統自己猜）'; toast('已儲存「' + n + '」的設定檔'); }
       catch (e) { st.textContent = '❌ ' + e.message; }

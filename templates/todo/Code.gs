@@ -11,7 +11,7 @@
  *
  * 欄位都是用「欄位名稱」找的：你可以調整欄位順序、自己加欄位，不會壞。
  */
-var VERSION = '1.0.5';
+var VERSION = '1.0.6';
 var TASK_SHEET = '待辦', MEMBER_SHEET = '成員', SETTING_SHEET = '設定', LOG_SHEET = '紀錄';
 var TASK_HEADERS = ['編號', '事項', '負責人', '期限', '狀態', '優先', '備註', '提出人', '建立時間', '最後更新', '更新者', '完成時間'];
 var MEMBER_HEADERS = ['姓名', 'Email', '角色', 'LINE 名稱', 'LINE ID'];
@@ -227,22 +227,43 @@ function opReadSource_(req) {
   if (!src && /^https:\/\/docs\.google\.com\/spreadsheets\/d\/[\w-]+/.test(str_(req.url))) src = { name: clean_(req.name, 20) || '資料表', url: str_(req.url), tab: str_(req.tab) };
   if (!src) throw new Error('沒有這份唯讀資料表的網址：' + str_(req.name) + '（在 Agent Chat 的設定檔寫「網址:」，或在「設定」分頁登記）');
   var book;
-  try { book = SpreadsheetApp.openByUrl(src.url); } catch (e) { throw new Error('打不開「' + src.name + '」：請確認建立這份待辦 Sheet 的 Gmail 打得開那份表（至少是檢視者）'); }
-  // C 欄可以寫多個分頁（例如「一廠,三廠」）；不寫就讀第一個分頁。隱藏列、篩選都不影響：一律讀原始範圍
-  var names = src.tab ? src.tab.split(/[,，、;；]+/).map(function (x) { return x.trim(); }).filter(String) : [''];
-  var tz = book.getSpreadsheetTimeZone(), tabs = [];
-  names.slice(0, 5).forEach(function (n) {
-    var sh = n ? book.getSheetByName(n) : book.getSheets()[0];
+  try { book = SpreadsheetApp.openByUrl(src.url); } catch (e) { throw new Error('打不開「' + src.name + '」：請確認建立這份待辦 Sheet 的 Gmail 打得開那份表（至少是檢視者）。如果檔名旁邊有「.XLSX」標籤，它是 Excel 檔，要先在那份表按「檔案 → 另存為 Google 試算表」'); }
+
+  // 分頁可以寫多個（「一廠,三廠」）；每個也可以寫關鍵字「三廠+OOS」＝名稱同時含這些字，有好幾頁就挑今年的、再來是年份最大的
+  // （分頁名稱常帶年份，明年換頁不用改設定）。不寫就讀第一個分頁。隱藏列、篩選都不影響：一律讀原始範圍
+  var specs = src.tab ? src.tab.split(/[,，、;；]+/).map(function (x) { return x.trim(); }).filter(String) : [''];
+  var tz = book.getSpreadsheetTimeZone(), tabs = [], all = book.getSheets(), year = Utilities.formatDate(new Date(), tz, 'yyyy');
+  var pick = function (spec) {
+    if (!spec) return all[0];
+    var exact = book.getSheetByName(spec); if (exact) return exact;
+    var keys = spec.split('+').map(function (x) { return x.trim().toLowerCase(); }).filter(String);
+    var hits = all.filter(function (sh) { var n = sh.getName().toLowerCase(); return keys.every(function (k) { return n.indexOf(k) >= 0; }); });
+    if (hits.length <= 1) return hits[0] || null;
+    var cur = hits.filter(function (sh) { return sh.getName().indexOf(year) >= 0; }); if (cur.length) return cur[0];
+    var yr = function (sh) { var m = sh.getName().match(/20\d\d/g); return m ? Math.max.apply(null, m.map(Number)) : 0; };
+    return hits.slice().sort(function (a, b) { return yr(b) - yr(a); })[0];
+  };
+  var headerRow = parseInt(req.headerRow, 10) || 0;
+  specs.slice(0, 12).forEach(function (n) {
+    var sh = pick(n);
     if (!sh) throw new Error('「' + src.name + '」找不到分頁：' + n);
-    var rng = sh.getDataRange(), nr = Math.min(rng.getNumRows(), 2001), nc = Math.min(rng.getNumColumns(), 30);
-    if (nr < 1 || nc < 1) { tabs.push({ sheet: sh.getName(), headers: [], rows: [] }); return; }
-    var vals = sh.getRange(1, 1, nr, nc).getValues(), disp = sh.getRange(1, 1, nr, nc).getDisplayValues();
+    var rng = sh.getDataRange(), nr = Math.min(rng.getNumRows(), 2001), nc = Math.min(rng.getNumColumns(), 40);
+    if (nr < 1 || nc < 1) { tabs.push({ spec: n, sheet: sh.getName(), headers: [], rows: [], strikes: [] }); return; }
+    var r0 = sh.getRange(1, 1, nr, nc), vals = r0.getValues(), disp = r0.getDisplayValues();
+    var lines = r0.getFontLines ? r0.getFontLines() : null; // 刪除線（line-through）：巡檢規則常用來表示作廢
     var cellOf = function (i, j) { var v = vals[i][j]; return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : String(disp[i][j] == null ? '' : disp[i][j]).slice(0, 200); };
-    // 標題列：前 5 列裡第一個「有 3 格以上有字」的列（上面常有一列大標）
-    var h = 0; for (var i = 0; i < Math.min(5, nr); i++) { if (disp[i].filter(function (x) { return String(x).trim(); }).length >= Math.min(3, nc)) { h = i; break; } }
-    var headers = disp[h].map(function (x, j) { return String(x).trim() || ('第' + (j + 1) + '欄'); }), rows = [];
-    for (var r = h + 1; r < nr; r++) { var row = []; for (var c = 0; c < nc; c++) row.push(cellOf(r, c)); if (row.some(function (x) { return x.trim(); })) rows.push(row); }
-    tabs.push({ sheet: sh.getName(), headers: headers, rows: rows, truncated: rng.getNumRows() > 2001 });
+    // 標題列：設定檔指定（第幾列）；不然在前 8 列裡找第一個「有字的格子數 ≥ 最多那列的 6 成」的列（跳過上面的大標、說明）
+    var cnt = function (i) { return disp[i].filter(function (x) { return String(x).trim(); }).length; }, h = 0;
+    if (headerRow >= 1 && headerRow <= nr) h = headerRow - 1;
+    else { var mx = 0, i; for (i = 0; i < Math.min(8, nr); i++) mx = Math.max(mx, cnt(i)); for (i = 0; i < Math.min(8, nr); i++) { if (cnt(i) >= Math.max(2, mx * 0.6)) { h = i; break; } } }
+    var headers = disp[h].map(function (x, j) { return String(x).replace(/\s+/g, ' ').trim() || ('第' + (j + 1) + '欄'); }), rows = [], strikes = [];
+    for (var r = h + 1; r < nr; r++) {
+      var row = []; for (var c = 0; c < nc; c++) row.push(cellOf(r, c));
+      if (!row.some(function (x) { return x.trim(); })) continue;
+      if (lines) for (c = 0; c < nc; c++) if (lines[r][c] === 'line-through') strikes.push([rows.length, c]);
+      rows.push(row);
+    }
+    tabs.push({ spec: n, sheet: sh.getName(), headers: headers, rows: rows, strikes: strikes, truncated: rng.getNumRows() > 2001 });
   });
   // headers／rows／sheet：第一個分頁（舊版 Agent Chat 相容）
   return { name: src.name, tabs: tabs, sheet: tabs[0].sheet, headers: tabs[0].headers, rows: tabs[0].rows, truncated: tabs[0].truncated };
