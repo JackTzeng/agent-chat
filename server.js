@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.25.3';
+const VERSION = '3.25.4';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1917,7 +1917,16 @@ const server = http.createServer(async (req, res) => {
         todoBook.drop(); const list = await todoBook.sources().catch(() => []), out = [];
         // 設定檔裡寫了網址的表也算（不用在待辦 Sheet 的「設定」分頁登記）
         let files = []; try { files = fs.readdirSync(SOURCE_DIR).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3)); } catch {}
-        for (const n of files) { const t = sourceProfileText(n), pr = t && todoLib.parseSourceProfile(t.text); if (pr && pr.url && !list.some((x) => x.name === n)) list.push({ name: n }); }
+        // 成員設定裡填了、但還讀不到的表也列出來，說清楚卡在哪一步
+        const wanted = [...new Set([...files, ...AGENTS.flatMap((a) => a.dataSources || [])])];
+        for (const n of wanted) {
+          if (list.some((x) => x.name === n)) continue;
+          const t = sourceProfileText(n), pr = t && todoLib.parseSourceProfile(t.text);
+          if (pr && pr.url) list.push({ name: n });
+          else out.push({ name: n, ok: false, error: !t ? '還沒有設定檔：到成員設定打開「✏️ 設定檔」，寫上網址與分頁後按「儲存設定檔」'
+            : pr && pr.urlRaw ? '設定檔裡的「網址:」看不懂（現在是「' + String(pr.urlRaw).slice(0, 60) + '」）。請貼儀器清單在瀏覽器上方的完整網址，要像 https://docs.google.com/spreadsheets/d/一長串英數字/edit'
+            : '設定檔裡沒有「網址:」這一行（要寫在最上面兩條 --- 之間）' });
+        }
         for (const s of list) {
           try { const d = await todoBook.readSource(s.name), tabs = d.tabs || [{ sheet: d.sheet, rows: d.rows }]; out.push({ name: s.name, ok: true, rows: tabs.reduce((n, t) => n + t.rows.length, 0), headers: d.headers, sheet: tabs.map((t) => t.sheet + ' ' + t.rows.length + ' 筆').join('、'), dueCols: d.headers.filter((h) => /(到期|期限|效期|有效|下次|due|expir|next)/i.test(h)) }); }
           catch (e) { out.push({ name: s.name, ok: false, error: e.message }); }

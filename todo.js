@@ -123,6 +123,8 @@ function sourceSummary(src, text, now = Date.now()) {
 
 // ---------- 📊 資料表設定檔（.md）：寫明到期欄、完成判斷、範圍、要顯示的欄位；程式只照著算 ----------
 // 範例見 templates/sources/儀器.md。欄位可以寫欄位字母（H）或標題名稱（儀器名稱），多欄用 + 合併（廠牌 + 型號 + 序號）
+// Google 試算表網址 → 檔案 ID（接受 /spreadsheets/d/ID、/spreadsheets/u/0/d/ID，後面帶 /edit#gid=… 都可以）
+function sheetIdOf(u) { const m = /^\s*<?https?:\/\/docs\.google\.com\/spreadsheets\/(?:u\/\d+\/)?d\/([\w-]+)/.exec(String(u || '')); return m ? m[1] : ''; }
 function parseSourceProfile(text) {
   const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(String(text || ''));
   if (!m) return null;
@@ -134,13 +136,13 @@ function parseSourceProfile(text) {
     else if (/^(完成欄|done)$/i.test(k)) p.doneCol = v;
     else if (/^(完成字|doneText)$/i.test(k)) p.doneText = v;
     else if (/^(名稱欄|name)$/i.test(k)) p.nameCol = v;
-    else if (/^(網址|url)$/i.test(k)) { if (/^https:\/\/docs\.google\.com\/spreadsheets\/d\/[\w-]+/.test(v)) p.url = v; }
+    else if (/^(網址|url)$/i.test(k)) { p.urlRaw = v; const id = sheetIdOf(v); if (id) p.url = 'https://docs.google.com/spreadsheets/d/' + id + '/edit'; }
     else if (/^(分頁|tabs?)$/i.test(k)) p.tabs = v.split(/[,，、;；]+/).map((x) => x.trim()).filter(Boolean).join(',');
     else if (/^(分組名稱|group)$/i.test(k)) p.groupLabel = v;
     else if (/^(範圍|windows)$/i.test(k)) p.windows = v.split(/[,，、]+/).map((x) => x.trim()).filter(Boolean);
     else if (/^(欄位|column)$/i.test(k) && v) { const [label, spec] = v.includes('=') ? v.split('=').map((x) => x.trim()) : [v, v]; p.columns.push({ label, parts: spec.split('+').map((x) => x.trim()).filter(Boolean) }); }
   }
-  return p.due || p.url ? p : null;
+  return p.due || p.url || p.urlRaw ? p : null;
 }
 const letterIndex = (s) => [...s].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
 function colIndex(spec, headers) {

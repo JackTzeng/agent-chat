@@ -427,7 +427,13 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   await J('/api/sources/profile', 'PUT', { name: '設備2', text: '---\n網址: ' + EQ_URL + '\n分頁: 設備\n---\n' });
   const srcChk2 = (await J('/api/todo/sources', 'POST')).sources;
   assert.deepEqual(srcChk2.map((x) => [x.name, x.ok, x.rows]), [['儀器', true, 3], ['設備2', true, 3]]);
-  assert.equal((await call('/api/sources/profile', 'PUT', { name: '設備3', text: '---\n網址: https://evil.example.com/x\n---\n' })).status, 400, '不是 Google 試算表網址、又沒有到期欄 → 不收');
+  // 網址寫錯、還是範例的佔位字、或用 /u/0/d/ 的網址：檢查畫面要說清楚卡在哪
+  await J('/api/sources/profile', 'PUT', { name: '設備3', text: '---\n網址: https://evil.example.com/x\n---\n' });
+  await J('/api/sources/profile', 'PUT', { name: '設備4', text: '---\n網址: https://docs.google.com/spreadsheets/d/把這裡換成儀器清單的網址\n到期欄: H\n---\n' });
+  await J('/api/sources/profile', 'PUT', { name: '設備5', text: '---\n網址: https://docs.google.com/spreadsheets/u/0/d/EQUIPxxxxxxxxxxxxxxxxxxxx/edit#gid=0\n---\n' });
+  const chk3 = Object.fromEntries((await J('/api/todo/sources', 'POST')).sources.map((x) => [x.name, x]));
+  assert.match(chk3['設備3'].error, /網址:」看不懂/); assert.match(chk3['設備4'].error, /網址:」看不懂.*把這裡換成/);
+  assert.match(chk3['設備5'].error || '', /打不開/, '/u/0/d/ 的網址也認得（這個假 ID 打不開，但不是格式錯）');
   await waitFor(idleTodo, 'todo idle EQ2');
 
   // 👑 指定主管：一般成員不行；主管可以用 @ 或姓名指定／取消；不經過 AI
