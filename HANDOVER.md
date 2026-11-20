@@ -33,13 +33,14 @@
 7. **🗓 助理（v3.15）**：新增成員按「🗓 套用助理設定」，對它說「明天下午三點提醒我開會」，確認：行程.md 有寫進 `workspace\assistant`、「⏰ 排程」出現單次建議、核准後時間到會收到提醒（Telegram 也要收到）；acceptEdits 能不能順利寫檔（Claude Code 實際行為還沒在 Windows 驗證）。
 8. **💚 LINE（v3.17）**：照「💚 LINE」6 步建 LINE 官方帳號、貼 secret／token、放 cloudflared.exe、一鍵開通道、配對，然後在 LINE 對助理說「明天下午三點提醒我開會」。要確認：Windows 上 cloudflared 能開（公司網路可能擋）、LINE「Verify」通過、reply 能收到、「同意 N」能排進去、提醒時間到有收到 push。LINE 官方帳號的選單名稱常改，教學若與實際畫面不同請回報。
 9. **📋 部門待辦（v3.18）**：Google 端只用假的環境測過（真的 Code.gs 跑在假的試算表／信箱）。在真實環境要確認：Apps Script 部署與授權流程、網頁應用程式 POST 的 302 轉址（`todo.js` 用 fetch 跟隨）、寄信額度與每日觸發、agy 唯讀在群組裡寫動作行的穩定度（若 gemini-flash 常漏寫動作行，調整 `TODO_PERSONA` 或換模型）、LINE 群組的 `mention.isSelf` 與 userId 是否有提供、群組推播的訊息則數怎麼算。
-10. CLAUDE.md 待辦 3 列的其他項目（一鍵更新、排程配真實 CLI、Codex rollout token、`--allowedTools` 比對）。
+10. **📮 通知補送（v3.26）**：拔網路線（或關 Wi-Fi）時讓助理排程提醒到點，確認左下出現「📮 待重送」、接回網路後自動送到 LINE／Telegram；重貼 `Code.gs`（1.0.6）並部署新版本後，「📋 待辦清單 → 測試連線」不再出現「Apps Script 比較舊」的提醒。
+11. CLAUDE.md 待辦 3 列的其他項目（一鍵更新、排程配真實 CLI、Codex rollout token、`--allowedTools` 比對）。
 
 ## 待辦（依優先順序建議）
 1. 上面的實測回報與修正（agy write 等級的錯誤說法已在 v3.11.1 更正，剩 E／F 實測）。
 2. 工具結果結束碼：agy 輸出是 `Command exited with code N`，server.js 的 regex（`/exit code[:\s]+(\d+)/i`）要也認得 `exited with code N`。
 3. 守則／記憶精簡建議：依 📏 面板數字，產生合併建議給使用者核准（**只有使用者核准才改**；可考慮用免費的 Gemini 成員做摘要）。舊工具輸出遮蔽（OpenHands 的 observation masking 概念）等量測後再決定。
-4. 路線圖：唯讀「🧰 能力一覽」（各成員實際用得到的 MCP／Skill，不做編輯介面）；Telegram 連續訊息合併成一個提示；通知去重／outbox；不可改寫的執行紀錄（雜湊串接）與機密保管遮蔽。
+4. 路線圖：🧵 任務執行追蹤 → 🧪 小型評測集 → ✅ 統一「待核准」收件匣（使用者 2026-11-20 看過「從 Agent Demo 到 Agent Platform」文章後同意的順序；outbox 已在 v3.26 做完）；唯讀「🧰 能力一覽」；Telegram 連續訊息合併成一個提示；不可改寫的執行紀錄（雜湊串接）與機密保管遮蔽。
 
 ## 設計決定與地雷
 - **開頭去重**：`state.hdr[sessionKey]` 存 hash／省略輪數；`fresh`（排程新對話）時要一起清。只看單輪提示詞的假 CLI 測試要在 agents.json 設 `harness.headerRefresh: 0`（harness／standalone 測試已經這樣做），否則會抓不到開頭內容。

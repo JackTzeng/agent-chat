@@ -42,7 +42,7 @@ async function freePort() {
 
 // 假的 Telegram Bot API：每個 token 一個訊息佇列，記下所有 sendMessage
 function fakeTelegram() {
-  const queues = {}, sent = [], seq = { n: 1 };
+  const queues = {}, sent = [], seq = { n: 1 }, fail = {};
   const srv = http.createServer((req, res) => {
     let body = ''; req.on('data', (d) => (body += d)).on('end', async () => {
       const fm = req.url.match(/^\/file\/bot([^/]+)\/(.+)$/);
@@ -58,6 +58,7 @@ function fakeTelegram() {
         for (let i = 0; i < 20 && !q.some((u) => u.update_id >= (j.offset || 0)); i++) await sleep(25);
         return ok(q.filter((u) => u.update_id >= (j.offset || 0)));
       }
+      if (method === 'sendMessage' && fail[token] > 0) { fail[token]--; res.writeHead(502, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error_code: 502, description: 'Bad Gateway' })); }
       if (method === 'sendMessage') { sent.push({ token, chat: j.chat_id, text: j.text }); return ok({}); }
       if (method === 'sendChatAction') return ok(true);
       if (method === 'sendDocument') { sent.push({ token, method, text: (body.match(/filename="([^"]+)"/) || [])[1] || '', body }); return ok({}); }
@@ -68,12 +69,12 @@ function fakeTelegram() {
   const push = (token, from, msg) => {
     (queues[token] = queues[token] || []).push({ update_id: seq.n++, message: { message_id: seq.n, chat: { id: from, type: 'private' }, from: { id: from }, ...msg } });
   };
-  return { srv, sent, push };
+  return { srv, sent, push, fail };
 }
 
 test('standalone ledger member: no tasks, telegram routing, photos, continuity, env, tools, audit', { timeout: 60000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-standalone-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'agents.example.json'])
+  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'agents.example.json'])
     fs.copyFileSync(path.join(source, f), path.join(dir, f));
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'agents.example.json'), 'utf8'));
@@ -230,4 +231,13 @@ test('standalone ledger member: no tasks, telegram routing, photos, continuity, 
   assert.ok(!doc.body.includes(MAIN), 'bot token 不會出現在回報裡');
   tg.push(MAIN, 111, { text: '/restart yes' });
   await waitFor(() => tg.sent.find((s) => s.token === MAIN && /沒辦法自動重啟/.test(s.text)), 'restart needs launcher');
+
+  // 📮 Telegram 暫時送不出去（502）→ 放進 outbox，補送成功；專屬 bot 用自己的頻道
+  tg.fail[LEDGER] = 1;
+  tg.push(LEDGER, 111, { text: '午餐 90 現金' });
+  let ob;
+  for (let i = 0; i < 200 && !(ob && ob.pending.length); i++) { ob = await api('/api/outbox'); if (!ob.pending.length) await sleep(50); }
+  assert.equal(ob.pending.length, 1, stdout + stderr); assert.equal(ob.pending[0].channel, 'tg:' + id); assert.match(ob.pending[0].lastError, /Bad Gateway/);
+  await api('/api/outbox/' + ob.pending[0].id + '/retry', 'POST');
+  await waitFor(() => tg.sent.find((s) => s.token === LEDGER && /午餐 90 現金/.test(s.text)), 'resent via outbox');
 });

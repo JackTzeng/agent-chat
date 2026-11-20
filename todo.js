@@ -9,6 +9,7 @@
 // 實際寫入由這裡做：先驗證欄位、檢查發言者的權限（成員只能改自己的，主管才能指派／改別人的／取消），再呼叫 Apps Script。
 // 所以就算群組裡有人叫模型「把全部都取消」，模型寫得出動作行，系統也會擋下。
 const timersLib = require('./timers');
+const crypto = require('crypto');
 
 const STATUS = ['待辦', '進行中', '完成', '擱置', '取消'];
 const PRIORITY = ['高', '中', '低'];
@@ -231,13 +232,14 @@ function create(ctx) {
   const drop = () => { cache = { items: null, at: 0, members: null, mAt: 0 }; };
 
   function cleanUrl(raw) { const p = urlProblem(raw); if (p) throw new Error(p); return new URL(String(raw).trim()).toString(); }
-  async function call(op, args = {}, timeoutMs = 25000) {
+  let idemOk = false; // 這份 Apps Script 認不認得 opId（v1.0.6 起回應會帶 idem:true）；看過一次回應就知道
+  async function call(op, args = {}, timeoutMs = Number(process.env.TODO_TIMEOUT_MS) || 25000) {
     if (!configured()) throw new Error('還沒設定待辦清單（Apps Script 網址與密鑰）');
     const bad = urlProblem(cfg().url); if (bad) throw new Error(bad);
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), timeoutMs);
     let res;
     try { res = await fetch(cfg().url, { method: 'POST', redirect: 'follow', signal: ac.signal, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ key: cfg().key, op, ...args }) }); }
-    catch (e) { throw new Error(e.name === 'AbortError' ? 'Google Sheet 沒有回應（逾時）' : '連不上 Google（' + e.message + '）'); }
+    catch (e) { throw Object.assign(new Error(e.name === 'AbortError' ? 'Google Sheet 沒有回應（逾時）' : '連不上 Google（' + e.message + '）'), { unsure: true }); }
     finally { clearTimeout(timer); }
     const text = await res.text(); let j = null; try { j = JSON.parse(text); } catch {}
     if (!j) {
@@ -246,8 +248,22 @@ function create(ctx) {
       if (res.status === 404) throw new Error('找不到這個網頁應用程式（HTTP 404）：網址可能少貼了一段，或這個部署已經被刪除。請到「部署 → 管理部署作業」重新複製網址');
       throw new Error('Google 回的不是預期的格式（HTTP ' + res.status + '）：網址可能不是「網頁應用程式」的 /exec 網址');
     }
+    if (j.idem) idemOk = true;
     if (!j.ok) throw new Error(j.error || '失敗');
     return j;
+  }
+  // 新增／修改（有副作用）：帶一個 opId。逾時或連線中斷時不知道 Google 到底寫了沒，
+  // Apps Script 認得 opId 就用同一個 opId 安全重試一次（做過的會直接回上次結果，不會多一筆）；
+  // 舊版 Apps Script 不認得，就不自動重試，請使用者先看清單，避免重複登記
+  async function write(op, args) {
+    const opId = crypto.randomBytes(12).toString('base64url');
+    try { return await call(op, { ...args, opId }); }
+    catch (e) {
+      if (!e.unsure) throw e;
+      if (!idemOk) throw new Error(e.message + '：這筆可能已經寫進去了，請先說「我的待辦」確認，不要直接再說一次。（把 Apps Script 更新到最新版，系統就能自動安全重試）');
+      try { return await call(op, { ...args, opId }, (Number(process.env.TODO_TIMEOUT_MS) || 25000) * 2); }
+      catch (e2) { throw e2.unsure ? new Error(e2.message + '（重試一次也失敗）：這筆可能已經寫進去了，請先說「我的待辦」確認') : e2; }
+    }
   }
   async function items() { if (cache.items && Date.now() - cache.at < 8000) return cache.items; const r = await call('list'); cache.items = r.items; cache.at = Date.now(); return r.items; }
   async function members() { if (cache.members && Date.now() - cache.mAt < 20000) return cache.members; const r = await call('members'); cache.members = r.members; cache.mAt = Date.now(); return r.members; }
@@ -330,7 +346,7 @@ function create(ctx) {
       const own = canonOwner(f.owner === undefined || !String(f.owner).trim() ? sender.name : f.owner, mem);
       if (own.name !== sender.name && !mgr) throw new Error('只有主管可以把事項指派給別人。要改成登記在你自己名下嗎？');
       const due = checkDue(), priority = checkPriority();
-      const r = await call('add', { title, owner: own.name, due: due || '', priority: priority || '', note: short(f.note, 300), by: sender.name });
+      const r = await write('add', { title, owner: own.name, due: due || '', priority: priority || '', note: short(f.note, 300), by: sender.name });
       return '✅ 已登記 #' + r.item.id + '｜' + r.item.title + '｜負責 ' + (r.item.owner || '未指定') + '｜' + (r.item.due ? '期限 ' + fmtDue(r.item.due) : '未設期限') +
         (own.name && !own.known ? '\n（「' + own.name + '」還沒登記，收不到 email 提醒，請對方在群組回覆「我是 姓名」）' : '');
     }
@@ -340,7 +356,7 @@ function create(ctx) {
     const mine = item.owner === sender.name;
     if (a.op === '撤銷') {
       if (!mgr && !(item.proposer === sender.name && mine)) throw new Error('#' + id + ' 只有主管（或你自己剛登記的）可以取消');
-      await call('update', { id, fields: { status: '取消' }, by: sender.name });
+      await write('update', { id, fields: { status: '取消' }, by: sender.name });
       return '✅ 已取消 #' + id + '｜' + item.title;
     }
     // 更新／完成
@@ -358,7 +374,7 @@ function create(ctx) {
       fields.owner = own.name; desc.push('負責人 → ' + (own.name || '未指定') + (own.name && !own.known ? '（還沒登記）' : ''));
     }
     if (!desc.length) throw new Error('#' + id + ' 沒有要改的內容');
-    await call('update', { id, fields, by: sender.name });
+    await write('update', { id, fields, by: sender.name });
     return '✅ 已更新 #' + id + '｜' + (fields.title || item.title) + '：' + desc.join('、');
   }
 

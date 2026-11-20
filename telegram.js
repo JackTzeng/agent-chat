@@ -48,7 +48,31 @@ const apiBase = () => process.env.TELEGRAM_API || 'https://api.telegram.org';
 const MAX_FILE = 20 * 1024 * 1024; // Telegram bot 能下載的檔案上限
 
 // 一個 bot 的 API 呼叫（主 bot 與成員專屬 bot 共用）
-function makeClient(token, signal) {
+// 📮 Telegram 送不出去時：連不上（沒有 error_code）、429、5xx 才交給 outbox 稍後重送；400／401／403（被封鎖、token 錯）重送也沒用
+const tgRetryable = (e) => !e.code || e.code === 429 || e.code >= 500;
+function makeSay(call, ctx, channel, label) {
+  async function say(chatId, text) {
+    text = String(text || '').trim() || '（空白）';
+    const parts = [];
+    for (let i = 0; i < text.length; i += 3800) parts.push(text.slice(i, i + 3800));
+    for (let i = 0; i < parts.length; i++) {
+      try { await call('sendMessage', { chat_id: chatId, text: parts[i], disable_web_page_preview: true }); }
+      catch (e) {
+        const queue = tgRetryable(e) && ctx && ctx.outbox;
+        console.error('Telegram 傳送失敗' + (queue ? '，稍後會自動重送' : '') + '：' + e.message);
+        if (queue) for (const t of parts.slice(i)) ctx.outbox.add({ channel, target: chatId, payload: { text: t }, label, error: e.message });
+        return;
+      }
+    }
+  }
+  // 給 outbox 重送用：一次一段
+  async function resend(chatId, payload) {
+    try { await call('sendMessage', { chat_id: chatId, text: String(payload.text || ''), disable_web_page_preview: true }); return { ok: true }; }
+    catch (e) { return { ok: false, retry: tgRetryable(e), error: e.message }; }
+  }
+  return { say, resend };
+}
+function makeClient(token, signal, ctx, channel, label) {
   const API = apiBase() + '/bot' + token;
   async function call(method, body, isForm) {
     const r = await fetch(API + '/' + method, isForm
@@ -58,13 +82,7 @@ function makeClient(token, signal) {
     if (!j.ok) throw Object.assign(new Error(j.description || 'HTTP ' + r.status), { code: j.error_code });
     return j.result;
   }
-  async function say(chatId, text) {
-    text = String(text || '').trim() || '（空白）';
-    for (let i = 0; i < text.length; i += 3800) {
-      try { await call('sendMessage', { chat_id: chatId, text: text.slice(i, i + 3800), disable_web_page_preview: true }); }
-      catch (e) { console.error('Telegram 傳送失敗：' + e.message); return; }
-    }
-  }
+  const { say, resend } = makeSay(call, ctx, channel, label);
   async function sendMedia(chatId, file) {
     const ext = path.extname(file).toLowerCase();
     const isImg = IMG_EXT.includes(ext), isVid = VIDEO_EXT.includes(ext);
@@ -83,7 +101,7 @@ function makeClient(token, signal) {
     if (buf.length > MAX_FILE) throw new Error('檔案太大（Telegram bot 最多 20MB）');
     return { buf, filePath: String(f.file_path || '') };
   }
-  return { call, say, sendMedia, typing, download };
+  return { call, say, resend, sendMedia, typing, download };
 }
 
 // Telegram 傳來的照片／檔案存到成員工作資料夾的 attachments/，回傳相對路徑
@@ -199,7 +217,8 @@ function startAgentBot(ctx, a0) {
   const id = a0.id, token = a0.telegram.botToken;
   const ac = new AbortController();
   let alive = true;
-  const cl = makeClient(token, ac.signal);
+  const cl = makeClient(token, ac.signal, ctx, 'tg:' + id, 'Telegram（' + a0.name + '）');
+  if (ctx.outbox) ctx.outbox.register('tg:' + id, cl.resend);
   const status = { state: 'connecting', username: '', error: '' };
   const changed = () => ctx.broadcast && ctx.broadcast({ agentId: '*', kind: 'telegram' });
   const onDone = ({ agent, tg, segments, shift }) => {
@@ -264,7 +283,7 @@ function startAgentBot(ctx, a0) {
     }
   })();
 
-  return { token, status, stop() { alive = false; ac.abort(); ctx.hooks.off('done', onDone); } };
+  return { token, status, stop() { alive = false; ac.abort(); ctx.hooks.off('done', onDone); if (ctx.outbox) ctx.outbox.unregister('tg:' + id, cl.resend); } };
 }
 exports.newPairCode = () => {
   pairing = { code: String(crypto.randomInt(100000, 1000000)), expires: Date.now() + 5 * 60 * 1000 };
@@ -283,11 +302,11 @@ exports.start = function start(ctx) {
   const ac = new AbortController();
   const listeners = [];
   const listen = (evt, fn) => { ctx.hooks.on(evt, fn); listeners.push([evt, fn]); };
-  session = { stop() { alive = false; ac.abort(); for (const [e, f] of listeners) ctx.hooks.off(e, f); } };
+  session = { stop() { alive = false; ac.abort(); for (const [e, f] of listeners) ctx.hooks.off(e, f); if (ctx.outbox) ctx.outbox.unregister('tg:main', resend); } };
   setStatus({ state: 'connecting', error: '' });
 
   const API = apiBase() + '/bot' + token;
-  const cl = makeClient(token, ac.signal);
+  const cl = makeClient(token, ac.signal, ctx, 'tg:main', 'Telegram');
   const allowedIds = () => (cfg.allowedUserIds || []).map(String);
   const tg = (ctx.state.telegram = ctx.state.telegram || { offset: 0, chats: {} });
   const pushRecipients = () => Object.keys(tg.chats).filter((id) => {
@@ -308,13 +327,8 @@ exports.start = function start(ctx) {
     return j.result;
   }
 
-  async function say(chatId, text) {
-    text = String(text || '').trim() || '（空白）';
-    for (let i = 0; i < text.length; i += 3800) {
-      try { await call('sendMessage', { chat_id: chatId, text: text.slice(i, i + 3800), disable_web_page_preview: true }); }
-      catch (e) { console.error('Telegram 傳送失敗：' + e.message); return; }
-    }
-  }
+  const { say, resend } = makeSay(call, ctx, 'tg:main', 'Telegram');
+  if (ctx.outbox) ctx.outbox.register('tg:main', resend);
 
   async function sendMedia(chatId, file) {
     const ext = path.extname(file).toLowerCase();

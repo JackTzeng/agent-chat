@@ -196,7 +196,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   await new Promise((r) => api.listen(0, '127.0.0.1', r));
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-todo-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'agents.example.json'])
+  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'agents.example.json'])
     fs.copyFileSync(path.join(source, f), path.join(dir, f));
   fs.mkdirSync(path.join(dir, 'templates', 'todo'), { recursive: true }); fs.copyFileSync(path.join(source, 'templates', 'todo', 'Code.gs'), path.join(dir, 'templates', 'todo', 'Code.gs'));
   fs.cpSync(path.join(source, 'templates', 'sources'), path.join(dir, 'templates', 'sources'), { recursive: true });
@@ -257,7 +257,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   let st = await J('/api/line'); assert.equal(st.groups, 0); assert.equal(st.groupAgentName, '待辦管家'); assert.equal(st.todo.configured, true);
   const raw = JSON.stringify(st) + JSON.stringify(await J('/api/todo')) + JSON.stringify(await J('/api/config'));
   assert.ok(!raw.includes(g.props.KEY) && !raw.includes(SECRET) && !raw.includes(TOKEN), '不回傳任何密鑰');
-  const ping = await J('/api/todo/ping', 'POST'); assert.equal(ping.open, 0); assert.equal(ping.version, '1.0.5');
+  const ping = await J('/api/todo/ping', 'POST'); assert.equal(ping.open, 0); assert.equal(ping.version, '1.0.6');
 
   // 2) 還沒啟用的群組：任何訊息都不處理、不回應；配對碼才能啟用
   assert.equal(await hook([gmsg('U_wang', 'ADD1')]), 200); await sleep(400);

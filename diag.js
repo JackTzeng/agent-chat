@@ -213,6 +213,17 @@ exports.create = function create(ctx) {
       const bad = ts.runs.filter((r) => ['failed', 'skipped', 'interrupted', 'stopped'].includes(r.status)).slice(0, 15);
       if (bad.length) L.push('', '最近的排程問題：', code(bad.map((r) => stamp(r.ts) + ' #' + r.timerId + ' ' + r.name + ' ' + r.status + (r.summary ? '：' + short(r.summary, 150) : '')).join('\n'), 'text'));
     }
+    if (ctx.outbox) {
+      const ob = ctx.outbox();
+      if (ob && (ob.pending.length || ob.history.length)) {
+        // 只列頻道、次數、錯誤，不列訊息內容
+        L.push('', '### 📮 通知補送', '');
+        for (const x of ob.pending) L.push('- 待重送 #' + x.id + '｜' + x.channel + '｜試了 ' + x.tries + ' 次｜建立 ' + stamp(x.created) + (x.waiting ? '｜頻道還沒啟動' : '') + '｜' + short(x.lastError, 150));
+        for (const x of ob.history.filter((h) => h.status !== 'sent').slice(0, 10)) L.push('- ' + x.status + ' #' + x.id + '｜' + x.channel + '｜' + stamp(x.at) + '｜' + short(x.error, 150));
+        const sent = ob.history.filter((h) => h.status === 'sent').length;
+        if (sent) L.push('- 最近補送成功 ' + sent + ' 則');
+      }
+    }
     L.push('', '## 6. 最近的錯誤與事件', '');
     const ev = ctx.harnessRuns(150).filter((r) => r.type !== 'turn' || r.error || r.interrupted);
     L.push(ev.length ? code(ev.slice(-60).map((r) => stamp(r.ts) + ' ' + JSON.stringify({ ...r, ts: undefined })).join('\n'), 'text') : '（沒有）');
