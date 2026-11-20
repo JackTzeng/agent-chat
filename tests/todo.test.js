@@ -71,6 +71,15 @@ test('normDate / fmtDue / canonOwner / safe', () => {
   assert.equal(todo.normDate('2026-02-31', now), null);
   assert.equal(todo.normDate('明天', now), '2026-11-20'); assert.equal(todo.normDate('週五前', now), '2026-11-20'); assert.equal(todo.normDate('下週一', now), '2026-11-23');
   assert.equal(todo.normDate('11/27', now), '2026-11-27');
+  // 口語期限
+  assert.equal(todo.normDate('月底', now), '2026-11-30'); assert.equal(todo.normDate('下個月底', now), '2026-12-31');
+  assert.equal(todo.normDate('3天後', now), '2026-11-22'); assert.equal(todo.normDate('一週內', now), '2026-11-26'); assert.equal(todo.normDate('兩週內', now), '2026-12-03');
+  assert.equal(todo.normDate('下個月5號', now), '2026-12-05'); assert.equal(todo.normDate('25號前', now), '2026-11-25'); assert.equal(todo.normDate('5號', now), '2026-12-05');
+  assert.equal(todo.normDate('在下週三之前', now), '2026-11-25'); assert.equal(todo.normDate('2月30號', now), null);
+  // 模型寫動作行的各種變形都要認得（漏認＝清單沒變卻以為登記了）
+  for (const l of ['`【待辦】新增｜事項=A｜期限=明天`', '1. 【待辦】新增｜事項=A', '[待辦]新增｜事項=A', '－ **【待辦】新增｜事項=A**', '【待辦】新增｜內容=A｜截止=明天'])
+    assert.equal(todo.parseReply('好的\n' + l).actions[0].fields.title, 'A', l);
+  assert.deepEqual(todo.parseReply('［選項］明天｜本週五').options, ['明天', '本週五']);
   assert.equal(todo.normDate('無', now), ''); assert.equal(todo.normDate('', now), ''); assert.equal(todo.normDate('等有空再說', now), null);
   assert.equal(todo.fmtDue('2026-11-27'), '11/27（週五）'); assert.equal(todo.fmtDue(''), '未設期限');
   const mem = [{ name: '王小明', lineName: 'Ming🙂', email: 'a@x.com' }, { name: '李小華', lineName: '' }, { name: '李大華', lineName: '' }];

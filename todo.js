@@ -14,7 +14,7 @@ const STATUS = ['待辦', '進行中', '完成', '擱置', '取消'];
 const PRIORITY = ['高', '中', '低'];
 const WEEK = ['日', '一', '二', '三', '四', '五', '六'];
 const MAX_ACTIONS = 5;
-const KEYS = { 事項: 'title', 標題: 'title', 負責: 'owner', 負責人: 'owner', 期限: 'due', 到期: 'due', 狀態: 'status', 優先: 'priority', 優先度: 'priority', 備註: 'note', 編號: 'id' };
+const KEYS = { 事項: 'title', 標題: 'title', 內容: 'title', 項目: 'title', 負責: 'owner', 負責人: 'owner', 負責者: 'owner', 期限: 'due', 到期: 'due', 到期日: 'due', 截止: 'due', 截止日: 'due', 期限日: 'due', 狀態: 'status', 優先: 'priority', 優先度: 'priority', 備註: 'note', 編號: 'id' };
 const STATUS_ALIAS = { 已完成: '完成', 做完: '完成', 結案: '完成', 進行: '進行中', 處理中: '進行中', 暫緩: '擱置', 延後: '擱置', 取消: '取消', 未開始: '待辦' };
 const p2 = (n) => String(n).padStart(2, '0');
 const short = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) + '…' : s; };
@@ -25,7 +25,8 @@ const safe = (s, n) => short(s, n).replace(/【/g, '〔').replace(/】/g, '〕')
 function parseReply(text) {
   const actions = [], options = [], keep = [];
   for (const raw of String(text || '').split('\n')) {
-    const line = raw.replace(/^[\s>*\-•]+/, '').replace(/\*\*/g, '');
+    // 模型偶爾會加清單符號、編號、粗體、反引號，或把【】寫成 [ ]／［ ］：都當成動作行
+    const line = raw.replace(/\*\*|`/g, '').replace(/^(?:[\s>*\-•・－—]|\d{1,2}[.、)）]\s)+/, '').replace(/^[\[［]\s*(待辦|選項)\s*[\]］]/, '【$1】').trim();
     let m;
     if ((m = /^【待辦】\s*(新增|更新|完成|撤銷|取消)\s*(?:[｜|]\s*(.*))?$/.exec(line))) {
       const fields = {};
@@ -54,7 +55,27 @@ function normDate(s, now = Date.now()) {
     const d = new Date(+m[1], +m[2] - 1, +m[3]);
     return d.getFullYear() === +m[1] && d.getMonth() === +m[2] - 1 && d.getDate() === +m[3] ? m[1] + '-' + p2(+m[2]) + '-' + p2(+m[3]) : null;
   }
-  const r = timersLib.parsePhrase(s.replace(/[前止]$/, '') + ' 12:00', now); // 明天、週五、下週一、11/27
+  s = s.replace(/^(在|於)/, '').replace(/(之?前|為止|止|以前)$/, '').trim();
+  const base = new Date(now), iso = (d) => d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate());
+  const addDays = (n) => { const d = new Date(base); d.setDate(d.getDate() + n); return iso(d); };
+  const NUM = { 一: 1, 兩: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+  const num = (x) => (/^\d+$/.test(x) ? +x : NUM[x]);
+  if ((m = /^(\d{1,3}|[一兩二三四五六七八九十])\s*(天|日|週|周|個?禮拜|個?星期)(後|內|之內|以內)$/.exec(s)) && num(m[1])) return addDays(num(m[1]) * (/天|日/.test(m[2]) ? 1 : 7));
+  if (/^(本月|這個?月)?月底$/.test(s)) return iso(new Date(base.getFullYear(), base.getMonth() + 1, 0));
+  if (/^下個?月底$/.test(s)) return iso(new Date(base.getFullYear(), base.getMonth() + 2, 0));
+  if ((m = /^(\d{1,2})\s*[月\/]\s*(\d{1,2})\s*[號日]?$/.exec(s))) { // 11/27、2月30號（不存在的日期 → 看不懂）；已經過了就是明年
+    let d = new Date(base.getFullYear(), +m[1] - 1, +m[2]);
+    if (d.getMonth() !== +m[1] - 1) return null;
+    if (d < new Date(base.getFullYear(), base.getMonth(), base.getDate() - 30)) d = new Date(base.getFullYear() + 1, +m[1] - 1, +m[2]);
+    return iso(d);
+  }
+  if ((m = /^(本月|這個?月|下個?月)?\s*(\d{1,2})\s*[號日]$/.exec(s))) {
+    const add = m[1] && m[1].startsWith('下') ? 1 : 0, day = +m[2];
+    let d = new Date(base.getFullYear(), base.getMonth() + add, day);
+    if (!m[1] && d < new Date(base.getFullYear(), base.getMonth(), base.getDate())) d = new Date(base.getFullYear(), base.getMonth() + 1, day); // 「5號」已過 → 下個月
+    return d.getDate() === day ? iso(d) : null;
+  }
+  const r = timersLib.parsePhrase(s + ' 12:00', now); // 明天、週五、下週一、11/27
   if (r && r.schedule && r.schedule.kind === 'once') { const d = new Date(r.schedule.at); return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()); }
   return null;
 }
