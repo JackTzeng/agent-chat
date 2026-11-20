@@ -129,7 +129,7 @@ test('唯讀資料表：只讀「設定」登記過的表，日期轉成 YYYY-MM
   eq.readOnly = true;
   env.books.set(URL, { sheets: [new Sheet('封面'), eq] });
   assert.deepEqual(env.call('sources').sources, []);
-  assert.match(env.call('readSource', { name: '儀器' }).error, /沒有登記/);
+  assert.match(env.call('readSource', { name: '儀器' }).error, /沒有這份唯讀資料表的網址/);
   const set = env.sheets.get('設定');
   set.appendRow(['唯讀資料表：儀器', URL, '儀器']);
   set.appendRow(['唯讀資料表：亂來', 'https://evil.example.com/x']); // 不是 Google 試算表網址 → 不算
@@ -138,6 +138,9 @@ test('唯讀資料表：只讀「設定」登記過的表，日期轉成 YYYY-MM
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.deepEqual(r.headers, ['設備名稱', '編號', '校正到期日', '狀態'], '跳過標題上面的大標');
   assert.deepEqual(r.rows, [['HPLC', 'EQ-01', '2026-11-27', '使用中'], ['天平', 'EQ-02', '2026-12-31', '停用']], '空白列略過、日期統一格式');
+  // Agent Chat 設定檔直接給網址（不用在「設定」分頁登記）；非 Google 試算表網址一律不收
+  const byUrl = env.call('readSource', { name: '儀器2', url: URL, tab: '儀器' }); assert.equal(byUrl.ok, true); assert.equal(byUrl.rows.length, 2);
+  assert.match(env.call('readSource', { name: 'x', url: 'https://evil.example.com/spreadsheets/d/abc' }).error, /沒有這份唯讀資料表的網址/);
   // 多分頁（一廠,三廠）：一次讀回來
   env.books.get(URL).sheets.push(Object.assign(new Sheet('三廠'), { data: [['設備名稱', '編號', '校正到期日', '狀態'], ['UV', 'EQ-09', new Date(2026, 10, 30), '']] }));
   set.data[set.data.length - 2][2] = '儀器,三廠';

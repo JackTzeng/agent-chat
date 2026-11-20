@@ -11,7 +11,7 @@
  *
  * 欄位都是用「欄位名稱」找的：你可以調整欄位順序、自己加欄位，不會壞。
  */
-var VERSION = '1.0.4';
+var VERSION = '1.0.5';
 var TASK_SHEET = '待辦', MEMBER_SHEET = '成員', SETTING_SHEET = '設定', LOG_SHEET = '紀錄';
 var TASK_HEADERS = ['編號', '事項', '負責人', '期限', '狀態', '優先', '備註', '提出人', '建立時間', '最後更新', '更新者', '完成時間'];
 var MEMBER_HEADERS = ['姓名', 'Email', '角色', 'LINE 名稱', 'LINE ID'];
@@ -223,7 +223,9 @@ function sourceList_() {
 function opSources_() { return { sources: sourceList_().map(function (x) { return { name: x.name, tab: x.tab }; }) }; }
 function opReadSource_(req) {
   var src = sourceList_().filter(function (x) { return x.name === str_(req.name); })[0];
-  if (!src) throw new Error('「設定」分頁沒有登記這份唯讀資料表：' + str_(req.name));
+  // Agent Chat 的設定檔直接給網址（不用在「設定」分頁登記）：只接受 Google 試算表網址，一樣只讀
+  if (!src && /^https:\/\/docs\.google\.com\/spreadsheets\/d\/[\w-]+/.test(str_(req.url))) src = { name: clean_(req.name, 20) || '資料表', url: str_(req.url), tab: str_(req.tab) };
+  if (!src) throw new Error('沒有這份唯讀資料表的網址：' + str_(req.name) + '（在 Agent Chat 的設定檔寫「網址:」，或在「設定」分頁登記）');
   var book;
   try { book = SpreadsheetApp.openByUrl(src.url); } catch (e) { throw new Error('打不開「' + src.name + '」：請確認建立這份待辦 Sheet 的 Gmail 打得開那份表（至少是檢視者）'); }
   // C 欄可以寫多個分頁（例如「一廠,三廠」）；不寫就讀第一個分頁。隱藏列、篩選都不影響：一律讀原始範圍

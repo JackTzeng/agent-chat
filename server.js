@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.25.0';
+const VERSION = '3.25.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1907,16 +1907,19 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'DELETE') { try { fs.unlinkSync(f); } catch {} return send(res, 200, { ok: true }); }
       const text = String(body.text || '');
       if (text.length > 20000) return send(res, 400, { error: '設定檔太長（上限 20000 字）' });
-      if (text.trim() && !todoLib.parseSourceProfile(text)) return send(res, 400, { error: '格式不對：開頭要有 --- 包起來的設定，而且至少要有「到期欄: H」這一行' });
+      if (text.trim() && !todoLib.parseSourceProfile(text)) return send(res, 400, { error: '格式不對：開頭要有 --- 包起來的設定，而且至少要有「網址:」（Google 試算表網址）或「到期欄:」其中一行' });
       fs.mkdirSync(SOURCE_DIR, { recursive: true });
       if (!text.trim()) { try { fs.unlinkSync(f); } catch {} } else fs.writeFileSync(f, text.replace(/\r\n/g, '\n'));
       return send(res, 200, { ok: true });
     }
     if (p === '/api/todo/sources' && req.method === 'POST') {
       try {
-        todoBook.drop(); const list = await todoBook.sources(), out = [];
+        todoBook.drop(); const list = await todoBook.sources().catch(() => []), out = [];
+        // 設定檔裡寫了網址的表也算（不用在待辦 Sheet 的「設定」分頁登記）
+        let files = []; try { files = fs.readdirSync(SOURCE_DIR).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3)); } catch {}
+        for (const n of files) { const t = sourceProfileText(n), pr = t && todoLib.parseSourceProfile(t.text); if (pr && pr.url && !list.some((x) => x.name === n)) list.push({ name: n }); }
         for (const s of list) {
-          try { const d = await todoBook.readSource(s.name); out.push({ name: s.name, ok: true, rows: d.rows.length, headers: d.headers, sheet: d.sheet, dueCols: d.headers.filter((h) => /(到期|期限|效期|有效|下次|due|expir|next)/i.test(h)) }); }
+          try { const d = await todoBook.readSource(s.name), tabs = d.tabs || [{ sheet: d.sheet, rows: d.rows }]; out.push({ name: s.name, ok: true, rows: tabs.reduce((n, t) => n + t.rows.length, 0), headers: d.headers, sheet: tabs.map((t) => t.sheet + ' ' + t.rows.length + ' 筆').join('、'), dueCols: d.headers.filter((h) => /(到期|期限|效期|有效|下次|due|expir|next)/i.test(h)) }); }
           catch (e) { out.push({ name: s.name, ok: false, error: e.message }); }
         }
         return send(res, 200, { sources: out });

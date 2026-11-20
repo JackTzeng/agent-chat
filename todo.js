@@ -134,11 +134,13 @@ function parseSourceProfile(text) {
     else if (/^(完成欄|done)$/i.test(k)) p.doneCol = v;
     else if (/^(完成字|doneText)$/i.test(k)) p.doneText = v;
     else if (/^(名稱欄|name)$/i.test(k)) p.nameCol = v;
+    else if (/^(網址|url)$/i.test(k)) { if (/^https:\/\/docs\.google\.com\/spreadsheets\/d\/[\w-]+/.test(v)) p.url = v; }
+    else if (/^(分頁|tabs?)$/i.test(k)) p.tabs = v.split(/[,，、;；]+/).map((x) => x.trim()).filter(Boolean).join(',');
     else if (/^(分組名稱|group)$/i.test(k)) p.groupLabel = v;
     else if (/^(範圍|windows)$/i.test(k)) p.windows = v.split(/[,，、]+/).map((x) => x.trim()).filter(Boolean);
     else if (/^(欄位|column)$/i.test(k) && v) { const [label, spec] = v.includes('=') ? v.split('=').map((x) => x.trim()) : [v, v]; p.columns.push({ label, parts: spec.split('+').map((x) => x.trim()).filter(Boolean) }); }
   }
-  return p.due ? p : null;
+  return p.due || p.url ? p : null;
 }
 const letterIndex = (s) => [...s].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
 function colIndex(spec, headers) {
@@ -270,12 +272,16 @@ function create(ctx) {
   async function readSource(name) {
     const k = 'src:' + name, c = cache[k];
     if (c && Date.now() - c.at < 120000) return c.data;
-    const data = await call('readSource', { name }); cache[k] = { at: Date.now(), data }; return data;
+    const prof = ctx.sourceProfile ? ctx.sourceProfile(name) : null;
+    let data;
+    try { data = await call('readSource', prof && prof.url ? { name, url: prof.url, tab: prof.tabs || '' } : { name }); }
+    catch (e) { if (prof && prof.url && /沒有登記/.test(e.message)) throw new Error('Google Sheet 的 Apps Script 是舊版，看不懂設定檔裡的網址：請重貼 Code.gs（1.0.5）並部署新版本'); throw e; }
+    cache[k] = { at: Date.now(), data }; return data;
   }
   async function sourcesContext(names, text, now = Date.now()) {
     const out = [];
     for (const n of (names || []).slice(0, 5)) {
-      try { const src = await readSource(n), prof = ctx.sourceProfile ? ctx.sourceProfile(n) : null; out.push(prof ? profileSummary(src, prof, text, now) : sourceSummary(src, text, now)); }
+      try { const src = await readSource(n), prof = ctx.sourceProfile ? ctx.sourceProfile(n) : null; out.push(prof && prof.due ? profileSummary(src, prof, text, now) : sourceSummary(src, text, now)); }
       catch (e) { out.push('【唯讀資料表：' + safe(n, 20) + '】系統現在讀不到（' + short(e.message, 120) + '）。請如實告訴使用者，不要猜。'); }
     }
     return out.join('\n\n');

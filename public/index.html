@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.25.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.25.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -994,7 +994,7 @@ async function openAgentForm(id) {
         <span class="help">它看不到檔案、不能執行指令：每次對話，系統會先讀最新的待辦清單附在訊息裡；它只負責聽懂並寫出動作行，由 Agent Chat 檢查權限後寫進 Sheet。沒勾的成員就是一般對話（在 LINE 群組裡也是）。需要先在「📋 待辦清單」連上 Google Sheet。</span>
         <label style="margin-top:10px;display:block">📊 唯讀資料表（選填，用逗號分隔）</label>
         <input id="f_sources" value="${esc((a.dataSources || []).join('、'))}" placeholder="例如：儀器">
-        <span class="help">別人的 Google Sheet（例如儀器設備表），只讀不改。先在你的待辦 Sheet「設定」分頁加一列：A 欄 <code>唯讀資料表：儀器</code>、B 欄那份表的網址、C 欄分頁名稱（選填），這裡就填「儀器」。每次對話系統會先讀最新的表、算好已逾期／7 天內／30 天內到期，再交給它回答。需要先在「📋 待辦清單」連上 Google Sheet（Apps Script 1.0.4 以上）。</span>
+        <span class="help">別人的 Google Sheet（例如儀器設備表），只讀不改、那份表不用動。這裡填一個名稱（例如「儀器」）並儲存，再打開下面的「✏️ 設定檔」寫上那份表的網址與分頁（或按「套用範例」）。每次對話系統會先讀最新的表、算好已逾期／7 天內／30 天內到期，再交給它回答。建立待辦 Sheet 的 Gmail 要打得開那份表；需要先在「📋 待辦清單」連上 Google Sheet（Apps Script 1.0.5 以上）。</span>
         ${(a.dataSources || []).map((n, i) => `<details class="ln-guide" style="margin-top:6px"><summary>✏️ 「${esc(n)}」的設定檔（到期欄、完成判斷、範圍、要顯示的欄位、回答規則）</summary>
           <textarea id="f_sp_${i}" rows="14" style="width:100%;font-family:monospace;font-size:12px" placeholder="載入中…"></textarea>
           <div class="sk-row"><button type="button" class="primary" data-spsave="${i}">儲存設定檔</button><button type="button" data-spex="${i}">套用範例（設備校驗）</button><span class="help" id="f_sp_st_${i}"></span></div>
@@ -2110,7 +2110,7 @@ async function openTodo() {
     <div class="sk-row"><button class="primary" id="td_save">儲存</button><button id="td_ping" ${T.configured ? '' : 'disabled'}>🔍 測試連線</button><button id="td_src" ${T.configured ? '' : 'disabled'} title="讀讀看「設定」分頁登記的唯讀資料表（例如儀器表）">📊 檢查唯讀資料表</button><button id="td_prev" ${T.configured ? '' : 'disabled'}>👀 預覽提醒信（不寄）</button><button id="td_send" ${T.configured ? '' : 'disabled'}>✉️ 現在寄一次</button>${T.configured ? '<button id="td_clear">移除設定</button>' : ''}</div>
     <div class="ln-check" id="td_out"></div>
     <p class="help">LINE 群組怎麼用：成員勾「📋 待辦清單能力」（或套用「待辦管家」範本），再到「💚 LINE」④ 把群組交給它並啟用群組。同事 <code>@待辦管家 週五前 完成校正紀錄</code> 就會登記；<code>@待辦管家 我的待辦</code>、<code>#12 完成</code>、<code>#12 延到下週一</code>。成員只能改自己負責的，<b>主管</b>才能指派給別人、改別人的期限、取消事項。</p>
-    <p class="help">📊 <b>唯讀資料表</b>（例如別人的儀器設備表，只讀不改）：在這份 Sheet 的「設定」分頁加一列，A 欄 <code>唯讀資料表：儀器</code>、B 欄那份表的網址、C 欄分頁名稱（選填）；建立這份 Sheet 的 Gmail 要打得開那份表。再到成員設定的「📊 唯讀資料表」填「儀器」。</p>
+    <p class="help">📊 <b>唯讀資料表</b>（例如別人的儀器設備表，只讀不改）：到成員設定的「📊 唯讀資料表」填一個名稱（例如「儀器」）並儲存，再打開它的「✏️ 設定檔」寫上網址與分頁（有範例可以套用）。建立這份待辦 Sheet 的 Gmail 要打得開那份表。（也可以改在這份 Sheet 的「設定」分頁登記：A 欄 <code>唯讀資料表：儀器</code>、B 欄網址、C 欄分頁，只有登記的表能被讀，比較嚴格。）</p>
     <p class="help">⚠️ 這份清單是「方便追蹤的輔助工具」，不是正式紀錄。Google Sheet 在你的 Gmail 帳號底下，同事的訊息會經過 LINE、Google（agy）；事項裡請不要放機密資料。</p>
     <div class="modal-actions"><span class="spacer"></span><button id="td_close">關閉</button></div>`);
   $('modal').classList.add('wide');

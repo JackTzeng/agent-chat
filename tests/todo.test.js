@@ -257,7 +257,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   let st = await J('/api/line'); assert.equal(st.groups, 0); assert.equal(st.groupAgentName, '待辦管家'); assert.equal(st.todo.configured, true);
   const raw = JSON.stringify(st) + JSON.stringify(await J('/api/todo')) + JSON.stringify(await J('/api/config'));
   assert.ok(!raw.includes(g.props.KEY) && !raw.includes(SECRET) && !raw.includes(TOKEN), '不回傳任何密鑰');
-  const ping = await J('/api/todo/ping', 'POST'); assert.equal(ping.open, 0); assert.equal(ping.version, '1.0.4');
+  const ping = await J('/api/todo/ping', 'POST'); assert.equal(ping.open, 0); assert.equal(ping.version, '1.0.5');
 
   // 2) 還沒啟用的群組：任何訊息都不處理、不回應；配對碼才能啟用
   assert.equal(await hook([gmsg('U_wang', 'ADD1')]), 200); await sleep(400);
@@ -422,7 +422,12 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   const pp = lastAgyPrompt(); assert.match(pp, /【未來 7 天內到期（含今天）】設備 1 台，合計 1 台/); assert.match(pp, /【逾期未完成】.*合計 1 台/); assert.match(pp, /【這份表的回答規則】\n照系統的分類回答。/);
   await waitFor(idleTodo, 'todo idle EQ3');
   const srcChk = (await J('/api/todo/sources', 'POST')).sources;
-  assert.deepEqual(srcChk.map((x) => [x.name, x.ok, x.rows, x.sheet]), [['儀器', true, 3, '設備']]); assert.deepEqual(srcChk[0].dueCols, ['校正到期日']);
+  assert.deepEqual(srcChk.map((x) => [x.name, x.ok, x.rows, x.sheet]), [['儀器', true, 3, '設備 3 筆']]); assert.deepEqual(srcChk[0].dueCols, ['校正到期日']);
+  // 不在待辦 Sheet 登記、只在設定檔寫網址：一樣讀得到
+  await J('/api/sources/profile', 'PUT', { name: '設備2', text: '---\n網址: ' + EQ_URL + '\n分頁: 設備\n---\n' });
+  const srcChk2 = (await J('/api/todo/sources', 'POST')).sources;
+  assert.deepEqual(srcChk2.map((x) => [x.name, x.ok, x.rows]), [['儀器', true, 3], ['設備2', true, 3]]);
+  assert.equal((await call('/api/sources/profile', 'PUT', { name: '設備3', text: '---\n網址: https://evil.example.com/x\n---\n' })).status, 400, '不是 Google 試算表網址、又沒有到期欄 → 不收');
   await waitFor(idleTodo, 'todo idle EQ2');
 
   // 👑 指定主管：一般成員不行；主管可以用 @ 或姓名指定／取消；不經過 AI
