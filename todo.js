@@ -175,7 +175,8 @@ function profileSummary(src, prof, text, now = Date.now()) {
     const H = tab.headers || [];
     const di = colIndex(prof.due, H), doneI = colIndex(prof.doneCol, H), nameI = colIndex(prof.nameCol || '', H);
     if (di < 0 || di >= Math.max(H.length, 1)) { missing.add(tab.sheet + '：找不到到期欄 ' + prof.due); continue; }
-    const cols = prof.columns.map((c) => ({ label: c.label, idx: c.parts.map((x) => { const i = colIndex(x, H); if (i < 0) missing.add(tab.sheet + '：找不到欄位「' + x + '」'); return i; }) }));
+    // 同一欄被寫了好幾次（例如表上「廠牌/型號/序號」本來就是同一欄，設定寫成 廠牌 + 型號 + 序號）→ 只取一次
+    const cols = prof.columns.map((c) => ({ label: c.label, idx: [...new Set(c.parts.map((x) => { const i = colIndex(x, H); if (i < 0) missing.add(tab.sheet + '：找不到欄位「' + x + '」'); return i; }))] }));
     for (const r of tab.rows || []) {
       const due = String(r[di] || '').trim(), d = /^\d{4}-\d{2}-\d{2}$/.test(due) ? dayDiff(due, now) : null;
       const vals = cols.map((c) => c.idx.map((i) => (i >= 0 ? clean(r[i]) : '')).filter(Boolean).join(' / '));

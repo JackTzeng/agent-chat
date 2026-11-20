@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.25.4';
+const VERSION = '3.25.5';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1928,7 +1928,10 @@ const server = http.createServer(async (req, res) => {
             : '設定檔裡沒有「網址:」這一行（要寫在最上面兩條 --- 之間）' });
         }
         for (const s of list) {
-          try { const d = await todoBook.readSource(s.name), tabs = d.tabs || [{ sheet: d.sheet, rows: d.rows }]; out.push({ name: s.name, ok: true, rows: tabs.reduce((n, t) => n + t.rows.length, 0), headers: d.headers, sheet: tabs.map((t) => t.sheet + ' ' + t.rows.length + ' 筆').join('、'), dueCols: d.headers.filter((h) => /(到期|期限|效期|有效|下次|due|expir|next)/i.test(h)) }); }
+          try { const d = await todoBook.readSource(s.name), tabs = d.tabs || [{ sheet: d.sheet, rows: d.rows }];
+            const pt = sourceProfileText(s.name), pr = pt && todoLib.parseSourceProfile(pt.text);
+            const profDue = pr && pr.due ? pr.due + (/^[A-Z]{1,2}$/.test(pr.due) && d.headers ? '（' + (d.headers[[...pr.due].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1] || '這一欄是空的') + '）' : '') : '';
+            out.push({ name: s.name, ok: true, profileDue: profDue, rows: tabs.reduce((n, t) => n + t.rows.length, 0), headers: d.headers, sheet: tabs.map((t) => t.sheet + ' ' + t.rows.length + ' 筆').join('、'), dueCols: d.headers.filter((h) => /(到期|期限|效期|有效|下次|due|expir|next)/i.test(h)) }); }
           catch (e) { out.push({ name: s.name, ok: false, error: e.message }); }
         }
         return send(res, 200, { sources: out });

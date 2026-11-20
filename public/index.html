@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.25.4'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.25.5'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -2139,7 +2139,7 @@ async function openTodo() {
   $('td_ping').onclick = () => act(async () => { out('連線中…'); const r = await api('/api/todo/ping', { method: 'POST', body: '{}' }); const latest = (await api('/api/todo/script').catch(() => ({}))).version; out((latest && r.version !== latest ? `⚠️ <b>Google 端的程式是 ${esc(r.version)}，最新是 ${esc(latest)}</b>：請展開上面的「⬆️ 更新 Google 端的程式」照做。<br>` : '') + `✅ 連上了：Apps Script 版本 ${esc(r.version)}，時區 ${esc(r.tz)}，「待辦」分頁目前有 ${r.open} 筆未完成（共 ${r.total} 筆）。<br><small>Agent Chat 只讀名叫「待辦」的分頁（欄位：編號、事項、負責人、期限、狀態…）；其他分頁的內容它看不到。</small>`); });
   $('td_src').onclick = () => act(async () => {
     out('讀取中…'); const r = await api('/api/todo/sources', { method: 'POST', body: '{}' });
-    out(r.sources.length ? r.sources.map((s) => s.ok ? `✅ <b>${esc(s.name)}</b>：讀到 ${s.rows} 筆（分頁「${esc(s.sheet)}」）｜欄位：${esc(s.headers.join('、'))}｜到期日欄：${s.dueCols.length ? esc(s.dueCols.join('、')) : '⚠️ 找不到（標題要含「到期」「期限」「效期」「下次」之一）'}` : `❌ <b>${esc(s.name)}</b>：${esc(s.error)}`).join('<br>') : '還沒有任何唯讀資料表：到成員設定的「📊 唯讀資料表」填名稱並儲存，再在「✏️ 設定檔」寫上網址與分頁');
+    out(r.sources.length ? r.sources.map((s) => s.ok ? `✅ <b>${esc(s.name)}</b>：讀到 ${s.rows} 筆（分頁「${esc(s.sheet)}」）｜欄位：${esc(s.headers.join('、'))}｜到期日欄：${s.profileDue ? '設定檔指定 ' + esc(s.profileDue) : s.dueCols.length ? esc(s.dueCols.join('、')) : '⚠️ 找不到（標題要含「到期」「期限」「效期」「下次」之一）'}` : `❌ <b>${esc(s.name)}</b>：${esc(s.error)}`).join('<br>') : '還沒有任何唯讀資料表：到成員設定的「📊 唯讀資料表」填名稱並儲存，再在「✏️ 設定檔」寫上網址與分頁');
   });
   const digest = (send) => act(async () => {
     if (send && !confirm('現在就寄出提醒信給負責人與主管？（只有「已逾期或快到期」的事項才會寄；今天是週末且設定為週末不寄的話不會寄）')) return;

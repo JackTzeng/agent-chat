@@ -86,6 +86,11 @@ test('資料表設定檔：多分頁、固定欄位、完成判斷、範圍、�
   assert.ok(!out.includes('外校XYZ'), '不出現校驗方式（I 欄）');
   assert.match(out, /一廠｜HPLC｜Agilent \/ 1260 \/ SN1｜2026-11-20（今天）｜王小明｜（空白）｜陳主任/);
   assert.match(out, /【這份表的回答規則】\n- 問「今天」/);
+  // 實際的表：「廠牌/型號/序號」是同一欄 → 範例的 廠牌 + 型號 + 序號 只顯示一次
+  const H2 = ['', '儀器設備編號', '財產編號', '儀器名稱', '廠牌/型號/序號', '校驗週期', '上次校驗日期', '預訂校驗日期', '校驗方式', '原校驗 管理人', '校驗 管理人', '位置', '部門', '備註', '送校日期', '狀況備註', '實際校驗日期', '報告審閱人'];
+  const r2 = Array(18).fill(''); r2[3] = 'HPLC'; r2[4] = 'Agilent/1260/SN9'; r2[7] = '2026-11-22'; r2[10] = '王小明'; r2[17] = '陳主任';
+  const real = todo.profileSummary({ name: '儀器', tabs: [{ sheet: '一廠', headers: H2, rows: [r2] }] }, prof, '', now);
+  assert.match(real, /一廠｜HPLC｜Agilent\/1260\/SN9｜2026-11-22（還有 2 天）｜王小明｜（空白）｜陳主任/); assert.doesNotMatch(real, /找不到欄位/);
   const bad = todo.profileSummary({ name: 'x', tabs: [{ sheet: 'A', headers: ['名稱', '日期'], rows: [['a', '2026-11-21']] }] }, todo.parseSourceProfile('---\n到期欄: 日期\n欄位: 名稱\n欄位: 廠牌\n---\n'), '', now);
   assert.match(bad, /A：找不到欄位「廠牌」/);
 });
@@ -422,7 +427,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   const pp = lastAgyPrompt(); assert.match(pp, /【未來 7 天內到期（含今天）】設備 1 台，合計 1 台/); assert.match(pp, /【逾期未完成】.*合計 1 台/); assert.match(pp, /【這份表的回答規則】\n照系統的分類回答。/);
   await waitFor(idleTodo, 'todo idle EQ3');
   const srcChk = (await J('/api/todo/sources', 'POST')).sources;
-  assert.deepEqual(srcChk.map((x) => [x.name, x.ok, x.rows, x.sheet]), [['儀器', true, 3, '設備 3 筆']]); assert.deepEqual(srcChk[0].dueCols, ['校正到期日']);
+  assert.deepEqual(srcChk.map((x) => [x.name, x.ok, x.rows, x.sheet]), [['儀器', true, 3, '設備 3 筆']]); assert.equal(srcChk[0].profileDue, 'C（校正到期日）'); assert.deepEqual(srcChk[0].dueCols, ['校正到期日']);
   // 不在待辦 Sheet 登記、只在設定檔寫網址：一樣讀得到
   await J('/api/sources/profile', 'PUT', { name: '設備2', text: '---\n網址: ' + EQ_URL + '\n分頁: 設備\n---\n' });
   const srcChk2 = (await J('/api/todo/sources', 'POST')).sources;
