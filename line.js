@@ -80,6 +80,12 @@ function create(ctx) {
   const month = () => new Date().toISOString().slice(0, 7);
   let server = null, listening = false, pairing = null;
   const badPairing = new Map();
+  let pairFails = 0; // 這組配對碼被猜錯的總次數（所有帳號、所有群組加起來）；太多就作廢，防止換帳號或在別的群組暴力猜
+  const PAIR_MAX_FAILS = 10;
+  function pairWrong(where) {
+    if (!pairing) return;
+    if (++pairFails >= PAIR_MAX_FAILS) { pairing = null; pairFails = 0; note('配對碼被猜錯太多次（' + where + '），已作廢；需要時請重新產生'); changed(); }
+  }
   const seen = new Set();
 
   // ---------- LINE API ----------
@@ -132,6 +138,8 @@ function create(ctx) {
   }
   // 先試 reply（免費、不算則數）；token 過期、已用過或沒有，就用 push
   async function send(userId, text, tok, options) {
+    // 🔒 最後一道防線：任何送出 LINE 的文字都先遮蔽已知的密鑰（bot token、channel secret、Sheet 密鑰、成員環境變數…）
+    if (ctx.redact) text = ctx.redact(String(text || ''));
     const parts = chunk(text);
     if (!parts.length) return { ok: true };
     const group = !!(tok && tok.group);
@@ -152,7 +160,7 @@ function create(ctx) {
   const announced = new Set(); // 已經在 LINE 告知過「待核准」的排程建議
 
   function pairingState() { return pairing && pairing.expires > Date.now() ? { code: pairing.code, expires: pairing.expires } : null; }
-  function newPairCode() { pairing = { code: String(crypto.randomInt(100000, 1000000)), expires: Date.now() + 10 * 60 * 1000 }; changed(); return pairingState(); }
+  function newPairCode() { pairFails = 0; pairing = { code: String(crypto.randomInt(100000, 1000000)), expires: Date.now() + 10 * 60 * 1000 }; changed(); return pairingState(); }
 
   const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // 群組交給誰：有指定就用；沒指定（或指定的成員不見了）就找有「📋 待辦清單能力」的成員（不看名字）
@@ -162,6 +170,8 @@ function create(ctx) {
   };
   const isKeeper = (a) => !!a && a.todoKeeper === true && !!ctx.todo && ctx.todo.configured();
   const groupWords = () => (Array.isArray(cfg().groupWords) ? cfg().groupWords : []).map(String).filter(Boolean);
+  const rate = new Map(); // 群組裡每個人最近叫 bot 的時間
+  const RATE_MAX = Number(process.env.LINE_GROUP_RATE_MAX) || 8, RATE_WINDOW_MS = 10 * 60 * 1000;
   const groupIds = () => (cfg().groups || []).map(String);
   const groupHelp = (who) => {
     const a = groupAgent(), n = (a || {}).name || 'bot';
@@ -188,7 +198,17 @@ function create(ctx) {
     const known = groupIds().includes(gid);
     S().lastEventAt = Date.now();
     if (ev.type === 'leave') { if (known) { cfg().groups = groupIds().filter((x) => x !== gid); ctx.saveConfig(); changed(); } return; }
-    if (ev.type === 'join') return send(gid, known ? groupHelp() : '大家好 👋\n請管理者把「配對碼」貼在這個群組，我才會開始工作。（配對碼在電腦上的 Agent Chat →「💚 LINE」→「產生配對碼」）', tok);
+    if (ev.type === 'join') {
+      if (known) return send(gid, groupHelp(), tok);
+      // 🔒 沒有人正在配對時被拉進陌生群組：直接離開（任何加了 bot 好友的人都能邀它進群組）
+      if (!pairingState()) {
+        note('被邀請進一個沒有配對的群組，已自動離開');
+        await send(gid, '我只在管理者啟用過的群組工作。請管理者先在 Agent Chat 的「💚 LINE」按「產生配對碼」，再邀請我、把配對碼貼在群組裡。', tok);
+        await request('POST', '/v2/bot/' + (src.type === 'room' ? 'room/' : 'group/') + encodeURIComponent(gid) + '/leave', {}).catch(() => {});
+        return;
+      }
+      return send(gid, '大家好 👋\n請管理者把「配對碼」貼在這個群組，我才會開始工作。', tok);
+    }
     if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;
     const text = String(ev.message.text || '').trim();
     if (!known) {
@@ -198,11 +218,18 @@ function create(ctx) {
         console.log('💚 LINE：已啟用一個群組');
         return send(gid, '✅ 這個群組已啟用！\n\n' + groupHelp(), tok);
       }
+      if (/^\d{6}$/.test(text)) pairWrong('群組');
       return;
     }
     const agent = groupAgent();
     const t = stripTrigger(ev.message, text, agent);
     if (!t.hit) return; // 沒叫我：不處理、不記錄、不送給 AI
+    // 🔒 每人限速：避免有人洗版把 AI 額度或 LINE 推播額度用光
+    const uidKey = gid + ':' + (src.userId || '?'), nowT = Date.now();
+    const hits = (rate.get(uidKey) || []).filter((x) => nowT - x < RATE_WINDOW_MS); hits.push(nowT); rate.set(uidKey, hits);
+    if (rate.size > 2000) rate.clear();
+    if (hits.length > RATE_MAX) { if (hits.length === RATE_MAX + 1) return send(gid, '⏳ 你傳太快了，請過幾分鐘再叫我。', tok); return; }
+    if (agent && ctx.groupRisk) { const risk = ctx.groupRisk(agent); if (risk.block) { note('群組訊息被擋下：' + risk.block); return send(gid, '⚠️ 這個群組目前不能使用（管理者的安全設定需要調整）。', tok); } }
     if (!agent) return send(gid, '⚠️ 這個群組還沒交給任何成員。請管理者到 Agent Chat 的「💚 LINE」④，選好「群組交給」哪位成員並按「儲存群組成員」。', tok);
     const uid = src.userId ? String(src.userId) : '';
     const body = t.text;
@@ -227,7 +254,7 @@ function create(ctx) {
       try {
         const mem = await ctx.todo.register(uid, dn, mm[1].trim());
         return sysSay('✅ 登記好了：' + mem.name + '（' + mem.role + '）。' + (mm[2].replace(/^[\s,，。.、;；:：!！?？]+/, '').trim() ? '\n後面那段話請再傳一次，我現在就認得你了。' : '') + (mem.email ? '' : '\n想收到逾期／快到期的 email 提醒，請回覆：@' + agent.name + ' 信箱 你的email'), dn || mem.name);
-      } catch (e) { return sysSay('⚠️ ' + e.message, dn); }
+      } catch (e) { if (e.claimUserId && ctx.logExchange) ctx.logExchange(agent, '', '🔒 給管理員：有人想認領主管「' + mm[1] + '」被擋下。如果真的是本人，把這個 LINE ID 貼到 Sheet「成員」分頁那一列的 LINE ID 欄：' + e.claimUserId); return sysSay('⚠️ ' + e.message, dn); }
     }
     let mm;
     if ((mm = /^信箱\s*[:：]?\s*(\S+@\S+)$/.exec(body))) { try { await ctx.todo.setEmail(uid, mm[1]); return sysSay('✅ 已記下你的 email，之後逾期或快到期會寄信提醒你。', who.name); } catch (e) { return sysSay('⚠️ ' + e.message, who.name); } }
@@ -264,6 +291,7 @@ function create(ctx) {
         console.log('💚 LINE：已配對一位使用者');
         return say('✅ 配對成功！\n\n' + helpText());
       }
+      if (m.type === 'text' && /^\d{6}$/.test(text)) pairWrong('一對一');
       if (m.type === 'text' && /^\d{6}$/.test(text)) badPairing.set(uid, { count: (bad && bad.until > Date.now() ? bad.count : 0) + 1, until: Date.now() + 10 * 60 * 1000 });
       return say('🔒 還沒配對。請在電腦上打開 Agent Chat →「💚 LINE」→ 按「產生配對碼」，把 6 位數字傳給我。');
     }
@@ -466,7 +494,7 @@ function create(ctx) {
     return {
       configured: configured(), hasSecret: !!c.channelSecret, hasToken: !!c.channelAccessToken, secretHint,
       agentId: c.agentId || '', agentName: a ? a.name : '', allowedCount: allowed().length, pairing: pairingState(),
-      groups: groupIds().length, groupAgentId: c.groupAgentId || '', groupAgentName: (groupAgent() || {}).name || '', groupAgentTodo: (groupAgent() || {}).todoKeeper === true, groupWords: groupWords().join('、'), todo: ctx.todo ? ctx.todo.status() : null,
+      groups: groupIds().length, groupAgentId: c.groupAgentId || '', groupAgentName: (groupAgent() || {}).name || '', groupAgentTodo: (groupAgent() || {}).todoKeeper === true, groupRisk: groupAgent() && ctx.groupRisk ? ctx.groupRisk(groupAgent()) : null, groupWords: groupWords().join('、'), todo: ctx.todo ? ctx.todo.status() : null,
       port: port(), listening, publicUrl: c.publicUrl || '', webhookUrl: c.publicUrl ? c.publicUrl + '/line/webhook' : '',
       webhook: s.webhook || null, bot: s.bot || null, quota: s.quota || null, pushedThisMonth: s.pushedMonth === month() ? s.pushed || 0 : 0, pushBlocked: s.pushBlocked === month(),
       tunnel: { wanted: !!c.tunnel, state: tun.state, url: tun.url, error: tun.error }, lastEventAt: s.lastEventAt || null, lastError: s.lastError || '', lastErrorAt: s.lastErrorAt || null,
@@ -486,7 +514,8 @@ function create(ctx) {
       if (!TOKEN_RE.test(v)) throw new Error('Channel access token 格式不對：應該是一長串英數字（LINE Developers → Messaging API 最下面的 Channel access token (long-lived) → Issue）');
       c.channelAccessToken = v;
     }
-    if (body.groupAgentId !== undefined) { if (body.groupAgentId && !ctx.agentById(String(body.groupAgentId))) throw new Error('找不到這位成員'); c.groupAgentId = String(body.groupAgentId || ''); }
+    if (body.groupAgentId !== undefined) { if (body.groupAgentId && !ctx.agentById(String(body.groupAgentId))) throw new Error('找不到這位成員');
+      if (body.groupAgentId && ctx.groupRisk) { const r = ctx.groupRisk(ctx.agentById(String(body.groupAgentId))); if (r.block) throw new Error('不能把群組交給這位成員：' + r.block); } c.groupAgentId = String(body.groupAgentId || ''); }
     if (typeof body.groupWords === 'string') c.groupWords = [...new Set(body.groupWords.split(/[,，、\s]+/).map((w) => w.replace(/^@/, '').trim()).filter((w) => w && w.length <= 12))].slice(0, 5);
     if (body.clearGroups === true) c.groups = [];
     if (body.agentId !== undefined) { if (body.agentId && !ctx.agentById(String(body.agentId))) throw new Error('找不到這位成員'); c.agentId = String(body.agentId || ''); }

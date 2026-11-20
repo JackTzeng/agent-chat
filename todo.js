@@ -141,7 +141,15 @@ function create(ctx) {
 
   // 這位 LINE 使用者是誰（沒登記過回傳 null）
   async function whoIs(userId) { const m = (await members()).find((x) => x.userId === String(userId)); return m ? { userId: String(userId), name: m.name, role: m.role === '主管' ? '主管' : '成員', email: m.email, lineName: m.lineName } : null; }
-  async function register(userId, lineName, name) { const r = await call('register', { userId, lineName, name }); drop(); return r.member; }
+  // 登記：Agent Chat 這邊先檢查一次（舊版 Apps Script 沒有這些檢查），Apps Script 1.0.1 起也會再檢查
+  async function register(userId, lineName, name) {
+    drop();
+    const n = String(name || '').trim().toLowerCase(), mem = await members();
+    const same = mem.find((m) => m.name.toLowerCase() === n && m.userId !== String(userId));
+    if (same && same.userId) throw new Error('「' + name + '」已經有人登記了，請加上全名或換個稱呼');
+    if (same && same.role === '主管') { const e = new Error('「' + name + '」是名單上的主管，為了安全不能自己認領。請管理員在 Google Sheet「成員」分頁，把你的 LINE ID 填到那一列。'); e.claimUserId = String(userId); throw e; }
+    const r = await call('register', { userId, lineName, name }); drop(); return r.member;
+  }
   async function setEmail(userId, email) { const r = await call('setEmail', { userId, email }); drop(); return r.member; }
 
   // 給模型看的現況：今天、發言者、成員、目前未完成的清單

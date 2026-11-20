@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.21.1';
+const VERSION = '3.22.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -199,6 +199,19 @@ const prepAgent = (a) => {
 function insideApp(dir) {
   const rel = path.relative(ROOT, path.resolve(ROOT, String(dir || '')));
   return !rel || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+// 🔒 LINE 群組的成員：群組裡任何人（包括被別人拉進來的陌生人）都能對它說話，所以只能交給「改不了檔、執行不了指令」的成員。
+// block＝不准交給它；warn＝可以用，但它的工作資料夾在 Agent Chat 程式資料夾裡（旁邊就是存密鑰的 agents.json），唯讀也可能被誘導讀出來
+function groupRisk(a) {
+  if (!a) return { block: '', warn: '' };
+  let block = '';
+  if (a.engine === 'agy' && agy.access(a) !== 'read') block = '它是 agy 可寫成員（會改檔、執行指令）';
+  else if (a.engine === 'codex' && (a.sandbox || 'workspace-write') !== 'read-only') block = '它是 Codex 可寫成員（sandbox 不是 read-only）';
+  else if (a.engine === 'claude' && !(a.permissionMode === 'plan' || (a.permissionMode === 'default' && !(a.allowedTools || []).some((t) => /^(Bash|Write|Edit|MultiEdit|NotebookEdit)\b/.test(t)))))
+    block = '它是 Claude 可動手的成員（權限不是 plan，或允許了 Bash／寫檔工具）';
+  const dirs = [a.cwd || './workspace', ...(a.extraDirs || []).map((d) => d.path)].filter(insideApp);
+  const warn = dirs.length ? '它的資料夾（' + dirs.join('、') + '）在 Agent Chat 程式資料夾裡；群組裡的人可能誘導它去讀 agents.json 等設定檔。建議把工作資料夾改到程式資料夾外面（例如 C:\\AgentChatData\\todo）' : '';
+  return { block, warn };
 }
 function agyWriteRisk(a) {
   if (!a || a.engine !== 'agy' || agy.access(a) !== 'write') return null;
@@ -2264,7 +2277,7 @@ server.listen(PORT, HOST, () => {
 // Telegram 遙控（agents.json 有設定 telegram.botToken 才會啟動）
 const telegram = require('./telegram');
 const todoBook = todoLib.create({ config: CONFIG, saveConfig: () => saveConfig() });
-const lineBot = lineLib.create({ todo: todoBook, logExchange, config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
+const lineBot = lineLib.create({ todo: todoBook, logExchange, groupRisk, redact: (t) => reporter.redact(t), config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
   agentById, agents: AGENTS, dispatch, stopRun, resetAgent, timers, proctree, ROOT });
 lineBotRef = lineBot;
 const tgCtx = {

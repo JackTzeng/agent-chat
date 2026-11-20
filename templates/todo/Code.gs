@@ -11,7 +11,7 @@
  *
  * 欄位都是用「欄位名稱」找的：你可以調整欄位順序、自己加欄位，不會壞。
  */
-var VERSION = '1.0.0';
+var VERSION = '1.0.1';
 var TASK_SHEET = '待辦', MEMBER_SHEET = '成員', SETTING_SHEET = '設定', LOG_SHEET = '紀錄';
 var TASK_HEADERS = ['編號', '事項', '負責人', '期限', '狀態', '優先', '備註', '提出人', '建立時間', '最後更新', '更新者', '完成時間'];
 var MEMBER_HEADERS = ['姓名', 'Email', '角色', 'LINE 名稱', 'LINE ID'];
@@ -200,6 +200,9 @@ function opRegister_(req) {
   var byId = null, byName = null;
   t.rows.forEach(function (r) { var m = memberOf_(t, r); if (m.userId === uid) byId = r; else if (m.name.toLowerCase() === name.toLowerCase()) byName = { r: r, m: m }; });
   if (byName && byName.m.userId && byName.m.userId !== uid) throw new Error('「' + name + '」已經有人登記了，請加上全名或換個稱呼');
+  // 安全：已登記的人不能改名成名單上的別人；名單上預先填好的主管（還沒有 LINE ID）不能自己認領，要管理員填 LINE ID
+  if (byId && byName) throw new Error('「' + name + '」已經在名單上，請加上全名或換個稱呼');
+  if (!byId && byName && !byName.m.userId && byName.m.role === '主管') { log_('拒絕認領主管', '', name, 'LINE ID ' + uid); throw new Error('「' + name + '」是名單上的主管，為了安全不能自己認領。請管理員在「成員」分頁把你的 LINE ID 填到那一列（已記在「紀錄」分頁）'); }
   var r2 = byId || (byName && byName.r);
   if (r2) { setCell_(t, r2, '姓名', name); setCell_(t, r2, 'LINE ID', uid); if (line) setCell_(t, r2, 'LINE 名稱', line); log_('登記成員', '', name, name); return { member: memberOf_(t, r2) }; }
   t.sheet.appendRow(t.headers.map(function (h) { return h === '姓名' ? name : h === '角色' ? '成員' : h === 'LINE 名稱' ? line : h === 'LINE ID' ? uid : ''; }));
