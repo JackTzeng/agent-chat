@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.27.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.28.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -991,6 +991,8 @@ async function openAgentForm(id) {
         <label>📋 附給它的資料（系統每輪先準備好）</label>
         <label class="opt"><input type="checkbox" id="f_brief" ${a.brief ? 'checked' : ''}> 📋 每輪附上現況摘要（現在時間、排程、進行中的任務、等你處理的事）</label>
         <span class="help">系統產生的唯讀資料，讓成員知道「現在幾點、有哪些排程、有沒有異常」。適合助理（個人秘書）這種要幫你看排程與行程的成員；每輪多約 300～800 字。</span>
+        <label class="opt" style="margin-top:8px"><input type="checkbox" id="f_fresh" ${a.freshEachTurn ? 'checked' : ''}> 🧹 每則訊息開新對話（只帶最近 3 則對話的摘要）</label>
+        <span class="help">省 AI 額度：一般對話每一輪都會把前面的內容整段重送一次，附了清單、資料表的成員會越聊越貴。勾了之後每則都從頭開始，系統只附最近 3 則對話讓它接得上話（例如補問期限後回「下週一」）。適合 LINE 群組、待辦管家、查表這種一問一答的成員；要長時間連續工作的成員不要勾。</span>
         <label class="opt" style="margin-top:8px"><input type="checkbox" id="f_todokeeper" ${a.todoKeeper ? 'checked' : ''}> 📋 待辦清單能力（把 Google Sheet 的待辦清單附給它，寫入由系統代做）</label>
         <span class="help">它看不到檔案、不能執行指令：每次對話，系統會先讀最新的待辦清單附在訊息裡；它只負責聽懂並寫出動作行，由 Agent Chat 檢查權限後寫進 Sheet。沒勾的成員就是一般對話（在 LINE 群組裡也是）。需要先在「📋 待辦清單」連上 Google Sheet。</span>
         <label style="margin-top:10px;display:block">📊 唯讀資料表（選填，用逗號分隔）</label>
@@ -1162,7 +1164,7 @@ async function openAgentForm(id) {
       if (t.cwd) $('f_cwd').value = t.cwd;
       $('f_pfile').value = t.personaFile || ''; $('f_tools').value = t.tools || ''; $('f_allow').value = t.allow || ''; $('f_tgprefix').value = t.tgPrefix || '';
       if (t.env && !$('f_env').value.trim()) $('f_env').value = t.env;
-      $('f_brief').checked = !!t.brief; $('f_todokeeper').checked = !!t.todoKeeper; if (t.dataSources) $('f_sources').value = t.dataSources;
+      $('f_brief').checked = !!t.brief; $('f_todokeeper').checked = !!t.todoKeeper; $('f_fresh').checked = !!t.freshEachTurn; if (t.dataSources) $('f_sources').value = t.dataSources;
       if (t.tgPrefix && TG && TG.allowedIds && TG.allowedIds.length === 1 && !$('f_tgusers').value) $('f_tgusers').value = TG.allowedIds[0];
       syncKind(); syncPermNote();
     }
@@ -1207,7 +1209,7 @@ async function openAgentForm(id) {
       extraDirs: dirs.filter((d) => d.path),
       rtk: engineSel.value === 'claude' && !$('f_standalone').checked && $('f_rtk').checked,
       brief: $('f_brief').checked,
-      todoKeeper: $('f_todokeeper').checked, dataSources: $('f_sources').value,
+      todoKeeper: $('f_todokeeper').checked, freshEachTurn: $('f_fresh').checked, dataSources: $('f_sources').value,
       takeTurns: $('f_turns').checked && !$('f_standalone').checked, canInterrupt: $('f_urgent').checked && !$('f_standalone').checked, team: $('f_team').value,
       standalone: $('f_standalone').checked, personaFile: $('f_pfile').value, env: $('f_env').value,
       tools: $('f_tools').value, allowedTools: $('f_allow').value, disallowedTools: $('f_deny').value,

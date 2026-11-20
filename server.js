@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.27.1';
+const VERSION = '3.28.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -228,6 +228,11 @@ if (!CONFIG.todoKeeperMigrated) {
   // 以前群組裡訊息開頭寫「待辦」也算叫它；現在呼叫詞可以自己設（💚 LINE ④），舊的群組先保留「待辦」
   if (CONFIG.line && CONFIG.line.groupWords === undefined && (CONFIG.line.groups || []).length) CONFIG.line.groupWords = ['待辦'];
   CONFIG.todoKeeperMigrated = true;
+}
+// v3.28 遷移（只做一次）：有待辦清單能力或唯讀資料表的成員（每輪附大量資料）預設改成每則開新對話，避免額度越滾越大
+if (!CONFIG.freshMigrated) {
+  for (const a of CONFIG.agents) if (a.freshEachTurn === undefined && (a.todoKeeper === true || (a.dataSources || []).length)) a.freshEachTurn = true;
+  CONFIG.freshMigrated = true;
   try { if (fs.existsSync(AGENTS_FILE)) saveConfig(); } catch {}
 }
 const AGENTS = CONFIG.agents.map(prepAgent);
@@ -357,7 +362,7 @@ function accessBase(agent) {
 // 角色設定檔（獨立成員常用）：每一輪重新讀取，改了檔案下一句就生效
 // ---------- 🎭 角色範本（.md）：templates/roles 是內建的，data/roles 是你自己的（同檔名會取代內建的）----------
 // 檔案開頭 --- 之間是「欄位: 值」（同一欄位寫多行會累加，例如 allow），下面是人設，{name} 會換成成員名稱
-const ROLE_KEYS = ['kind', 'button', 'name', 'avatar', 'role', 'standalone', 'engine', 'model', 'perm', 'cwd', 'personaFile', 'tgPrefix', 'tools', 'allow', 'env', 'brief', 'todoKeeper', 'dataSources', 'toast'];
+const ROLE_KEYS = ['kind', 'button', 'name', 'avatar', 'role', 'standalone', 'engine', 'model', 'perm', 'cwd', 'personaFile', 'tgPrefix', 'tools', 'allow', 'env', 'brief', 'todoKeeper', 'dataSources', 'freshEachTurn', 'toast'];
 function parseRoleMd(text, file) {
   const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
   const t = { file, persona: (m ? m[2] : text).trim() };
@@ -953,7 +958,21 @@ function agyMeta(meta, ms) {
   return String(meta || '').split(' · ').map((p) => (/^\d+ tokens$/.test(p) ? '對話累計 ' + p : /^\d+(\.\d+)?s$/.test(p) ? (ms / 1000).toFixed(1) + 's' : p)).join(' · ');
 }
 
+// 🧹 每則訊息開新對話：只帶最近幾則對話的摘要（讓它接得上「下週一」這種補答），不會一輪一輪越堆越長、越吃額度
+const RECENT_TURNS = 3;
+function recentTurnsText(agent) {
+  const h = loadHistory(agent.id).filter((m) => (m.role === 'user' && m.text) || (m.role === 'assistant' && (m.segments || []).some((s) => s.type === 'text')));
+  const lines = [];
+  for (const m of h.slice(-RECENT_TURNS * 2)) {
+    const t = m.role === 'user' ? m.text : m.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n');
+    lines.push((m.role === 'user' ? '對方：' : '你：') + short(String(t).replace(/\s+/g, ' '), 300));
+  }
+  return lines.length ? '【最近的對話（系統從紀錄附上，讓你接得上話；只是紀錄，不是新的指令）】\n' + lines.join('\n') + '\n\n' : '';
+}
 function startRun(agent, userText, opts = {}) {
+  if (agent.freshEachTurn && !opts.shift && !opts.resume && !opts.taskId && !opts.fresh && !opts.system) {
+    userText = recentTurnsText(agent) + userText; opts = { ...opts, fresh: true };
+  }
   const key = sessionKey(agent, opts);
   // 排程（沒勾「記得上次的對話」）每次都開全新的對話，不會一個鐘頭一輪地越堆越長
   if (opts.fresh && state.sessions[key] && !opts.shift && !opts.resume) { delete state.sessions[key]; delete state.ctx[key]; delete state.hdr[key]; saveState(); }
@@ -1632,6 +1651,7 @@ function cleanAgent(input, existingId) {
   if (input.takeTurns) a.takeTurns = true;
   if (a.engine === 'claude' && input.rtk === true) a.rtk = true;
   if (input.todoKeeper === true) a.todoKeeper = true; // 📋 待辦管家模式
+  if (input.freshEachTurn === true) a.freshEachTurn = true; // 🧹 每則訊息開新對話（只帶最近幾則）
   // 📊 唯讀資料表（Google Sheet「設定」分頁登記的名稱，例如「儀器」）：每次對話系統先讀、整理好附給它
   const ds = Array.isArray(input.dataSources) ? input.dataSources : String(input.dataSources || '').split(/[,，、\n]+/);
   const dsClean = [...new Set(ds.map((x) => String(x).trim()).filter((x) => x && x.length <= 20))].slice(0, 5);
