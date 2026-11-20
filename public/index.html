@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.25.2'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.25.3'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -987,7 +987,8 @@ async function openAgentForm(id) {
         <label class="opt"><input type="checkbox" id="f_urgent" ${(a.canInterrupt !== undefined ? a.canInterrupt : /\bPM\b|專案經理/i.test(a.role || '')) ? 'checked' : ''}> ⚡ 可以緊急插話同事</label>
         <span class="help">派工訊息寫「【緊急】」時，會立刻中斷正在工作的同事，先處理這件事，再回頭做原本的工作。預設只有角色寫了 PM 的成員有；同一位同事冷卻時間內只能被插話一次（在「⚙️ 工作流程」設定）。</span>
       </div>
-      <div class="field full claude-only">
+      <div class="field full">
+        <label>📋 附給它的資料（系統每輪先準備好）</label>
         <label class="opt"><input type="checkbox" id="f_brief" ${a.brief ? 'checked' : ''}> 📋 每輪附上現況摘要（現在時間、排程、進行中的任務、等你處理的事）</label>
         <span class="help">系統產生的唯讀資料，讓成員知道「現在幾點、有哪些排程、有沒有異常」。適合助理（個人秘書）這種要幫你看排程與行程的成員；每輪多約 300～800 字。</span>
         <label class="opt" style="margin-top:8px"><input type="checkbox" id="f_todokeeper" ${a.todoKeeper ? 'checked' : ''}> 📋 待辦清單能力（把 Google Sheet 的待辦清單附給它，寫入由系統代做）</label>
@@ -999,6 +1000,8 @@ async function openAgentForm(id) {
           <textarea id="f_sp_${i}" rows="14" style="width:100%;font-family:monospace;font-size:12px" placeholder="載入中…"></textarea>
           <div class="sk-row"><button type="button" class="primary" data-spsave="${i}">儲存設定檔</button><button type="button" data-spex="${i}">套用範例（設備校驗）</button><span class="help" id="f_sp_st_${i}"></span></div>
           <span class="help">存在 Agent Chat 的 <code>data/sources/${esc(n)}.md</code>（不進 git、更新不會蓋掉），跟這份表有關的成員共用。沒有設定檔時，系統會自己猜到期日欄。存檔後下一則訊息就生效，不用重開對話。</span></details>`).join('')}
+      </div>
+      <div class="field full claude-only">
         <label class="opt" style="margin-top:8px"><input type="checkbox" id="f_rtk" ${a.rtk ? 'checked' : ''}> 🗜 壓縮指令輸出（rtk，只限 Claude 成員）</label>
         <span class="help" id="f_rtkhelp">成員在 Bash 執行的 git、測試、建置等指令，輸出會先經過 rtk 精簡再交給它，省 token、對話也不會被長長的紀錄撐大。要先在這台電腦裝 rtk（PowerShell：<code>winget install rtk-ai.rtk</code>）。只影響勾選的成員，不會改你自己的 Claude Code 設定；rtk 不能替成員核准指令，權限照原本的設定。獨立成員和有「限制工具」的成員不會使用。</span>
       </div>
