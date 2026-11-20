@@ -366,7 +366,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.20.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.20.2'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -2192,7 +2192,6 @@ async function openLine() {
     <h3 class="sk-h">① 連線資料</h3>
     <div class="form-grid">
       <div class="field"><label>要接哪位成員</label><select id="ln_agent">${members.map((a) => `<option value="${esc(a.id)}" ${a.id === (keep.ln_agent || defAgent) ? 'selected' : ''}>${esc(a.name)}（${esc(a.role || a.engine)}）</option>`).join('')}</select></div>
-      <div class="field"><label>部門群組交給哪位成員（待辦管家）</label><select id="ln_gagent"><option value="">（不使用群組）</option>${members.map((a) => `<option value="${esc(a.id)}" ${a.id === (keep.ln_gagent !== undefined ? keep.ln_gagent : (L.groupAgentId || (members.find((x) => x.name === '待辦管家') || {}).id || '')) ? 'selected' : ''}>${esc(a.name)}（${esc(a.role || a.engine)}）</option>`).join('')}</select></div>
       <div class="field"><label>Channel secret</label><input id="ln_secret" ${SECRET_ATTR} value="${esc(keep.ln_secret || '')}" placeholder="${L.hasSecret ? '已設定（' + esc(L.secretHint) + '），要換才貼' : '32 個英數字'}"></div>
       <div class="field full"><label>Channel access token (long-lived)</label><input id="ln_token" ${SECRET_ATTR} value="${esc(keep.ln_token || '')}" placeholder="${L.hasToken ? '已設定，要換才貼' : '一長串英數字（Issue 後複製）'}"></div>
     </div>
@@ -2216,6 +2215,7 @@ async function openLine() {
       ${L.pairing ? `<span class="ln-code">${esc(L.pairing.code)}</span><span class="help">把這 6 位數字傳給 LINE 上的 bot（${pairLeft} 分鐘內有效，只能用一次）</span>` : ''}</div>
     <h3 class="sk-h">④ 部門群組（待辦管家）</h3>
     <p class="help" style="margin:0 0 6px">把這個 LINE bot 拉進部門群組（先在官方帳號設定裡打開「允許加入群組」），再把上面的<b>配對碼貼在群組裡</b>，群組就啟用了。之後大家 <b>@它</b> 說要登記或查詢，它就幫忙寫進 Google Sheet。<b>它只處理 @它 的訊息</b>，群組裡其他聊天不會看、不會記。</p>
+    <div class="sk-row"><b>群組交給：</b><select id="ln_gagent"><option value="">（不使用群組）</option>${members.map((a) => `<option value="${esc(a.id)}" ${a.id === (keep.ln_gagent !== undefined ? keep.ln_gagent : (L.groupAgentId || (members.find((x) => x.name === '待辦管家') || {}).id || '')) ? 'selected' : ''}>${esc(a.name)}（${esc(a.role || a.engine)}）</option>`).join('')}</select><button class="primary" id="ln_gsave">儲存群組成員</button><span class="help">${L.groupAgentName ? '目前：' + esc(L.groupAgentName) : '⚠️ 還沒有成員負責群組'}</span></div>
     <div class="sk-row"><span>已啟用 ${L.groups} 個群組${L.groups ? '' : '（還沒有）'}</span>${L.groups ? '<button id="ln_cgroups">清除群組</button>' : ''}<button class="primary" id="ln_todo">📋 待辦清單（Google Sheet）設定…</button></div>
     <p class="help">${q ? `本月主動推播：已用 ${q.used} ${q.type === 'limited' ? '/ ' + q.value : ''} 則（${ago(q.at)} 更新）` : `本程式這個月推播了 ${L.pushedThisMonth} 則`}${L.pushBlocked ? '　⚠️ 本月推播額度已用完，只能回覆你傳來的訊息' : ''}｜最近一次收到訊息：${ago(L.lastEventAt)}</p>
     <p class="help">在 LINE 上：直接傳文字給它；<code>/new</code> 開新對話、<code>/stop</code> 停止、<code>同意 3</code>／<code>不要 3</code> 核准或取消它提出的提醒。目前只收文字。</p>
@@ -2227,6 +2227,7 @@ async function openLine() {
   if ($('ln_url')) $('ln_url').addEventListener('input', () => { LN_URL_DIRTY = true; });
   if ($('ln_fix')) $('ln_fix').onclick = () => act(async () => { const r = await api('/api/line/webhook', { method: 'POST', body: JSON.stringify({ publicUrl: t.url }) }); LN_URL_DIRTY = false; toast(r.ok ? '✅ Webhook 重設好了，LINE 測試通過' : '設定好了，但 LINE 測試沒過：' + r.reason); });
   $('ln_save').onclick = () => act(() => api('/api/line', { method: 'PUT', body: JSON.stringify({ agentId: $('ln_agent').value, groupAgentId: $('ln_gagent').value, channelSecret: $('ln_secret').value, channelAccessToken: $('ln_token').value }) }).then(() => { $('ln_secret').value = ''; $('ln_token').value = ''; toast('已儲存'); }));
+  $('ln_gsave').onclick = () => act(() => api('/api/line', { method: 'PUT', body: JSON.stringify({ groupAgentId: $('ln_gagent').value }) }).then(() => toast('已儲存群組成員')));
   $('ln_check').onclick = () => act(async () => { $('ln_check').textContent = '檢查中…'; LINE_CHECK = await api('/api/line/check', { method: 'POST', body: '{}' }); });
   if ($('ln_clear')) $('ln_clear').onclick = () => { if (confirm('移除 LINE 的所有設定（secret、token、配對）？LINE 上的官方帳號不會被刪除。')) act(async () => { LINE_CHECK = null; await api('/api/line', { method: 'PUT', body: JSON.stringify({ clear: true }) }); }); };
   $('ln_tun_on').onclick = () => act(() => api('/api/line/tunnel', { method: 'POST', body: JSON.stringify({ on: true }) }));
