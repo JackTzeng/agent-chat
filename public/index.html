@@ -368,7 +368,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.32.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.33.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -955,7 +955,10 @@ async function openAgentForm(id) {
       </div>
       <div class="field full sa-only">
         <label>只接受這些 Telegram 帳號 ID（留空 = 所有已配對的帳號）</label>
-        <input id="f_tgusers" value="${esc(((a.telegram || {}).userIds || []).join(', '))}" placeholder="${TG && TG.allowedIds && TG.allowedIds.length ? '已配對：' + esc(TG.allowedIds.join(', ')) : '例如 123456789'}">
+        <input id="f_tgusers" value="${esc(((a.telegram || {}).userIds || []).map((u) => ((a.telegram || {}).names || {})[u] ? u + '=' + a.telegram.names[u] : String(u)).join(', '))}" placeholder="${TG && TG.allowedIds && TG.allowedIds.length ? '已配對：' + esc(TG.allowedIds.join(', ')) : '例如 123456789=Jack, 987654321=YC'}">
+        <span class="help">寫成「ID=名稱」（例如 <code>123456789=Jack, 987654321=YC</code>），它收到的每則訊息前面會加上【傳訊者：Jack】，就知道是誰傳的（例如記帳員用來當預設付款人）。</span>
+        <label class="opt"><input type="checkbox" id="f_tggroups" ${(a.telegram || {}).groups ? 'checked' : ''}> 專屬 bot 接受群組訊息（把 bot 拉進群組，名單內的人在群組裡說話都交給它，回覆傳回群組）</label>
+        <span class="help">要先在 BotFather 對這個 bot 執行 <code>/setprivacy</code> → Disable，不然它在群組只收得到 /指令 和 @它的訊息。一定要填上面的帳號名單；名單外的人在群組說話，它不理。</span>
       </div>
       <div class="field full">
         <label>💚 LINE</label>
@@ -1224,7 +1227,7 @@ async function openAgentForm(id) {
       takeTurns: $('f_turns').checked && !$('f_standalone').checked, canInterrupt: $('f_urgent').checked && !$('f_standalone').checked, team: $('f_team').value,
       standalone: $('f_standalone').checked, personaFile: $('f_pfile').value, env: $('f_env').value,
       tools: $('f_tools').value, allowedTools: $('f_allow').value, disallowedTools: $('f_deny').value,
-      telegram: { prefix: $('f_tgprefix').value, botToken: $('f_tgtoken').value, userIds: $('f_tgusers').value, clearBotToken: !!($('f_tgclear') && $('f_tgclear').checked) },
+      telegram: { prefix: $('f_tgprefix').value, botToken: $('f_tgtoken').value, userIds: $('f_tgusers').value, groups: !!($('f_tggroups') && $('f_tggroups').checked), clearBotToken: !!($('f_tgclear') && $('f_tgclear').checked) },
     };
     if (engineSel.value === 'claude') body.permissionMode = $('f_perm').value; else if (engineSel.value === 'agy') body.agyAccess = $('f_perm').value; else body.sandbox = $('f_perm').value;
     // 名稱若改了，人設裡的舊名字也一起換

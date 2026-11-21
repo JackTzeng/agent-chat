@@ -160,6 +160,12 @@ async function sendReply(cl, chatId, agent, segments, withLabel) {
   await cl.say(chatId, body);
   for (const f of mediaFilesOf(agent, texts.join('\n'))) await cl.sendMedia(chatId, f);
 }
+// 成員的 telegram.names：{ "帳號 ID": "名稱" }；名稱只在系統寫入的【傳訊者：…】出現
+function senderName(agent, userId) {
+  const names = (agent.telegram && agent.telegram.names) || {};
+  return Object.prototype.hasOwnProperty.call(names, String(userId)) ? String(names[String(userId)]) : '';
+}
+exports.senderName = senderName;
 // 交給獨立成員：不建立任務、不插話（忙的時候排隊），回覆只回到這個聊天
 async function toStandalone(ctx, cl, agent, text, msg, botKey) {
   const chatId = msg.chat.id, userId = String(msg.from.id);
@@ -170,8 +176,12 @@ async function toStandalone(ctx, cl, agent, text, msg, botKey) {
   }
   let files = [];
   try { files = await saveAttachments(cl, msg, agent); } catch (e) { return cl.say(chatId, '⚠️ 附件下載失敗：' + e.message); }
-  const body = withAttachments(String(text || '').trim(), files);
+  let body = withAttachments(String(text || '').trim(), files);
   if (!body) return cl.say(chatId, '請輸入內容，例如：昨天晚餐 350');
+  // 成員設定了「帳號 ID=名稱」時，在訊息最前面告訴它是誰傳的（例如記帳員用來決定預設付款人）
+  const who = senderName(agent, userId);
+  // 使用者自己打的「【傳訊者：…】」不算數，只有系統加的那一個是真的
+  if (who) body = '【傳訊者：' + who + '】' + body.replace(/【\s*傳訊者/g, '[傳訊者');
   cl.typing(chatId);
   const r = ctx.dispatch(agent, body, { via: 'telegram', tg: { bot: botKey, chatId }, tgUser: userId });
   if (r === 'queued') await cl.say(chatId, '⏳ ' + agent.name + ' 還在處理上一則，這則已排隊');
@@ -230,23 +240,34 @@ function startAgentBot(ctx, a0) {
   const st = (ctx.state.agentBots = ctx.state.agentBots || {});
   st[id] = st[id] || { offset: 0 };
 
+  let myName = '';
   async function handle(msg) {
-    if (!msg || !msg.from || !msg.chat || msg.chat.type !== 'private') return;
+    if (!msg || !msg.from || !msg.chat) return;
     const agent = ctx.agentById(id);
     if (!agent) return;
+    const inGroup = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
+    // 群組只在成員勾了「接受群組訊息」而且有指定帳號名單時才處理；頻道等其他類型一律不理
+    if (msg.chat.type !== 'private' && !(inGroup && agent.telegram && agent.telegram.groups && (agent.telegram.userIds || []).length)) return;
+    if (msg.from.is_bot) return;
     const userId = String(msg.from.id), chatId = msg.chat.id;
     const paired = ((ctx.config.telegram || {}).allowedUserIds || []).map(String);
     const only = ((agent.telegram && agent.telegram.userIds) || []).map(String);
-    // 只接受已配對（主 bot 配對過）且在名單內的帳號；其他人一律不回應
+    // 只接受已配對（主 bot 配對過）且在名單內的帳號；其他人一律不回應（群組裡也不回，免得洗版）
     if (!paired.includes(userId) || (only.length && !only.includes(userId))) {
-      console.log('⚠️  Telegram（' + agent.name + ' 專屬 bot）：不處理未授權的帳號 ' + userId);
+      console.log('⚠️  Telegram（' + agent.name + ' 專屬 bot）：不處理未授權的帳號 ' + userId + (inGroup ? '（群組 ' + chatId + '）' : ''));
       return;
     }
-    const text = String(msg.text || msg.caption || '').trim();
-    const cmd = !msg.photo && !msg.document && text.match(/^\/(\w+)(?:@\w+)?\s*$/);
+    let text = String(msg.text || msg.caption || '').trim();
+    // 群組裡「@bot名稱 午餐 120」→ 拿掉開頭的 @bot名稱
+    if (inGroup && myName) text = text.replace(new RegExp('^@' + myName.replace(/[^\w]/g, '') + '\\b[\\s,，:：]*', 'i'), '').trim();
+    // 群組裡沒有文字也沒有附件（有人加入、改群組名稱、貼圖…）→ 不理
+    if (inGroup && !text && !msg.photo && !msg.document) return;
+    const cmd = !msg.photo && !msg.document && text.match(/^\/(\w+)(?:@(\w+))?\s*$/);
+    // 群組裡「/new@別的bot」是給別的 bot 的
+    if (cmd && inGroup && cmd[2] && myName && cmd[2].toLowerCase() !== myName.toLowerCase()) return;
     if (cmd) {
       const name = cmd[1].toLowerCase();
-      if (name === 'start' || name === 'help') return cl.say(chatId, labelOf(agent) + ' 的專屬聊天\n\n直接傳文字或照片給它，回覆會傳回這裡。\n/new　開新對話（忘掉前面的內容）\n/stop　停止它目前的工作');
+      if (name === 'start' || name === 'help') return cl.say(chatId, labelOf(agent) + (inGroup ? ' 在這個群組\n\n直接傳文字或照片給它（名單內的帳號才會處理），它會知道是誰傳的，回覆會傳回這個群組。' : ' 的專屬聊天\n\n直接傳文字或照片給它，回覆會傳回這裡。') + '\n/new　開新對話（忘掉前面的內容）\n/stop　停止它目前的工作');
       if (name === 'new') return cl.say(chatId, ctx.resetAgent(agent.id) ? '🆕 已開新對話' : '它正在工作，請先 /stop');
       if (name === 'stop') { ctx.stopRun(agent.id); return cl.say(chatId, '⏹ 已停止'); }
     }
@@ -257,7 +278,7 @@ function startAgentBot(ctx, a0) {
     let lastErr = '';
     try {
       const me = await cl.call('getMe', {});
-      Object.assign(status, { state: 'connected', username: me.username, error: '' }); changed();
+      Object.assign(status, { state: 'connected', username: me.username, error: '' }); changed(); myName = me.username || '';
       console.log('📱 ' + a0.name + ' 的專屬 bot 已連線：@' + me.username);
     } catch (e) {
       if (!alive) return;
@@ -268,7 +289,7 @@ function startAgentBot(ctx, a0) {
     while (alive) {
       try {
         const updates = await cl.call('getUpdates', { offset: st[id].offset, timeout: 50, allowed_updates: ['message'] });
-        if (status.state !== 'connected') { try { const me = await cl.call('getMe', {}); Object.assign(status, { state: 'connected', username: me.username, error: '' }); changed(); } catch {} }
+        if (status.state !== 'connected') { try { const me = await cl.call('getMe', {}); Object.assign(status, { state: 'connected', username: me.username, error: '' }); changed(); myName = me.username || ''; } catch {} }
         lastErr = '';
         for (const u of updates) {
           st[id].offset = u.update_id + 1; ctx.saveState();

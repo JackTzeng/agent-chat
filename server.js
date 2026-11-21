@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.32.0';
+const VERSION = '3.33.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1853,9 +1853,26 @@ function cleanStandalone(a, input, existingId) {
       if (CONFIG.agents.some((x) => x.id !== existingId && x.telegram && x.telegram.botToken === tok)) throw new Error('這個 bot token 已經給其他成員用了');
       t.botToken = tok;
     }
-    const ids = parseLines(String(ti.userIds || '').replace(/[,，、\s]+/g, '\n')).slice(0, 10);
-    for (const id of ids) if (!/^\d{3,15}$/.test(id)) throw new Error('Telegram 帳號 ID 只能是數字：' + id);
+    // 「123456789」或「123456789=Jack」（名稱會在訊息前面以【傳訊者：Jack】告訴成員）
+    const entries = parseLines(String(ti.userIds || '').replace(/[,，、\s]+/g, '\n')).slice(0, 10);
+    const ids = [], names = {};
+    for (const e of entries) {
+      const m = e.match(/^(\d{3,15})(?:[=＝](.+))?$/);
+      if (!m) throw new Error('Telegram 帳號要寫成「數字 ID」或「數字 ID=名稱」：' + e);
+      if (m[2] !== undefined) {
+        const nm = m[2].trim();
+        if (!nm || nm.length > 20 || /[【】\[\]<>]/.test(nm)) throw new Error('傳訊者名稱最多 20 個字，不能有括號：' + e);
+        names[m[1]] = nm;
+      }
+      if (!ids.includes(m[1])) ids.push(m[1]);
+    }
     if (ids.length) t.userIds = ids.map(Number);
+    if (Object.keys(names).length) t.names = names;
+    if (ti.groups) {
+      if (!t.botToken) throw new Error('「接受群組訊息」只能用在專屬 bot，請先填專屬 bot token');
+      if (!ids.length) throw new Error('「接受群組訊息」一定要填「只接受這些 Telegram 帳號 ID」，群組裡其他人的訊息才會被擋掉');
+      t.groups = true;
+    }
     if (Object.keys(t).length) a.telegram = t;
   }
 }

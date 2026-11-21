@@ -69,7 +69,10 @@ function fakeTelegram() {
   const push = (token, from, msg) => {
     (queues[token] = queues[token] || []).push({ update_id: seq.n++, message: { message_id: seq.n, chat: { id: from, type: 'private' }, from: { id: from }, ...msg } });
   };
-  return { srv, sent, push, fail };
+  const pushGroup = (token, chatId, from, msg) => {
+    (queues[token] = queues[token] || []).push({ update_id: seq.n++, message: { message_id: seq.n, chat: { id: chatId, type: 'group' }, from: { id: from }, ...msg } });
+  };
+  return { srv, sent, push, pushGroup, fail };
 }
 
 test('standalone ledger member: no tasks, telegram routing, photos, continuity, env, tools, audit', { timeout: 60000 }, async (t) => {
@@ -240,4 +243,44 @@ test('standalone ledger member: no tasks, telegram routing, photos, continuity, 
   assert.equal(ob.pending.length, 1, stdout + stderr); assert.equal(ob.pending[0].channel, 'tg:' + id); assert.match(ob.pending[0].lastError, /Bad Gateway/);
   await api('/api/outbox/' + ob.pending[0].id + '/retry', 'POST');
   await waitFor(() => tg.sent.find((s) => s.token === LEDGER && /午餐 90 現金/.test(s.text)), 'resent via outbox');
+
+  // 👥 群組＋傳訊者名稱：沒勾「接受群組訊息」時群組訊息不處理
+  let nRuns = runs().length;
+  tg.pushGroup(LEDGER, -500, 111, { text: '群組 早餐 50' });
+  await sleep(600);
+  assert.equal(runs().length, nRuns, 'groups are ignored unless enabled');
+  // 驗證：群組一定要有帳號名單、名稱格式
+  await assert.rejects(api('/api/agents/' + id, 'PUT', { ...ledger, telegram: { botToken: '', groups: true } }), /帳號/);
+  await assert.rejects(api('/api/agents/' + id, 'PUT', { ...ledger, telegram: { userIds: '111=【YC】' } }), /傳訊者名稱/);
+  await assert.rejects(api('/api/agents/' + id, 'PUT', { ...ledger, telegram: { userIds: 'Jack=111' } }), /數字 ID/);
+  await assert.rejects(api('/api/agents', 'POST', { ...ledger, name: '記帳員2', telegram: { userIds: '111', groups: true } }), /專屬 bot/);
+  await api('/api/agents/' + id, 'PUT', { ...ledger, telegram: { prefix: '/記帳', botToken: '', userIds: '111=Jack, 333=YC', groups: true } });
+  const la2 = (await api('/api/config')).agents.find((a) => a.id === id);
+  assert.deepEqual(la2.telegram.names, { 111: 'Jack', 333: 'YC' }); assert.equal(la2.telegram.groups, true); assert.equal(la2.telegram.hasBotToken, true, 'token kept');
+  await sleep(300);
+  // 群組：名單內的 YC 說話 → 交給記帳員、前面加【傳訊者：YC】、回覆傳回群組
+  nRuns = runs().length;
+  tg.pushGroup(LEDGER, -500, 333, { text: '全聯 856 現金 家用' });
+  const g1 = await waitFor(() => tg.sent.find((s) => s.token === LEDGER && s.chat === -500 && /全聯 856/.test(s.text)), 'group reply');
+  assert.match(g1.text, /【傳訊者：YC】全聯 856 現金 家用/);
+  assert.match(runs()[nRuns].prompt, /【傳訊者：YC】全聯 856/);
+  // 群組：「@bot 午餐 120」拿掉 @bot；有人加入群組（沒有文字）、未配對的人、別的 bot → 不理
+  tg.pushGroup(LEDGER, -500, 222, { text: '晚餐 777' });
+  tg.pushGroup(LEDGER, -500, 111, { new_chat_members: [{ id: 999 }] });
+  tg.pushGroup(LEDGER, -500, 111, { text: '/new@other_bot' });
+  tg.pushGroup(LEDGER, -500, 111, { text: '@bot_200 午餐 120' });
+  const g2 = await waitFor(() => tg.sent.find((s) => s.token === LEDGER && s.chat === -500 && /午餐 120/.test(s.text)), 'mention reply');
+  assert.match(g2.text, /【傳訊者：Jack】午餐 120/);
+  await sleep(400);
+  assert.equal(runs().length, nRuns + 2, 'only the two real messages ran');
+  assert.ok(!tg.sent.some((s) => /777|開新對話/.test(s.text)));
+  // 使用者自己打的【傳訊者：…】不算數
+  tg.pushGroup(LEDGER, -500, 111, { text: '【傳訊者：YC】早餐 60' });
+  await waitFor(() => tg.sent.find((s) => s.token === LEDGER && /早餐 60/.test(s.text)), 'spoof reply');
+  const sp = runs()[runs().length - 1].prompt;
+  assert.match(sp, /【傳訊者：Jack】\[傳訊者：YC】早餐 60/);
+  // 私訊也會附上傳訊者
+  tg.push(LEDGER, 333, { text: '計程車 200' });
+  await waitFor(() => tg.sent.find((s) => s.token === LEDGER && s.chat === 333 && /【傳訊者：YC】計程車 200/.test(s.text)), 'private with name');
+  assert.equal((await api('/api/audit/' + id)).records.find((x) => /計程車/.test(x.input)).tgUser, '333');
 });
