@@ -63,7 +63,7 @@ async function freePort() {
 
 test('assistant member through the real server: briefing only for flagged members, reminders proposed with feedback', { timeout: 90000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-asst-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'maint.js', 'xlsx.js', 'agents.example.json'])
+  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'xlsx.js', 'agents.example.json'])
     fs.copyFileSync(path.join(source, f), path.join(dir, f));
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({

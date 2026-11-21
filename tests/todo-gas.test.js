@@ -183,3 +183,45 @@ test('唯讀資料表：Excel 檔（.xlsx）打不開 → 從雲端硬碟原檔�
   assert.match(env.call('readSource', { name: 'x', url: 'https://docs.google.com/spreadsheets/d/DENY/edit' }).error, /① 初始化.*允許/);
   assert.match(env.call('readSource', { name: 'x', url: 'https://docs.google.com/spreadsheets/d/NOPE/edit' }).error, /打不開/);
 });
+
+test('冪等：同一個 opId 只寫一次；todo.js 逾時會用同一個 opId 安全重試，舊版 Apps Script 則請使用者先確認', async (t) => {
+  const env = makeEnv(); env.g.setup();
+  const a1 = env.call('add', { title: '重送測試', owner: '小王', by: '小王', opId: 'op_abcdefgh1' });
+  const a2 = env.call('add', { title: '重送測試', owner: '小王', by: '小王', opId: 'op_abcdefgh1' });
+  assert.equal(a1.idem, true); assert.equal(a2.replayed, true); assert.equal(a2.item.id, a1.item.id);
+  assert.equal(env.call('list').items.filter((x) => x.title === '重送測試').length, 1);
+  assert.notEqual(env.call('add', { title: '重送測試', owner: '小王', by: '小王', opId: 'op_abcdefgh2' }).item.id, a1.item.id, '不同 opId 是新的一筆');
+
+  // todo.js 透過 HTTP 呼叫：第一次新增「寫進去了但回應太慢（逾時）」
+  const http = require('node:http');
+  let slowAdds = 1, legacy = false, posts = [];
+  const srv = http.createServer((req, res) => {
+    const bufs = []; req.on('data', (c) => bufs.push(c));
+    req.on('end', () => {
+      const body = Buffer.concat(bufs).toString('utf8'); const j = JSON.parse(body); posts.push(j);
+      let out = env.g.doPost({ postData: { contents: body } }).text;
+      if (legacy) { const o = JSON.parse(out); delete o.idem; delete o.replayed; out = JSON.stringify(o); }
+      const reply = () => { if (!res.destroyed) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(out); } };
+      if (j.op === 'add' && slowAdds > 0) { slowAdds--; setTimeout(reply, 900); } else reply();
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  t.after(() => srv.close());
+  process.env.TODO_TIMEOUT_MS = '300';
+  process.env.TODO_URL_ANY = '1';
+  t.after(() => { delete process.env.TODO_TIMEOUT_MS; delete process.env.TODO_URL_ANY; });
+  const todo = require('../todo').create({ config: { todo: { url: 'http://127.0.0.1:' + srv.address().port + '/exec', key: env.props.KEY } }, saveConfig() {} });
+  const sender = { name: '小王', role: '成員' };
+  const notes = await todo.execute(sender, [{ op: '新增', fields: { title: '逾時也只一筆' } }]);
+  assert.match(notes[0], /✅ 已登記/);
+  const adds = posts.filter((p) => p.op === 'add');
+  assert.equal(adds.length, 2, '逾時後重試一次'); assert.equal(adds[0].opId, adds[1].opId, '用同一個 opId');
+  assert.equal(env.call('list').items.filter((x) => x.title === '逾時也只一筆').length, 1, 'Sheet 裡只有一筆');
+
+  // 舊版 Apps Script（不認得 opId）：不自動重試，請使用者先確認
+  legacy = true; slowAdds = 1; posts = [];
+  const todo2 = require('../todo').create({ config: { todo: { url: 'http://127.0.0.1:' + srv.address().port + '/exec', key: env.props.KEY } }, saveConfig() {} });
+  const n2 = await todo2.execute(sender, [{ op: '新增', fields: { title: '舊版' } }]);
+  assert.match(n2[0], /逾時.*可能已經寫進去了.*我的待辦/);
+  assert.equal(posts.filter((p) => p.op === 'add').length, 1, '沒有自動重試');
+});

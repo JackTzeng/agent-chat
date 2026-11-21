@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.31.0';
+const VERSION = '3.32.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -160,6 +160,7 @@ const reporter = require('./diag').create({
   localSettings: () => ({ ...LOCAL, missingRoots: security.missingRoots }),
   updateStatus: () => late(() => updater.status()),
   timers: () => late(() => timers.snapshot()),
+  outbox: () => late(() => outbox.snapshot()),
 });
 // ⬆️ 一鍵更新與重新啟動（要用 start.bat → launcher.js 啟動）
 const updater = require('./updater').create({ ROOT, DATA_DIR, VERSION, shutdown: (c) => shutdown(c) });
@@ -2063,6 +2064,11 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/todo/digest' && req.method === 'POST') { try { const b = await readBody(req); return send(res, 200, await todoBook.digest(b.send === true)); } catch (e) { return send(res, 400, { error: e.message }); } }
     if (p === '/api/todo/script' && req.method === 'GET') { try { return send(res, 200, { code: fs.readFileSync(path.join(ROOT, 'templates', 'todo', 'Code.gs'), 'utf8'), version: (/var VERSION = '([\d.]+)'/.exec(fs.readFileSync(path.join(ROOT, 'templates', 'todo', 'Code.gs'), 'utf8')) || [])[1] || '' }); } catch (e) { return send(res, 500, { error: '找不到 Apps Script 範本：' + e.message }); } }
     // ---- 💚 LINE ----
+    if (p === '/api/outbox' && req.method === 'GET') return send(res, 200, outbox.snapshot());
+    const om = /^\/api\/outbox\/(\d+)\/(retry|drop)$/.exec(p);
+    if (om && req.method === 'POST') {
+      try { if (om[2] === 'retry') outbox.retry(om[1]); else outbox.drop(om[1]); return send(res, 200, outbox.snapshot()); } catch (e) { return send(res, 404, { error: e.message }); }
+    }
     if (p === '/api/line' && req.method === 'GET') return send(res, 200, lineBot.status());
     if (p === '/api/line' && req.method === 'PUT') { try { const r = lineBot.update(await readBody(req)); const ga = CONFIG.agents.find((x) => x.id === (CONFIG.line || {}).groupAgentId); if (ga && ga.configMd) writeAgentMd(ga); return send(res, 200, r); } catch (e) { return send(res, e.status || 400, { error: e.message }); } }
     if (p === '/api/line/check' && req.method === 'POST') { try { return send(res, 200, { ...(await lineBot.check()), status: lineBot.status() }); } catch (e) { return send(res, 400, { error: e.message }); } }
@@ -2503,8 +2509,10 @@ function sourceProfileText(name) {
   }
   return null;
 }
+// 📮 通知補送：LINE／Telegram 暫時送不出去的訊息存在 state.outbox，背景重送（outbox.js）
+const outbox = require('./outbox').create({ state, saveState: () => saveState(), broadcast: (e) => broadcast(e) });
 const todoBook = todoLib.create({ config: CONFIG, saveConfig: () => saveConfig(), sourceProfile: (n) => { const t = sourceProfileText(n); return t ? todoLib.parseSourceProfile(t.text) : null; } });
-const lineBot = lineLib.create({ todo: todoBook, logExchange, feedback: addFeedback, groupRisk, redact: (t) => reporter.redact(t), config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
+const lineBot = lineLib.create({ outbox, todo: todoBook, logExchange, feedback: addFeedback, groupRisk, redact: (t) => reporter.redact(t), config: CONFIG, state, saveState: () => saveState(), saveConfig: () => saveConfig(), hooks, broadcast: (e) => broadcast(e),
   agentById, agents: AGENTS, dispatch, stopRun, resetAgent, timers, proctree, ROOT });
 lineBotRef = lineBot;
 // 📄 v3.30 遷移（只做一次）：會對外的 bot（有待辦清單能力、唯讀資料表，或接了 LINE）把行為設定集中到一份 .md
@@ -2524,11 +2532,12 @@ const tgCtx = {
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,
   makeReport: (o) => reporter.makeReport(o), updater, timers,
-  pauseProject, resumeProject, pauseStatus, skills,
+  pauseProject, resumeProject, pauseStatus, skills, outbox,
 };
 telegram.start(tgCtx);
 telegram.startAgentBots(tgCtx);
 try { lineBot.start(); } catch (e) { console.error('LINE 啟動失敗：' + e.message); }
+outbox.start();
 
 // code 75 = 請啟動器重新啟動（一鍵更新／重啟）
 const shutdown = (code) => {

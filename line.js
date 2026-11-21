@@ -86,7 +86,14 @@ function create(ctx) {
     if (!pairing) return;
     if (++pairFails >= PAIR_MAX_FAILS) { pairing = null; pairFails = 0; note('配對碼被猜錯太多次（' + where + '），已作廢；需要時請重新產生'); changed(); }
   }
-  const seen = new Set();
+  // 處理過的 webhook 事件編號：存進 state，程式重新啟動後 LINE 重送（redelivery）同一則也不會再做一次（例如重複登記待辦）
+  const seen = new Set(Array.isArray((ctx.state.line || {}).seenEvents) ? ctx.state.line.seenEvents : []);
+  const SEEN_MAX = 500;
+  function markSeen(id) {
+    seen.add(id);
+    while (seen.size > SEEN_MAX) seen.delete(seen.values().next().value);
+    S().seenEvents = [...seen]; ctx.saveState();
+  }
 
   // ---------- LINE API ----------
   function request(method, urlPath, body, timeoutMs = 15000) {
@@ -126,7 +133,7 @@ function create(ctx) {
   }
   async function push(to, texts, options, group) {
     const s = S();
-    if (s.pushBlocked === month()) return { ok: false, error: '本月的推播額度用完了（LINE 回過 429），下個月才會恢復；用 LINE 回覆你的訊息不受影響' };
+    if (s.pushBlocked === month()) return { ok: false, status: 429, error: '本月的推播額度用完了（LINE 回過 429），下個月才會恢復；用 LINE 回覆你的訊息不受影響' };
     const r = await request('POST', '/v2/bot/message/push', { to, messages: buildMessages(texts, options, group) });
     if (r.status === 200) {
       if (s.pushedMonth !== month()) { s.pushedMonth = month(); s.pushed = 0; }
@@ -134,8 +141,11 @@ function create(ctx) {
       ctx.saveState(); return { ok: true };
     }
     if (r.status === 429) { s.pushBlocked = month(); ctx.saveState(); }
-    return { ok: false, error: explain(r) };
+    return { ok: false, status: r.status, error: explain(r) };
   }
+  // 📮 只有連不上、LINE 伺服器 5xx 才重送；401／403／429（額度）重送也沒用
+  const pushRetryable = (p) => !p.status || p.status >= 500;
+  const pushForOutbox = async (to, pl) => { const p = await push(to, pl.texts, pl.options, pl.group); return { ok: p.ok, retry: pushRetryable(p), error: p.error }; };
   // 先試 reply（免費、不算則數）；token 過期、已用過或沒有，就用 push
   async function send(userId, text, tok, options) {
     // 🔒 最後一道防線：任何送出 LINE 的文字都先遮蔽已知的密鑰（bot token、channel secret、Sheet 密鑰、成員環境變數…）
@@ -148,6 +158,11 @@ function create(ctx) {
       if (r.status === 200) return { ok: true, via: 'reply' };
     }
     const p = await push(userId, parts, options, group);
+    if (!p.ok && pushRetryable(p) && ctx.outbox) {
+      ctx.outbox.add({ channel: 'line', target: userId, payload: { texts: parts, options: options || [], group }, label: group ? 'LINE 群組' : 'LINE', error: p.error });
+      note('傳給 LINE 失敗，稍後會自動重送：' + p.error);
+      return { ...p, via: 'push', queued: true };
+    }
     if (!p.ok) note('傳給 LINE 失敗：' + p.error);
     return { ...p, via: 'push' };
   }
@@ -363,7 +378,7 @@ function create(ctx) {
     let body; try { body = JSON.parse(raw.toString('utf8')); } catch { return; }
     for (const ev of Array.isArray(body.events) ? body.events : []) {
       const id = ev.webhookEventId;
-      if (id) { if (seen.has(id)) continue; seen.add(id); if (seen.size > 500) seen.delete(seen.values().next().value); }
+      if (id) { if (seen.has(id)) continue; markSeen(id); }
       try { await handleEvent(ev); } catch (e) { note('處理事件失敗：' + e.message); }
     }
   }
@@ -575,9 +590,10 @@ function create(ctx) {
   function start() {
     ctx.hooks.on('done', onDone);
     ctx.hooks.on('timer-alert', onTimerAlert);
+    if (ctx.outbox) ctx.outbox.register('line', pushForOutbox);
     if (configured()) { startServer(); if (cfg().tunnel) startTunnel(); }
   }
-  function stop() { ctx.hooks.off('done', onDone); ctx.hooks.off('timer-alert', onTimerAlert); stopTunnel(); stopServer(); }
+  function stop() { if (ctx.outbox) ctx.outbox.unregister('line', pushForOutbox); ctx.hooks.off('done', onDone); ctx.hooks.off('timer-alert', onTimerAlert); stopTunnel(); stopServer(); }
 
   return { start, stop, status, update, check, setupWebhook, newPairCode, unpair, startTunnel: () => { cfg().tunnel = true; ctx.saveConfig(); startTunnel(); return status(); },
     stopTunnel: () => { cfg().tunnel = false; ctx.saveConfig(); stopTunnel(); return status(); }, handleBody, port, groupAgent };

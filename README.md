@@ -636,6 +636,14 @@ Skill 是給成員的「工作說明書＋工具包」（例如設計審美、PD
 - 移除會搬到 Agent Chat 的 `data/skills-trash`，可以找回
 - 目前只支援 Claude 成員；Codex、agy 的 Skill 只顯示
 
+## 📮 通知補送（送不出去會自動重送）
+
+LINE／Telegram 暫時送不出去（網路斷線、對方伺服器出錯、送太快）的訊息，會先存在 `data/state.json` 的 outbox，系統自動重送（30 秒、1 分、2 分……最長每小時一次），程式重新啟動也不會丟。同一個對象照順序送；超過 12 小時還送不出去就放棄。token 錯誤、bot 被封鎖、LINE 本月推播額度用完這類問題重送也沒用，不會放進來，照原本方式顯示錯誤。
+
+有卡住的通知時，左下角會出現「📮 待重送」，點開可以馬上重送或移除。
+
+📋 待辦寫入 Google Sheet 也防重複：Google 回應太慢（逾時）時，系統用同一個操作編號重試一次，Apps Script 認得做過的就不會再新增一筆（需要 Apps Script 1.0.8 以上）。
+
 ## 疑難排解
 
 **成員一直沒回應、看起來卡住？** 成員卡片上會顯示「⏱ 工作中 X 分鐘」；超過 10 分鐘沒有任何輸出會標示「⚠️ 可能卡住」，並通知 Telegram。點進那位成員，按上方的「🔍 診斷」可以看到實際執行的指令、CLI 的錯誤訊息（stderr）與最後的輸出；按「📋 複製診斷資訊」可以貼給 Claude 協助判斷。也可以在診斷畫面停止這一輪或清除排隊。卡住判定的時間可以在 `agents.json` 加上 `"stallMinutes": 15` 調整。
@@ -672,6 +680,7 @@ localsettings.js 讀取你的 local-settings.txt
 proctree.js      關子程式時連整串一起關（避免殘留的 CLI 佔記憶體）
 agy.js           Google Antigravity（agy）：參數、權限對應、stream-json 解析
 timers.js        ⏰ 排程（data/timers.json、data/timer-runs.jsonl）
+outbox.js        📮 通知補送：LINE／Telegram 暫時送不出去的訊息存起來、依序重送
 local-settings.example.txt  個人設定範本（複製成 local-settings.txt，不會進 git）
 public/          前端聊天介面（office.js 是辦公室畫面；vendor/ 裡是 Markdown 套件 marked、DOMPurify）
 agents.example.json  agent 設定範本（第一次啟動會複製成 agents.json）

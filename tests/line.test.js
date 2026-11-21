@@ -61,7 +61,7 @@ async function freePort() {
 test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
   const TOKEN = 'T'.repeat(30) + 'abc123+/='.repeat(10), SECRET = 'ab12cd34'.repeat(4);
   // 假的 LINE API
-  const calls = []; let hook = '', putCalls = 0;
+  const calls = []; let hook = '', putCalls = 0, pushFail = 0;
   const api = http.createServer((req, res) => {
     const bufs = []; req.on('data', (c) => bufs.push(c));
     req.on('end', () => {
@@ -77,6 +77,7 @@ test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
       if (k === 'GET /v2/bot/message/quota') return send(200, { type: 'limited', value: 200 });
       if (k === 'GET /v2/bot/message/quota/consumption') return send(200, { totalUsage: 7 });
       if (k === 'POST /v2/bot/chat/loading/start') return send(202, {});
+      if (k === 'POST /v2/bot/message/push' && pushFail > 0) { pushFail--; return send(500, { message: 'temporary error' }); }
       if (k === 'POST /v2/bot/message/reply' || k === 'POST /v2/bot/message/push') return send(200, {});
       send(404, { message: 'not found' });
     });
@@ -85,7 +86,7 @@ test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
   const apiBase = 'http://127.0.0.1:' + api.address().port;
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-line-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'maint.js', 'xlsx.js', 'agents.example.json'])
+  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'xlsx.js', 'agents.example.json'])
     fs.copyFileSync(path.join(source, f), path.join(dir, f));
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({
@@ -214,6 +215,21 @@ test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
   await waitFor(() => sent('push').length >= 1, 'push reminder');
   const ps = sent('push')[0]; assert.equal(ps.body.to, 'U_owner'); assert.match(textsOf(ps), /開會提醒/); assert.match(textsOf(ps), /提醒：開會時間到了/);
   assert.equal(sent('push').every((c) => c.body.to === 'U_owner'), true, '只推給配對過的人');
+
+  // 9b) 📮 推播暫時失敗（LINE 回 500）→ 放進 outbox，之後補送；處理過的事件編號存進 state（重新啟動後 LINE 重送也不會再做一次）
+  pushFail = 1; const pushBefore = sent('push').length;
+  await J('/api/timers', 'POST', { name: '補送測試', prompt: 'TIMERFIRE 再提醒一次', agentId: 'asst', schedule: { kind: 'once', at: Date.now() + 800 }, notify: 'always' });
+  const ob = await waitFor(async () => { const o = await J('/api/outbox'); return o.pending.length === 1 && o; }, 'queued in outbox');
+  assert.equal(ob.pending[0].channel, 'line'); assert.match(ob.pending[0].lastError, /500/); assert.equal(ob.pending[0].tries, 1);
+  await J('/api/outbox/' + ob.pending[0].id + '/retry', 'POST');
+  await waitFor(async () => (await J('/api/outbox')).history.some((h) => h.status === 'sent'), 'resent');
+  assert.equal(sent('push').length, pushBefore + 2, '失敗一次＋補送一次');
+  assert.match(textsOf(sent('push').at(-1)), /補送測試/);
+  assert.equal((await J('/api/outbox')).pending.length, 0);
+  assert.equal((await call('/api/outbox/999/retry', 'POST')).status, 404);
+  const savedState = JSON.parse(fs.readFileSync(path.join(dir, 'data', 'state.json'), 'utf8'));
+  assert.ok(savedState.line.seenEvents.includes('ev1'), '處理過的事件編號有存檔');
+  assert.ok(savedState.outbox.history.length >= 1, 'outbox 也存檔');
 
   // 10) 檢查連線
   let chk = await J('/api/line/check', 'POST');

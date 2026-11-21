@@ -360,6 +360,7 @@ if (location.search) history.replaceState(null, '', location.pathname + location
 const withToken = (u) => u;
 let UPD_BADGE = false;
 let MD_BADGE = 0; // 📝 待核准的設定檔修改提案數
+let OUTBOX_N = 0; // 📮 暫時送不出去、等著重送的通知數（0 就不顯示）
 let TIMER_BADGE = 0; // 待核准的排程建議數 // 有新版本時，側邊欄的「⬆️ 更新」顯示「新」
 
 const $ = (id) => document.getElementById(id);
@@ -367,7 +368,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.31.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.32.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1791,6 +1792,7 @@ function renderUsage() {
       : mini('Claude', USAGE && USAGE.claude) + mini('Codex', USAGE && USAGE.codex) + agyMini(USAGE && USAGE.agy)) + tgLineHTML() +
     '<div class="ulinks">' +
     `<div class="ulink" id="timerLine" title="定時叫成員做事，例如每小時檢查、每天早上整理">⏰ 排程${TIMER_BADGE ? ' <span class="hn-dot">' + TIMER_BADGE + '</span>' : ''}</div>` +
+    (OUTBOX_N ? `<div class="ulink" id="outboxLine" title="LINE／Telegram 暫時送不出去的通知，系統會自動重送">📮 待重送 <span class="hn-dot">${OUTBOX_N}</span></div>` : '') +
     `<div class="ulink" id="updLine" title="檢查新版本、一鍵更新並重新啟動">⬆️ 更新${UPD_BADGE ? ' <span class="hn-dot">新</span>' : ''}</div>` +
     `<div class="ulink" id="cliLine" title="三個 CLI 的登入狀態、MCP、Skill（含安裝申請）">🧰 CLI 狀態${SKILL_PENDING ? ' <span class="hn-dot" title="有 Skill 安裝申請等你核准">' + SKILL_PENDING + '</span>' : ''}</div>` +
     '<div class="ulink" id="lineLink" title="讓助理（或任何成員）用 LINE 跟你對話、收提醒">💚 LINE</div>' +
@@ -1801,6 +1803,7 @@ function renderUsage() {
   $('tgLine').onclick = openTelegramForm;
   $('updLine').onclick = () => openUpdate();
   $('timerLine').onclick = () => openTimers();
+  if ($('outboxLine')) $('outboxLine').onclick = () => openOutbox();
   $('repLine').onclick = () => openReport();
   if ($('mdLine')) $('mdLine').onclick = () => openMdProposals();
   $('lineLink').onclick = () => openLine();
@@ -2014,6 +2017,7 @@ function connectEvents() {
     if (ev.kind === 'task') { loadTasks(); return; }
     if (ev.kind === 'harness' || ev.kind === 'harness-run') { loadHarness(ev.kind === 'harness-run'); return; }
     if (ev.kind === 'mdprop') { refreshMdBadge(); if (modalShowing('md_close')) openMdProposals(); return; }
+    if (ev.kind === 'outbox') { refreshOutbox(); return; }
     if (ev.kind === 'timers') { refreshTimerBadge(); if (modalShowing('tmr_list')) openTimers(true); return; }
     if (ev.kind === 'update-available') { if (!UPD_BADGE) { UPD_BADGE = true; renderUsage(); } return; }
     if (ev.kind === 'queue') { refreshQueue(); if ((PAUSE.pauses || []).length) loadPause(); return; }
@@ -2046,6 +2050,7 @@ async function init() {
   // 伺服器定期在背景檢查更新，有新版就在側邊欄提示
   refreshTimerBadge();
   refreshMdBadge();
+  refreshOutbox();
   api('/api/update').then((u) => { UPD_BADGE = !!(u.last && u.last.behind > 0); if (u.failed) toast('⚠️ 上次更新失敗，已自動退回原本的版本（按側邊欄「⬆️ 更新」看詳情）'); renderUsage(); }).catch(() => {});
   connectEvents();
   loadUsage();
@@ -2438,6 +2443,30 @@ async function openMdProposals() {
   const act = (id, ok) => async () => { try { const r = await api('/api/md-proposals/' + id, { method: 'POST', body: JSON.stringify({ ok }) }); toast(ok ? '✅ 已寫入（舊版已備份），下一則訊息就生效' : '已不採用'); } catch (e) { toast(e.message); } refreshMdBadge(); openMdProposals(); };
   document.querySelectorAll('[data-mdok]').forEach((b) => (b.onclick = act(b.dataset.mdok, true)));
   document.querySelectorAll('[data-mdno]').forEach((b) => (b.onclick = act(b.dataset.mdno, false)));
+}
+// ---------- 📮 通知補送 ----------
+const OB_STATUS = { sent: '✅ 已補送', failed: '❌ 放棄', dropped: '🗑 已移除' };
+async function refreshOutbox() {
+  try { const o = await api('/api/outbox'); if (o.pending.length !== OUTBOX_N) { OUTBOX_N = o.pending.length; renderUsage(); } if (modalShowing('ob_list')) openOutbox(o); } catch {}
+}
+async function openOutbox(data) {
+  let o = data;
+  if (!o) { try { o = await api('/api/outbox'); } catch (e) { toast(e.message); return; } }
+  OUTBOX_N = o.pending.length;
+  openModal(`<h2>📮 待重送的通知</h2>
+    <p class="lead">LINE／Telegram 暫時送不出去（網路斷線、對方伺服器出錯）的訊息會先存在這裡，系統自動重送，程式重新啟動也不會丟。同一個對象會照順序送；超過 12 小時還送不出去就放棄。token 錯誤、被封鎖、額度用完這類問題重送也沒用，不會放進來。</p>
+    <div id="ob_list" class="hn-list">${o.pending.length ? o.pending.map((x) => `
+      <div class="hn-item" data-ob="${x.id}"><div class="grow"><b>#${x.id} ${esc(x.label || x.channel)}</b>｜試了 ${x.tries} 次｜${x.waiting ? '⏸ 這個頻道目前沒有啟動，啟動後會送' : '下次 ' + fmtTime(x.nextAt)}<br><span class="tmr-prompt">${esc(x.preview)}</span><br><small>建立 ${fmtTime(x.created)}｜${esc(x.lastError || '')}</small></div>
+        <div class="acts"><button data-obretry title="現在就再送一次">🔁 重送</button><button data-obdrop title="不要送了">🗑</button></div></div>`).join('') : '<p class="help">目前沒有待重送的通知。</p>'}</div>
+    ${o.history.length ? `<details class="tmr-runs"><summary>最近的紀錄（${o.history.length}）</summary>${o.history.map((h) => `<div>${fmtTime(h.at)}｜#${h.id} ${esc(h.label || h.channel)}｜${OB_STATUS[h.status] || h.status}（試了 ${h.tries} 次）｜${esc(h.preview)}${h.error ? '｜' + esc(h.error) : ''}</div>`).join('')}</details>` : ''}
+    <div class="modal-actions"><span class="spacer"></span><button id="ob_close">關閉</button></div>`);
+  renderUsage();
+  $('ob_close').onclick = closeModal;
+  const act = async (id, what) => { try { openOutbox(await api('/api/outbox/' + id + '/' + what, { method: 'POST', body: '{}' })); } catch (e) { toast(e.message); refreshOutbox(); } };
+  document.querySelectorAll('[data-ob]').forEach((el) => {
+    el.querySelector('[data-obretry]').onclick = () => act(el.dataset.ob, 'retry');
+    el.querySelector('[data-obdrop]').onclick = () => act(el.dataset.ob, 'drop');
+  });
 }
 async function refreshTimerBadge() {
   try { const t = await api('/api/timers'); const n = t.proposals.length; if (n !== TIMER_BADGE) { TIMER_BADGE = n; renderUsage(); } } catch {}

@@ -11,7 +11,7 @@
  *
  * 欄位都是用「欄位名稱」找的：你可以調整欄位順序、自己加欄位，不會壞。
  */
-var VERSION = '1.0.7';
+var VERSION = '1.0.8';
 var TASK_SHEET = '待辦', MEMBER_SHEET = '成員', SETTING_SHEET = '設定', LOG_SHEET = '紀錄';
 var TASK_HEADERS = ['編號', '事項', '負責人', '期限', '狀態', '優先', '備註', '提出人', '建立時間', '最後更新', '更新者', '完成時間'];
 var MEMBER_HEADERS = ['姓名', 'Email', '角色', 'LINE 名稱', 'LINE ID'];
@@ -37,8 +37,17 @@ function doPost(e) {
   if (!fn) return out_({ ok: false, error: '不認得的動作：' + req.op });
   var lock = LockService.getScriptLock();
   try { lock.waitLock(15000); } catch (err) { return out_({ ok: false, error: '系統忙碌，請稍後再試' }); }
-  try { return out_(Object.assign({ ok: true }, fn(req))); }
-  catch (err) { return out_({ ok: false, error: String((err && err.message) || err) }); }
+  try {
+    // 冪等：新增／修改帶著 opId。Agent Chat 等不到回應（逾時）時會用同一個 opId 再送一次，
+    // 這裡認得已經做過，就直接回上次的結果，不會再新增一筆（6 小時內有效）
+    var idem = (req.op === 'add' || req.op === 'update') && /^[A-Za-z0-9_-]{8,64}$/.test(str_(req.opId));
+    var cache = idem ? CacheService.getScriptCache() : null;
+    if (idem) { var done = cache.get('op:' + req.opId); if (done) return out_(Object.assign(JSON.parse(done), { replayed: true })); }
+    var res = Object.assign({ ok: true, idem: true }, fn(req));
+    if (idem) { try { cache.put('op:' + req.opId, JSON.stringify(res), 21600); } catch (err) {} }
+    return out_(res);
+  }
+  catch (err) { return out_({ ok: false, idem: true, error: String((err && err.message) || err) }); }
   finally { lock.releaseLock(); }
 }
 function checkKey_(k) {

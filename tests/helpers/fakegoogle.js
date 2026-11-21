@@ -32,7 +32,7 @@ class Sheet {
 function makeEnv({ mailQuota = 100 } = {}) {
   const books = new Map(); // 別人的試算表：網址 → { sheets: [Sheet] }（openByUrl 讀得到的）
   const driveFiles = new Map(); // 雲端硬碟上的檔案（例如 .xlsx）：檔案 ID → { name, mime, bytes: Buffer }；openByUrl 打不開這些
-  const sheets = new Map(), props = {}, sent = [], alerts = [], triggers = [];
+  const sheets = new Map(), props = {}, sent = [], alerts = [], triggers = [], cache = new Map();
   const ss = {
     getSheetByName: (n) => sheets.get(n) || null,
     insertSheet: (n) => { const s = new Sheet(n); sheets.set(n, s); return s; },
@@ -50,6 +50,7 @@ function makeEnv({ mailQuota = 100 } = {}) {
     PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => props[k] || null, setProperty: (k, v) => { props[k] = v; } }) },
     ContentService: { createTextOutput: (text) => ({ text, setMimeType() { return this; } }), MimeType: { JSON: 'json' } },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
+    CacheService: { getScriptCache: () => ({ get: (k) => (cache.has(k) ? cache.get(k) : null), put: (k, v) => { cache.set(k, v); } }) },
     Session: { getScriptTimeZone: () => 'Asia/Taipei' },
     Utilities: {
       getUuid: () => crypto.randomUUID(),
@@ -67,7 +68,7 @@ function makeEnv({ mailQuota = 100 } = {}) {
   vm.createContext(g);
   vm.runInContext(CODE, g);
   const call = (op, args = {}, key) => JSON.parse(g.doPost({ postData: { contents: JSON.stringify({ key: key === undefined ? props.KEY : key, op, ...args }) } }).text);
-  return { g, call, sheets, props, sent, alerts, triggers, ss, books, driveFiles };
+  return { g, call, sheets, props, sent, alerts, triggers, ss, books, driveFiles, cache };
 }
 
 module.exports = { makeEnv, iso, Sheet };
