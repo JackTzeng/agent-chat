@@ -241,7 +241,7 @@ exports.create = function create(ctx) {
     try { const s = { ...ctx.telegramStatus() }; delete s.pairing; L.push(code(JSON.stringify(s, null, 2), 'json')); } catch (e) { L.push('（無法取得：' + e.message + '）'); }
 
     L.push('', '## 8b. 使用者錯誤回報（LINE 上說「錯誤回報 …」，最近 20 則）', '');
-    try { const fb = ctx.feedback ? ctx.feedback(20) : []; L.push(fb.length ? fb.map((f) => '- #' + f.id + ' ' + stamp(f.ts) + '｜' + f.via + '｜' + f.who + '｜對象：' + f.agentName + '\n  回報：' + f.text + (f.lastReply ? '\n  bot 上一則回覆：' + f.lastReply.replace(/\n/g, ' ') : '')).join('\n') : '（沒有）'); } catch (e) { L.push('（無法取得：' + e.message + '）'); }
+    try { const fb = ctx.feedback ? ctx.feedback(20) : []; L.push(fb.length ? fb.map((f) => '- #' + f.id + '［' + ({ open: '未處理', doing: '處理中', done: '已解決' }[f.status] || '未處理') + (f.note ? '：' + f.note : '') + '］' + stamp(f.ts) + '｜' + f.via + '｜' + f.who + '｜對象：' + f.agentName + '\n  回報：' + f.text + (f.lastReply ? '\n  bot 上一則回覆：' + f.lastReply.replace(/\n/g, ' ') : '')).join('\n') : '（沒有）'); } catch (e) { L.push('（無法取得：' + e.message + '）'); }
 
     L.push('', '## 9. 伺服器紀錄（最近 300 行）', '');
     L.push(code(logs.slice(-300).map((l) => (l.level === 'prev' ? l.text : stamp(l.ts) + ' [' + l.level + '] ' + l.text)).join('\n') || '（沒有）', 'text'));

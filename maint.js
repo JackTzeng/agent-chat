@@ -72,7 +72,8 @@ function create(ctx) {
       out.push(a.configMd ? '【設定檔：' + a.configMd + '】（要改就提出修改提案，檔案=' + a.configMd + '）\n```\n' + md.trim() + '\n```' : '（這位成員還沒有設定檔，不能提案修改；請管理者在它的設定按「📄 把行為設定集中到一份 .md」）');
       for (const n of a.dataSources || []) { const t = readOr(path.join(ctx.SOURCE_DIR, n + '.md')); out.push('【資料表設定檔：' + n + '】（檔案=資料表/' + n + '.md）' + (t ? '\n```\n' + t.trim() + '\n```' : '（還沒有設定檔）')); }
       const fb = (ctx.recentFeedback(50) || []).filter((f) => f.agent === a.id).slice(-10);
-      out.push('【錯誤回報（最近 ' + fb.length + ' 則）】', ...(fb.length ? fb.map((f) => '- #' + f.id + ' ' + new Date(f.ts).toLocaleString('zh-TW', { hour12: false }) + '｜' + f.via + '｜' + short(f.who, 20) + '：' + short(f.text, 200) + (f.lastReply ? '\n  當時 bot 上一則回覆：' + short(f.lastReply, 300) : '')) : ['- 沒有']));
+      const ST = { open: '未處理', doing: '處理中', done: '已解決' };
+      out.push('【錯誤回報（最近 ' + fb.length + ' 則；狀態由管理者標記，已解決的不用再處理）】', ...(fb.length ? fb.map((f) => '- #' + f.id + '［' + (ST[f.status] || '未處理') + (f.note ? '：' + short(f.note, 80) : '') + '］' + new Date(f.ts).toLocaleString('zh-TW', { hour12: false }) + '｜' + f.via + '｜' + short(f.who, 20) + '：' + short(f.text, 200) + (f.lastReply ? '\n  當時 bot 上一則回覆：' + short(f.lastReply, 800) : '')) : ['- 沒有']));
       const au = (ctx.readAudit(a.id, 8) || []).reverse();
       out.push('【最近 ' + au.length + ' 輪的紀錄（舊→新）】', ...(au.length ? au.map((r) => '- ' + new Date(r.ts).toLocaleString('zh-TW', { hour12: false }) + '｜' + (r.via || '') + '｜' + Math.round((r.ms || 0) / 1000) + ' 秒' +
         '\n  收到：' + short(String(r.input || '').split('\n').filter((l) => !/^【|^#\d+｜|^- /.test(l)).join(' '), 200) + '\n  回覆：' + short(r.reply, 250) + (r.errors && r.errors.length ? '\n  錯誤：' + short(r.errors.join('；'), 200) : '')) : ['- 沒有']));

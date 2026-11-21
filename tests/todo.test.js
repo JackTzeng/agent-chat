@@ -581,8 +581,18 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   assert.equal(agyCalls(), nFB, '錯誤回報不經過 AI');
   const fbLines = fs.readFileSync(path.join(dir, 'data', 'feedback.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.equal(fbLines[0].text, '剛剛的期限錯了'); assert.equal(fbLines[0].via, 'LINE 群組'); assert.ok(fbLines[0].lastReply.length > 0, '附上 bot 上一則的回覆');
+  // 🐞 錯誤回報列表：件數、標記狀態與備註、完整保留 bot 當時的回覆（含換行）
+  let fbl = await J('/api/feedback');
+  assert.deepEqual(fbl.counts, { open: 2, doing: 0, done: 0, total: 2 }); assert.equal(fbl.items[0].id, 2, '新的在前');
+  assert.match(fbl.items[1].lastReply, /\n/, '回覆保留換行（以前會壓成一行、只存 600 字）');
+  await J('/api/feedback/1', 'POST', { status: 'done', note: '已改期限規則' });
+  await J('/api/feedback/2', 'POST', { status: 'doing' });
+  fbl = await J('/api/feedback'); assert.deepEqual(fbl.counts, { open: 0, doing: 1, done: 1, total: 2 });
+  assert.equal(fbl.items[1].note, '已改期限規則');
+  assert.equal((await call('/api/feedback/1', 'POST', { status: 'xx' })).status, 400);
+  assert.equal((await call('/api/feedback/99', 'POST', { status: 'done' })).status, 400);
   const rep = await J('/api/diag/report', 'POST', { description: 'test' });
-  assert.match(fs.readFileSync(rep.path, 'utf8'), /## 8b\. 使用者錯誤回報[\s\S]*#1 [\s\S]*剛剛的期限錯了[\s\S]*bot 上一則回覆：/);
+  assert.match(fs.readFileSync(rep.path, 'utf8'), /## 8b\. 使用者錯誤回報[\s\S]*#1［已解決：已改期限規則］[\s\S]*剛剛的期限錯了[\s\S]*bot 上一則回覆：/);
   // 誤報修正：「我只負責待辦登記」不算聲稱已寫入
   assert.equal(todo.claimsWrite('我只負責部門待辦登記與追蹤，無法撰寫或留存錯誤回報報告。'), false);
   assert.equal(todo.claimsWrite('好的，已幫你登記完成！'), true); assert.equal(todo.claimsWrite('登記好了'), true); assert.equal(todo.claimsWrite('好的，我來登記。'), false);

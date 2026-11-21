@@ -14,6 +14,7 @@
 - `xlsx.js` 📊 零相依讀 .xlsx（zip＋XML、刪除線、日期、`pickSheet` 分頁關鍵字）：唯讀資料表是 Excel 檔時，Apps Script（`Code.gs` 的 `opReadSource_`）`openByUrl` 失敗就用 DriveApp 原檔下載 base64，`todo.js` 的 `readSource` 解析；設定檔 `data/sources/*.md`（`parseSourceProfile`：到期模式 `profileSummary`、未結案模式 `openCasesSummary`）
 - 📄 成員設定檔 `data/agents/<名稱>.md`（`agent.configMd`；server.js 的 `renderAgentMd`／`parseAgentMd`／`syncAgentMds` 每 3 秒比對修改時間，`AGENT_MD_POLL_MS` 可調）：人設、職責、唯讀資料表、勾選項目、群組呼叫詞；網頁儲存寫回、改前備份到 `.backup/`。安全設定（引擎、權限、資料夾、密鑰）不放進去
 - `maint.js` 🔧 維運：`agent.maintains`（照顧哪些成員）；`contextFor` 附設定檔／錯誤回報／稽核紀錄（server.js `startRun` 注入、hash 去重）；回覆裡的「【修改設定檔】」→ `state.mdProposals` 提案 → 核准才寫入（`/api/md-proposals`、Telegram `/md`、hook `md-proposal`），寫前備份、檔案 hash 不同就拒絕
+- 🐞 錯誤回報：`data/feedback.jsonl`（只增不改，`addFeedback`，bot 回覆存 3000 字）＋處理狀態 `state.feedbackStatus`（`setFeedbackStatus`）；`/api/feedback`、側邊欄「🐞 錯誤回報」、Telegram `/fb`
 - `skills.js` 🧩 Skill：成員回覆【安裝 Skill】→ 下載 GitHub tar.gz（`SKILL_TARBALL_BASE` 可換，測試用）→ 檢查（檔案、腳本）→ 使用者核准 → 複製到 `.claude/skills`；移除＝搬到 `data/skills-trash`
 - `outbox.js` 📮 通知補送：LINE／Telegram 第一次直接送，暫時性失敗（連不上、5xx、Telegram 429）才 `outbox.add()` 存進 `state.outbox`，背景退避重送；頻道由各模組 `register('line'|'tg:main'|'tg:<成員id>', fn)`。待辦寫入用 `opId` 冪等（`todo.js` 的 `write()`＋`Code.gs` 的 CacheService）
 - `clistatus.js` 🧰 CLI 狀態頁（登入、MCP、成員用得到哪些；只看不改，只跑不耗額度的查詢指令，不回傳指令參數／網址／金鑰）

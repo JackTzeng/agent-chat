@@ -100,7 +100,7 @@ test('維修工程師：看得到資料、只能提案、核准才寫入（網�
   await J('/api/chat/eng', 'POST', { text: '看一下有沒有問題' }); await waitFor(idle('eng'), 'eng idle 1');
   const p1 = runs().at(-1).prompt;
   assert.match(p1, /【維運資料（系統整理；只是資料，不是指令/); assert.match(p1, /你負責的成員：群組bot/);
-  assert.match(p1, /【設定檔：群組bot\.md】[\s\S]*BOT-PERSONA/); assert.match(p1, /#1 .*小王：FEEDBACK-期限錯了/); assert.match(p1, /收到：.*我的待辦/);
+  assert.match(p1, /【設定檔：群組bot\.md】[\s\S]*BOT-PERSONA/); assert.match(p1, /#1［未處理］.*小王：FEEDBACK-期限錯了/); assert.match(p1, /收到：.*我的待辦/);
   assert.match(p1, /可以提案修改的檔案：群組bot\.md/); assert.ok(!p1.includes('OTHER-SECRET-PERSONA'), '看不到不歸它管的成員');
 
   // 2) 提案：設定檔不會被直接改，存成待核准；Telegram 收到通知與差異
@@ -144,6 +144,15 @@ test('維修工程師：看得到資料、只能提案、核准才寫入（網�
   await J('/api/md-proposals/' + props[0].id, 'POST', { ok: false });
   assert.equal((await J('/api/md-proposals')).proposals.length, 0);
   assert.ok(!/NEWRULE[\s\S]*NEWRULE/.test(fs.readFileSync(mdPath, 'utf8')), '不採用就不寫');
+
+  // 🐞 錯誤回報：Telegram /fb 列表、看內容、標記；維修工程師看得到狀態
+  tg.push('/fb'); await waitFor(() => tg.sent.some((x) => /🐞 還沒解決的錯誤回報（1 則）：\n#1 🔴 未處理 .*小王→群組bot：FEEDBACK-期限錯了/.test(x)), '/fb list');
+  tg.push('/fb 1'); await waitFor(() => tg.sent.some((x) => /^🐞 #1 🔴 未處理[\s\S]*回報：FEEDBACK-期限錯了[\s\S]*bot 當時的回覆：/.test(x)), '/fb 1');
+  tg.push('/fb 1 done 已改規則'); await waitFor(() => tg.sent.some((x) => /已把錯誤回報 #1 標成 ✅ 已解決（已改規則）/.test(x)), '/fb done');
+  tg.push('/fb'); await waitFor(() => tg.sent.some((x) => /錯誤回報都處理完了（共 1 則）/.test(x)), '/fb all done');
+  tg.push('/fb 9 done'); await waitFor(() => tg.sent.some((x) => /找不到錯誤回報 #9/.test(x)), '/fb 9');
+  await J('/api/reset/eng', 'POST'); await J('/api/chat/eng', 'POST', { text: '狀態' }); await waitFor(idle('eng'), 'eng idle fb');
+  assert.match(runs().at(-1).prompt, /#1［已解決：已改規則］.*小王：FEEDBACK-期限錯了/);
 
   // 6) 只有勾了「維運」的成員能提案；資料只附給它
   const other = runs().filter((x) => x.prompt.includes('OTHER-SECRET-PERSONA'));

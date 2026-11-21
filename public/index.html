@@ -359,6 +359,8 @@ try { localStorage.removeItem('agentchat_token'); } catch {}
 if (location.search) history.replaceState(null, '', location.pathname + location.hash);
 const withToken = (u) => u;
 let UPD_BADGE = false;
+let FB_COUNTS = null; // 🐞 錯誤回報各狀態件數（有回報才在側邊欄顯示）
+let FB_FILTER = 'todo';
 let MD_BADGE = 0; // 📝 待核准的設定檔修改提案數
 let OUTBOX_N = 0; // 📮 暫時送不出去、等著重送的通知數（0 就不顯示）
 let TIMER_BADGE = 0; // 待核准的排程建議數 // 有新版本時，側邊欄的「⬆️ 更新」顯示「新」
@@ -368,7 +370,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.33.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.34.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1799,6 +1801,7 @@ function renderUsage() {
     `<div class="ulink" id="updLine" title="檢查新版本、一鍵更新並重新啟動">⬆️ 更新${UPD_BADGE ? ' <span class="hn-dot">新</span>' : ''}</div>` +
     `<div class="ulink" id="cliLine" title="三個 CLI 的登入狀態、MCP、Skill（含安裝申請）">🧰 CLI 狀態${SKILL_PENDING ? ' <span class="hn-dot" title="有 Skill 安裝申請等你核准">' + SKILL_PENDING + '</span>' : ''}</div>` +
     '<div class="ulink" id="lineLink" title="讓助理（或任何成員）用 LINE 跟你對話、收提醒">💚 LINE</div>' +
+    (FB_COUNTS && FB_COUNTS.total ? '<div class="ulink" id="fbLine" title="LINE／Telegram 使用者說的「錯誤回報」：列表、標記處理狀態">🐞 錯誤回報' + (FB_COUNTS.open + FB_COUNTS.doing ? ' <span class="hn-dot">' + (FB_COUNTS.open + FB_COUNTS.doing) + '</span>' : '') + '</div>' : '') +
     (MD_BADGE ? '<div class="ulink" id="mdLine" title="維修工程師提出的設定檔修改，核准後才會寫入">📝 待核准修改 <span class="hn-dot">' + MD_BADGE + '</span></div>' : '') +
     '<div class="ulink" id="repLine" title="出問題時產生一個回報檔，帶給 Claude 排查">🐞 問題回報</div>' +
     '<div class="ulink" id="logoutLine" title="登出這個瀏覽器；可以選擇登出所有裝置">🔒 登出</div></div>';
@@ -1809,6 +1812,7 @@ function renderUsage() {
   if ($('outboxLine')) $('outboxLine').onclick = () => openOutbox();
   $('repLine').onclick = () => openReport();
   if ($('mdLine')) $('mdLine').onclick = () => openMdProposals();
+  if ($('fbLine')) $('fbLine').onclick = () => openFeedback();
   $('lineLink').onclick = () => openLine();
   $('cliLine').onclick = () => (SKILL_PENDING ? openSkills() : openCliStatus());
   $('logoutLine').onclick = openLogout;
@@ -2012,7 +2016,8 @@ function connectEvents() {
     if (window.Office && ev.agentId !== '*') Office.event(ev);
     if (ev.kind === 'agents-changed') { refreshAgents(); loadWorkflow().then(() => current === ALL && updateTop()); return; }
     if (ev.kind === 'usage') { loadUsage(); return; }
-    if (ev.kind === 'feedback') { toast('🐞 收到錯誤回報 #' + ev.id + '（' + ev.who + '→' + ev.agent + '）：' + ev.text); return; }
+    if (ev.kind === 'feedback-status') { refreshFbBadge(); if (modalShowing('fb_close')) openFeedback(); return; }
+    if (ev.kind === 'feedback') { refreshFbBadge(); if (modalShowing('fb_close')) openFeedback(); toast('🐞 收到錯誤回報 #' + ev.id + '（' + ev.who + '→' + ev.agent + '）：' + ev.text); return; }
     if (ev.kind === 'line') { if (modalShowing('ln_close')) openLine(); return; }
     if (ev.kind === 'skills') { loadSkillPending(); if (CLI_OPEN && CLI_TAB === 'skill' && modalShowing('cli_close')) openSkills(); return; }
     if (ev.kind === 'clistatus') { if (CLI_OPEN && modalShowing('cli_close')) openCliStatus(CLI_TAB); return; }
@@ -2053,6 +2058,7 @@ async function init() {
   // 伺服器定期在背景檢查更新，有新版就在側邊欄提示
   refreshTimerBadge();
   refreshMdBadge();
+  refreshFbBadge();
   refreshOutbox();
   api('/api/update').then((u) => { UPD_BADGE = !!(u.last && u.last.behind > 0); if (u.failed) toast('⚠️ 上次更新失敗，已自動退回原本的版本（按側邊欄「⬆️ 更新」看詳情）'); renderUsage(); }).catch(() => {});
   connectEvents();
@@ -2427,6 +2433,39 @@ window.addEventListener('unhandledrejection', (e) => reportClientError('promise'
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
 const TIMER_STATUS = { ok: '✅ 無異常', alert: '🔔 有異常', failed: '❌ 失敗', stopped: '⏹ 停止', interrupted: '⚠️ 中斷', skipped: '⏭ 略過', queued: '🕒 排隊', started: '⚙️ 開始',
   idle: '💤 沒有待辦（沒叫醒成員）', paused: '⏸ 成員暫停', resumed: '▶️ 自動恢復' };
+// ---------- 🐞 錯誤回報列表（LINE／Telegram 使用者說的「錯誤回報」）----------
+const FB_LABEL = { open: '🔴 未處理', doing: '🟡 處理中', done: '✅ 已解決' };
+async function refreshFbBadge() { try { const c = (await api('/api/feedback')).counts; if (JSON.stringify(c) !== JSON.stringify(FB_COUNTS)) { FB_COUNTS = c; renderUsage(); } } catch {} }
+async function openFeedback() {
+  let R; try { R = await api('/api/feedback'); } catch (e) { toast(e.message); return; }
+  FB_COUNTS = R.counts;
+  const keep = modalShowing('fb_close') ? { scroll: ($('fb_list') || {}).scrollTop || 0 } : {};
+  const pick = { todo: (f) => f.status !== 'done', open: (f) => f.status === 'open', doing: (f) => f.status === 'doing', done: (f) => f.status === 'done', all: () => true };
+  const items = R.items.filter(pick[FB_FILTER] || pick.todo), c = R.counts;
+  const tab = (k, label) => `<button type="button" data-fbf="${k}" class="${FB_FILTER === k ? 'primary' : ''}">${label}</button>`;
+  openModal(`<h2>🐞 錯誤回報</h2>
+    <p class="lead">同事在 LINE 群組或 Telegram 說「錯誤回報 …」會記在這裡（連同 bot 當時的回覆）。處理完標成「已解決」並寫一句備註，維修工程師也看得到狀態。Telegram：<code>/fb</code> 列表、<code>/fb 編號 done 備註</code>。</p>
+    <div class="sk-row">${tab('todo', '還沒解決（' + (c.open + c.doing) + '）')}${tab('open', '未處理（' + c.open + '）')}${tab('doing', '處理中（' + c.doing + '）')}${tab('done', '已解決（' + c.done + '）')}${tab('all', '全部（' + c.total + '）')}</div>
+    <div id="fb_list" style="max-height:60vh;overflow:auto">${items.length ? items.map((f) => `<div style="border:1px solid var(--line,#ddd);border-radius:10px;padding:10px;margin:8px 0">
+      <div><b>#${f.id}</b> ${FB_LABEL[f.status]}　<span class="help">${fmtTime(f.ts)}｜${esc(f.via || '')}｜${esc(f.who || '')} → ${esc(f.agentName || '')}</span></div>
+      <div style="margin:4px 0;white-space:pre-wrap">${esc(f.text)}</div>
+      ${f.lastReply ? `<details><summary>bot 當時的回覆</summary><pre style="white-space:pre-wrap;font-size:12px;max-height:240px;overflow:auto">${esc(f.lastReply)}</pre></details>` : ''}
+      <div class="sk-row" style="margin-top:6px"><select data-fbst="${f.id}">${Object.entries(FB_LABEL).map(([k, v]) => `<option value="${k}" ${f.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+        <input data-fbnote="${f.id}" value="${esc(f.note || '')}" placeholder="備註，例如：已改 助理.md 的期限規則" maxlength="300" style="flex:1;min-width:160px"><button type="button" data-fbsave="${f.id}">儲存</button>
+        ${f.statusAt ? `<span class="help">${fmtTime(f.statusAt)} 更新</span>` : ''}</div></div>`).join('') : '<p class="help">這裡沒有錯誤回報。</p>'}</div>
+    <div class="modal-actions"><span class="spacer"></span><button id="fb_close">關閉</button></div>`);
+  $('modal').classList.add('wide');
+  if (keep.scroll) $('fb_list').scrollTop = keep.scroll;
+  $('fb_close').onclick = closeModal;
+  document.querySelectorAll('[data-fbf]').forEach((b) => (b.onclick = () => { FB_FILTER = b.dataset.fbf; openFeedback(); }));
+  document.querySelectorAll('[data-fbsave]').forEach((b) => (b.onclick = async () => {
+    const id = b.dataset.fbsave;
+    try { await api('/api/feedback/' + id, { method: 'POST', body: JSON.stringify({ status: document.querySelector('[data-fbst="' + id + '"]').value, note: document.querySelector('[data-fbnote="' + id + '"]').value }) }); toast('已更新錯誤回報 #' + id); }
+    catch (e) { toast(e.message); }
+    refreshFbBadge(); openFeedback();
+  }));
+}
+
 // ---------- 📝 設定檔修改提案（維修工程師提出，你核准才寫入）----------
 async function refreshMdBadge() { try { const n = (await api('/api/md-proposals')).proposals.length; if (n !== MD_BADGE) { MD_BADGE = n; renderUsage(); } } catch {} }
 async function openMdProposals() {

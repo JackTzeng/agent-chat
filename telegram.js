@@ -37,6 +37,7 @@ const HELP =
   '/usage　Claude / Codex 用量額度、agy 本週用量\n' +
   '/skills　🧩 Skill 安裝申請；/skill 編號 ok（會再問一次）／no\n' +
   '/timers　⏰ 看所有排程；/timer 編號 run／on／off／ok／no\n' +
+  '/fb　🐞 還沒解決的錯誤回報；/fb 編號 看內容、/fb 編號 done 備註（已解決）、doing（處理中）、open（改回未處理）\n' +
   '/md　📝 維修工程師的設定檔修改提案；/md 編號 看內容、/md 編號 ok 核准、/md 編號 no 不採用\n' +
   '/report 描述　🐞 產生問題回報檔傳給你（轉給 Claude 排查）\n' +
   '/update　⬆️ 檢查更新，有新版就更新並重新啟動\n' +
@@ -612,6 +613,28 @@ exports.start = function start(ctx) {
           return say(chatId, ctx.resetAgent(a.id) ? '🆕 ' + label(a) + ' 已開新對話' : a.name + ' 工作中，請先 /stop');
         }
         case 'usage': return say(chatId, usageText());
+        case 'fb': {
+          const fbx = ctx.feedback; if (!fbx) return say(chatId, '錯誤回報功能還沒啟動');
+          const ST = { open: '🔴 未處理', doing: '🟡 處理中', done: '✅ 已解決' };
+          const mm = arg.trim().match(/^#?(\d+)(?:\s+(open|doing|done|未處理|處理中|已解決))?(?:\s+([\s\S]+))?$/i);
+          const when = (ts) => { const d = new Date(ts); return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+          if (!mm) {
+            const all = fbx.all(), todo = all.filter((f) => f.status !== 'done').reverse();
+            if (!todo.length) return say(chatId, all.length ? '🐞 錯誤回報都處理完了（共 ' + all.length + ' 則）。' : '目前沒有錯誤回報。');
+            return say(chatId, '🐞 還沒解決的錯誤回報（' + todo.length + ' 則）：\n' + todo.slice(0, 15).map((f) => '#' + f.id + ' ' + ST[f.status] + ' ' + when(f.ts) + ' ' + f.who + '→' + f.agentName + '：' + f.text.slice(0, 60)).join('\n') +
+              (todo.length > 15 ? '\n…還有 ' + (todo.length - 15) + ' 則（網頁「🐞 錯誤回報」看全部）' : '') + '\n\n/fb 編號 看內容｜/fb 編號 done 備註 標成已解決');
+          }
+          try {
+            if (!mm[2]) {
+              const f = fbx.all().find((x) => x.id === Number(mm[1])); if (!f) return say(chatId, '⚠️ 找不到錯誤回報 #' + mm[1]);
+              return say(chatId, '🐞 #' + f.id + ' ' + ST[f.status] + (f.note ? '（' + f.note + '）' : '') + '\n' + when(f.ts) + '｜' + f.via + '｜' + f.who + ' → ' + f.agentName + '\n回報：' + f.text +
+                (f.lastReply ? '\n\nbot 當時的回覆：\n' + f.lastReply.slice(0, 1500) : '') + '\n\n/fb ' + f.id + ' done 備註｜/fb ' + f.id + ' doing');
+            }
+            const key = { 未處理: 'open', 處理中: 'doing', 已解決: 'done' }[mm[2]] || mm[2].toLowerCase();
+            const f = fbx.set(mm[1], key, mm[3]);
+            return say(chatId, '已把錯誤回報 #' + f.id + ' 標成 ' + ST[f.status] + (f.note ? '（' + f.note + '）' : ''));
+          } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+        }
         case 'md': {
           const mt = ctx.maint && ctx.maint(); if (!mt) return say(chatId, '維運功能還沒啟動');
           const mm = arg.trim().match(/^#?(\d+)(?:\s+(ok|no))?$/i);

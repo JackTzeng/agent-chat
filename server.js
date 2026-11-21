@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.33.0';
+const VERSION = '3.34.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -463,14 +463,32 @@ function addFeedback({ agent, via, who, userId, text }) {
   const id = state.feedbackSeq;
   const last = loadHistory(agent.id).filter((m) => m.role === 'assistant' && !/系統直接回覆/.test(m.meta || '')).slice(-1)[0];
   const rec = { id, ts: Date.now(), agent: agent.id, agentName: agent.name, via, who: String(who || '').slice(0, 40), userId: userId || '', text: short(text, 1000),
-    lastReply: last ? short((last.segments || []).filter((s) => s.type === 'text' || s.type === 'error').map((s) => s.text).join('\n'), 600) : '' };
+    // bot 當時的回覆：保留換行、最多 3000 字（以前只存前 600 字，長回覆的後半段維修工程師看不到）
+    lastReply: last ? (last.segments || []).filter((s) => s.type === 'text' || s.type === 'error').map((s) => s.text).join('\n').slice(0, 3000) : '' };
   try { fs.appendFileSync(FEEDBACK_FILE, JSON.stringify(rec) + '\n'); } catch (e) { console.error('錯誤回報寫入失敗：' + e.message); }
   console.log('🐞 收到錯誤回報 #' + id + '（' + via + '，' + rec.who + '）：' + short(text, 80));
   broadcast({ kind: 'feedback', id, who: rec.who, agent: agent.name, text: short(text, 80) });
   return id;
 }
+// 處理狀態另外記在 state.feedbackStatus（feedback.jsonl 只增不改，當作原始紀錄）：open 未處理／doing 處理中／done 已解決
+const FB_STATUS = { open: '未處理', doing: '處理中', done: '已解決' };
+function withStatus(f) { const s = (state.feedbackStatus || {})[f.id] || {}; return { ...f, status: FB_STATUS[s.status] ? s.status : 'open', note: s.note || '', statusAt: s.at || null }; }
+function allFeedback() {
+  try { return fs.readFileSync(FEEDBACK_FILE, 'utf8').split('\n').filter(Boolean).map((l) => { try { return withStatus(JSON.parse(l)); } catch { return null; } }).filter(Boolean); } catch { return []; }
+}
+function feedbackCounts(list = allFeedback()) { const c = { open: 0, doing: 0, done: 0, total: list.length }; for (const f of list) c[f.status]++; return c; }
+function setFeedbackStatus(id, status, note) {
+  id = Number(String(id).replace('#', ''));
+  if (!allFeedback().some((f) => f.id === id)) throw new Error('找不到錯誤回報 #' + id);
+  if (!FB_STATUS[status]) throw new Error('狀態只能是：未處理、處理中、已解決');
+  state.feedbackStatus = state.feedbackStatus || {};
+  const old = state.feedbackStatus[id] || {};
+  state.feedbackStatus[id] = { status, note: note === undefined ? old.note || '' : String(note).slice(0, 300), at: Date.now() };
+  saveState(); broadcast({ kind: 'feedback-status', id });
+  return withStatus(allFeedback().find((f) => f.id === id));
+}
 function recentFeedback(n = 20) {
-  try { return fs.readFileSync(FEEDBACK_FILE, 'utf8').trim().split('\n').filter(Boolean).slice(-n).map((l) => JSON.parse(l)); } catch { return []; }
+  try { return allFeedback().slice(-n); } catch { return []; }
 }
 // 系統直接回覆（沒有叫用 AI）的對話，例如 LINE 群組的登記、說明、寫入 Sheet 的結果：也記進成員的對話框
 function logExchange(agent, inText, outText) {
@@ -2221,6 +2239,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true, id: a.id });
     }
     // 📝 維修工程師的設定檔修改提案：列表、看完整內容、核准／不採用（寫入一定要經過這裡）
+    // 🐞 錯誤回報列表：全部（新的在前，最多 500 則）＋各狀態件數；標記狀態與備註
+    if (p === '/api/feedback' && req.method === 'GET') { const all = allFeedback(); return send(res, 200, { items: all.slice(-500).reverse(), counts: feedbackCounts(all) }); }
+    if ((m0 = p.match(/^\/api\/feedback\/(\d+)$/)) && req.method === 'POST') {
+      try { const b = await readBody(req); return send(res, 200, { item: setFeedbackStatus(m0[1], String(b.status || ''), b.note) }); } catch (e) { return send(res, 400, { error: e.message }); }
+    }
     if (p === '/api/md-proposals' && req.method === 'GET') return send(res, 200, { proposals: maint.pending() });
     if ((m0 = p.match(/^\/api\/md-proposals\/(\d+)$/))) {
       try {
@@ -2546,6 +2569,7 @@ maintRef = maint;
 setInterval(syncAgentMds, Number(process.env.AGENT_MD_POLL_MS) || 3000).unref();
 const tgCtx = {
   maint: () => maintRef,
+  feedback: { all: () => allFeedback(), set: (id, st, note) => setFeedbackStatus(id, st, note) },
   config: CONFIG, agents: AGENTS, agentById, hooks, runs, state, saveState, saveConfig, broadcast,
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,
   makeReport: (o) => reporter.makeReport(o), updater, timers,
