@@ -75,7 +75,8 @@ function create(ctx) {
       const ST = { open: '未處理', doing: '處理中', done: '已解決' };
       out.push('【錯誤回報（最近 ' + fb.length + ' 則；狀態由管理者標記，已解決的不用再處理）】', ...(fb.length ? fb.map((f) => '- #' + f.id + '［' + (ST[f.status] || '未處理') + (f.note ? '：' + short(f.note, 80) : '') + '］' + new Date(f.ts).toLocaleString('zh-TW', { hour12: false }) + '｜' + f.via + '｜' + short(f.who, 20) + '：' + short(f.text, 200) + (f.lastReply ? '\n  當時 bot 上一則回覆：' + short(f.lastReply, 800) : '')) : ['- 沒有']));
       const au = (ctx.readAudit(a.id, 8) || []).reverse();
-      out.push('【最近 ' + au.length + ' 輪的紀錄（舊→新）】', ...(au.length ? au.map((r) => '- ' + new Date(r.ts).toLocaleString('zh-TW', { hour12: false }) + '｜' + (r.via || '') + '｜' + Math.round((r.ms || 0) / 1000) + ' 秒' +
+      out.push('【最近 ' + au.length + ' 輪的紀錄（舊→新）】', ...(au.length ? au.map((r) => r.type === 'afterTurn' ? '- ' + new Date(r.ts).toLocaleString('zh-TW', { hour12: false }) + '｜每輪後執行（' + short(r.command, 60) + '）：' +
+        (r.skipped ? '沒有執行（鎖定的檔案被改過，等管理者重新核准）' : (r.exitCode === 0 ? '成功' : '失敗，結束碼 ' + r.exitCode + (r.timedOut ? '（逾時）' : '')) + (r.exitCode !== 0 && r.out ? '：' + short(r.out, 200) : '')) : '- ' + new Date(r.ts).toLocaleString('zh-TW', { hour12: false }) + '｜' + (r.via || '') + '｜' + Math.round((r.ms || 0) / 1000) + ' 秒' +
         '\n  收到：' + short(String(r.input || '').split('\n').filter((l) => !/^【|^#\d+｜|^- /.test(l)).join(' '), 200) + '\n  回覆：' + short(r.reply, 250) + (r.errors && r.errors.length ? '\n  錯誤：' + short(r.errors.join('；'), 200) : '')) : ['- 沒有']));
     }
     const pend = S().mdProposals.filter((p) => p.by === m.id);

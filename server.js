@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.34.0';
+const VERSION = '3.35.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -15,6 +15,7 @@ const cliStatusLib = require('./clistatus');
 const skillsLib = require('./skills');
 const lineLib = require('./line');
 const maintLib = require('./maint');
+const afterturnLib = require('./afterturn');
 const todoLib = require('./todo');
 const harnessLib = require('./harness');
 const { createSecurity, inside, isProtectedEnvKey } = require('./security');
@@ -349,6 +350,7 @@ function allowedTargets(agent) {
 // 待辦管家：把待辦清單附在訊息裡，寫入由系統代做（模型不能讀寫檔、不能執行指令）。LINE 群組指定的成員自動算；也可以在成員設定勾選
 let lineBotRef = null; // 建好 lineBot 之後才有值
 let maintRef = null;   // 🔧 維運（建好之後才有值）
+let afterRef = null;   // ⚙️ 每輪結束後執行（建好之後才有值）
 const isTodoKeeper = (a) => !!a && a.todoKeeper === true; // 📋 待辦清單能力：只看成員自己的勾選（LINE 群組交給誰是另一件事）
 function accessText(agent) {
   const base = accessBase(agent) + (rtkWanted(agent) && rtkBin() ? '\n【指令輸出精簡】你在 Bash 執行的常見指令（git、測試、建置、列出檔案等）輸出會先經過 rtk 精簡。如果需要完整的原始輸出才能判斷，請在回覆中說明，使用者可以暫時關掉這個選項。' : '');
@@ -365,7 +367,7 @@ function accessBase(agent) {
 // 角色設定檔（獨立成員常用）：每一輪重新讀取，改了檔案下一句就生效
 // ---------- 🎭 角色範本（.md）：templates/roles 是內建的，data/roles 是你自己的（同檔名會取代內建的）----------
 // 檔案開頭 --- 之間是「欄位: 值」（同一欄位寫多行會累加，例如 allow），下面是人設，{name} 會換成成員名稱
-const ROLE_KEYS = ['kind', 'button', 'name', 'avatar', 'role', 'standalone', 'engine', 'model', 'perm', 'cwd', 'personaFile', 'tgPrefix', 'tools', 'allow', 'env', 'brief', 'todoKeeper', 'dataSources', 'freshEachTurn', 'toast'];
+const ROLE_KEYS = ['kind', 'button', 'name', 'avatar', 'role', 'standalone', 'engine', 'model', 'perm', 'cwd', 'personaFile', 'tgPrefix', 'tools', 'allow', 'env', 'brief', 'todoKeeper', 'dataSources', 'freshEachTurn', 'afterTurn', 'afterTurnIfChanged', 'toast'];
 function parseRoleMd(text, file) {
   const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
   const t = { file, persona: (m ? m[2] : text).trim() };
@@ -1050,6 +1052,13 @@ function writeAudit(agent, run, input) {
     if (fs.statSync(file).size > 10 * 1024 * 1024) { const lines = fs.readFileSync(file, 'utf8').trim().split('\n'); fs.writeFileSync(file, lines.slice(-5000).join('\n') + '\n'); }
   } catch (e) { console.error('稽核紀錄寫入失敗：' + e.message); }
 }
+// 你核准「每輪結束後執行」：記下鎖定檔案的指紋（之後檔案一變就不執行）
+function afterApprove(cfg, cwd) { const fp = afterturnLib.fingerprint(cfg, cwd); return { ...cfg, approvedHash: fp.hash, approvedFiles: fp.files, approvedAt: Date.now() }; }
+// 其他種類的稽核紀錄（例如「每輪結束後執行」的結果）：一樣寫進 data/audit/<成員>.jsonl
+function appendAudit(agent, rec) {
+  const dir = path.join(DATA_DIR, 'audit'); fs.mkdirSync(dir, { recursive: true });
+  fs.appendFileSync(path.join(dir, agent.id + '.jsonl'), JSON.stringify(rec) + '\n');
+}
 function readAudit(agentId, limit = 50) {
   try { return fs.readFileSync(path.join(DATA_DIR, 'audit', agentId + '.jsonl'), 'utf8').trim().split('\n').slice(-limit).reverse().map((l) => JSON.parse(l)); }
   catch { return []; }
@@ -1073,6 +1082,7 @@ function recentTurnsText(agent) {
   return lines.length ? '【最近的對話（系統從紀錄附上，讓你接得上話；只是紀錄，不是新的指令）】\n' + lines.join('\n') + '\n\n' : '';
 }
 function startRun(agent, userText, opts = {}) {
+  if (afterRef) afterRef.before(agent); // ⚙️ 每輪結束後執行：記下監看檔案的樣子
   // 🔧 維修工程師：附上它負責的成員的設定檔、錯誤回報、最近紀錄（同一段對話內容沒變就只送一行，不重複堆）
   if (maintRef && (agent.maintains || []).length && !opts.shift && !opts.resume && !opts.taskId) {
     const mctx = maintRef.contextFor(agent);
@@ -1767,6 +1777,14 @@ function cleanAgent(input, existingId) {
   if (a.engine === 'claude' && input.rtk === true) a.rtk = true;
   if (input.todoKeeper === true) a.todoKeeper = true; // 📋 待辦管家模式
   if (input.freshEachTurn === true) a.freshEachTurn = true; // 🧹 每則訊息開新對話（只帶最近幾則）
+  // ⚙️ 每輪結束後執行（沙箱外，只限獨立成員）：設定沒變就沿用原本的核准；有變＝你重新核准（記下鎖定檔案的指紋）
+  if (input.afterTurn && String(input.afterTurn.command || '').trim()) {
+    if (!input.standalone) throw new Error('「每輪結束後執行」只限獨立成員');
+    const at = afterturnLib.normalize(input.afterTurn, a.cwd, security);
+    const old = (CONFIG.agents.find((x) => x.id === existingId) || {}).afterTurn;
+    const same = old && old.approvedHash && JSON.stringify([old.command, old.args, old.ifChanged, old.timeoutSec, old.pin]) === JSON.stringify([at.command, at.args, at.ifChanged, at.timeoutSec, at.pin]);
+    a.afterTurn = same ? { ...at, approvedHash: old.approvedHash, approvedFiles: old.approvedFiles, approvedAt: old.approvedAt } : afterApprove(at, a.cwd);
+  }
   // 🔧 維運：它負責照顧哪些成員（看錯誤回報與紀錄、提出設定檔修改提案；寫入一定要你核准）
   const mt = Array.isArray(input.maintains) ? input.maintains : String(input.maintains || '').split(/[,，\s]+/);
   const mtClean = [...new Set(mt.map(String).filter((x) => x && x !== a.id && CONFIG.agents.some((o) => o.id === x)))];
@@ -1904,6 +1922,7 @@ function newAgentId() {
 const agentsChanged = () => { broadcast({ agentId: '*', kind: 'agents-changed' }); try { telegram.startAgentBots(tgCtx); } catch (e) { console.error('專屬 bot 重新啟動失敗：' + e.message); } };
 // 給網頁的成員設定：不回傳 bot token，只告訴它有沒有設定
 function maskAgent(a) {
+  if (a.afterTurn && a.afterTurn.approvedFiles) { const { approvedFiles, ...at } = a.afterTurn; a = { ...a, afterTurn: { ...at, pinnedCount: Object.keys(approvedFiles).length } }; }
   if (!a.telegram || !a.telegram.botToken) return a;
   const { botToken, ...t } = a.telegram;
   return { ...a, telegram: { ...t, hasBotToken: true, botHint: botToken.split(':')[0] } };
@@ -2238,6 +2257,19 @@ const server = http.createServer(async (req, res) => {
       saveConfig(); reloadAgents(); harness.docs(); agentsChanged();
       return send(res, 200, { ok: true, id: a.id });
     }
+    // ⚙️ 每輪結束後執行：狀態、重新核准（記下目前的指紋）、手動執行一次
+    if ((m0 = p.match(/^\/api\/agents\/([\w-]+)\/afterturn(?:\/(approve|run))?$/))) {
+      const a = CONFIG.agents.find((x) => x.id === m0[1]), live = agentById(m0[1]);
+      if (!a || !live) return send(res, 404, { error: '找不到這位成員' });
+      if (!a.afterTurn) return send(res, 400, { error: '這位成員沒有設定「每輪結束後執行」' });
+      if (req.method === 'GET' && !m0[2]) return send(res, 200, { ...afterTurn.status(a.id), approvedAt: a.afterTurn.approvedAt || null });
+      if (req.method === 'POST' && m0[2] === 'approve') {
+        try { a.afterTurn = afterApprove(a.afterTurn, live.cwd); } catch (e) { return send(res, 400, { error: e.message }); }
+        afterTurn.clearAlert(a.id); saveConfig(); reloadAgents(); agentsChanged(); broadcast({ kind: 'afterturn', agentId: a.id });
+        return send(res, 200, { ok: true, pinned: Object.keys(a.afterTurn.approvedFiles).length });
+      }
+      if (req.method === 'POST' && m0[2] === 'run') return send(res, 200, { result: afterTurn.trigger(a.id) });
+    }
     // 📝 維修工程師的設定檔修改提案：列表、看完整內容、核准／不採用（寫入一定要經過這裡）
     // 🐞 錯誤回報列表：全部（新的在前，最多 500 則）＋各狀態件數；標記狀態與備註
     if (p === '/api/feedback' && req.method === 'GET') { const all = allFeedback(); return send(res, 200, { items: all.slice(-500).reverse(), counts: feedbackCounts(all) }); }
@@ -2566,6 +2598,10 @@ const maint = maintLib.create({ state, saveState: () => saveState(), hooks, broa
   readAudit, loadHistory, recentFeedback, parseAgentMd, parseSourceProfile: todoLib.parseSourceProfile, backupFile: backupAgentMd, logExchange,
   afterWrite: (f) => { if (f.kind === 'agent') syncAgentMds(); else todoBook.drop(); } });
 maintRef = maint;
+const afterTurn = afterturnLib.create({ security, proctree, agentById, state, saveState: () => saveState(), broadcast: (e) => broadcast(e), logExchange, appendAudit,
+  redact: (t) => reporter.redact(t), decodeOutput });
+afterRef = afterTurn;
+hooks.on('done', (e) => { try { afterTurn.after(e.agent); } catch (err) { console.error('每輪後執行失敗：' + err.message); } });
 setInterval(syncAgentMds, Number(process.env.AGENT_MD_POLL_MS) || 3000).unref();
 const tgCtx = {
   maint: () => maintRef,

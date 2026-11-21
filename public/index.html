@@ -370,7 +370,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.34.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.35.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -969,6 +969,16 @@ async function openAgentForm(id) {
         <input id="f_line_words" value="${esc(LN ? LN.groupWords || '' : '')}" placeholder="群組呼叫詞（選填，例如：待辦、小幫手；名稱本來就算）" style="margin-top:6px">
         <span class="help">🔒 群組裡任何人都能對它說話，所以群組只能交給<b>唯讀</b>的成員（agy read、Codex read-only、Claude plan）。一個 LINE 官方帳號只能有一位成員負責一對一、一位負責群組，勾了會取代原本的${LN && (LN.agentName || LN.groupAgentName) ? '（目前：一對一 ' + esc(LN.agentName || '—') + '、群組 ' + esc(LN.groupAgentName || '—') + '）' : ''}。連線資料、公開通道、配對碼是整個 bot 共用的，在左下「💚 LINE」設定${LN && LN.configured ? '' : '（還沒設定）'}。</span>
       </div>
+      <div class="field full sa-only">
+        <label>⚙️ 每輪結束後執行（沙箱外，選填）</label>
+        <div class="sk-row"><input id="f_at_cmd" value="${esc((a.afterTurn || {}).command || '')}" placeholder="指令（工作資料夾裡的相對路徑），例如 ledger/ledger.cmd" style="flex:2;min-width:200px">
+          <input id="f_at_args" value="${esc(((a.afterTurn || {}).args || []).join(' '))}" placeholder="參數，例如 sync" style="flex:1;min-width:100px"></div>
+        <div class="sk-row" style="margin-top:6px"><input id="f_at_if" value="${esc((a.afterTurn || {}).ifChanged || '')}" placeholder="只有這個檔案有變動才執行（選填），例如 ledger/data/ledger.db" style="flex:2;min-width:200px">
+          <input id="f_at_to" type="number" min="5" max="600" value="${esc(String((a.afterTurn || {}).timeoutSec || 60))}" title="逾時秒數" style="width:80px"><span class="help">秒</span></div>
+        <input id="f_at_pin" value="${esc(((a.afterTurn || {}).pin || []).join(', '))}" placeholder="🔒 鎖定範圍（選填，預設＝指令所在資料夾的程式檔）" style="margin-top:6px">
+        ${a.afterTurn ? `<div class="sk-row" style="margin-top:6px"><span class="help" id="f_at_status">讀取狀態中…</span><button type="button" id="f_at_approve">🔒 重新核准</button><button type="button" id="f_at_run">▶️ 現在執行一次</button></div>` : ''}
+        <span class="help">成員每一輪結束後，由 Agent Chat 在<b>沙箱外</b>執行這個指令（例如沙箱不能連網時，用來把資料同步到雲端）。指令與參數只能在這裡設定，模型的輸出不會變成指令；結果記在稽核紀錄，不會傳回給成員、也不會傳到 Telegram／LINE。<br>🔒 <b>鎖定檔案</b>：儲存時記下指令與同資料夾程式檔的指紋；之後只要有任何一個被改過（例如成員改了程式），就<b>不會執行</b>，等你確認後按「重新核准」。.venv、data、backups 這些資料夾不在鎖定範圍內。</span>
+      </div>
       <div class="field full">
         <label>成員專屬環境變數（名稱=值，一行一個，選填）</label>
         <textarea id="f_env" rows="2" placeholder="例如：LEDGER_SHEET_ID=1hPF…">${esc(Object.entries(a.env || {}).map(([k, v]) => k + '=' + v).join('\n'))}</textarea>
@@ -1178,7 +1188,8 @@ async function openAgentForm(id) {
       if (t.cwd) $('f_cwd').value = t.cwd;
       $('f_pfile').value = t.personaFile || ''; $('f_tools').value = t.tools || ''; $('f_allow').value = t.allow || ''; $('f_tgprefix').value = t.tgPrefix || '';
       if (t.env && !$('f_env').value.trim()) $('f_env').value = t.env;
-      $('f_brief').checked = !!t.brief; $('f_todokeeper').checked = !!t.todoKeeper; $('f_fresh').checked = !!t.freshEachTurn; if (t.dataSources) $('f_sources').value = t.dataSources;
+      $('f_brief').checked = !!t.brief; $('f_todokeeper').checked = !!t.todoKeeper; $('f_fresh').checked = !!t.freshEachTurn;
+      if (t.afterTurn) { const [c0, ...rest] = String(t.afterTurn).trim().split(/\s+/); $('f_at_cmd').value = c0; $('f_at_args').value = rest.join(' '); $('f_at_if').value = t.afterTurnIfChanged || ''; } if (t.dataSources) $('f_sources').value = t.dataSources;
       if (t.tgPrefix && TG && TG.allowedIds && TG.allowedIds.length === 1 && !$('f_tgusers').value) $('f_tgusers').value = TG.allowedIds[0];
       syncKind(); syncPermNote();
     }
@@ -1203,6 +1214,13 @@ async function openAgentForm(id) {
   });
   if ($('f_md_on')) $('f_md_on').onclick = async () => { try { const r = await api('/api/agents/' + id + '/md', { method: 'POST', body: '{}' }); toast('📄 已建立 ' + r.file); openAgentForm(id); } catch (e) { toast(e.message); } };
   if ($('f_md_off')) $('f_md_off').onclick = async () => { if (!confirm('不再使用設定檔？（檔案會保留，之後只在網頁改）')) return; try { await api('/api/agents/' + id + '/md', { method: 'DELETE' }); toast('已停用設定檔'); openAgentForm(id); } catch (e) { toast(e.message); } };
+  // ⚙️ 每輪結束後執行：狀態、重新核准、手動執行
+  const atStatus = async () => { if (!$('f_at_status')) return; try { const s = await api('/api/agents/' + id + '/afterturn');
+    $('f_at_status').textContent = (s.needsApproval ? '🔒 暫停中：鎖定的檔案被改過（' + s.changed.slice(0, 3).join('、') + '），確認後按「重新核准」' : '✅ 已核准 ' + (s.approvedAt ? fmtTime(s.approvedAt) : '')) +
+      (s.lastAt ? '｜上次 ' + fmtTime(s.lastAt) + ' ' + (s.lastExit === 0 ? '成功' : '失敗（結束碼 ' + s.lastExit + '）') + (s.fails > 1 ? '，連續 ' + s.fails + ' 次' : '') : '｜還沒執行過') + (s.running ? '｜執行中…' : ''); } catch (e) { $('f_at_status').textContent = e.message; } };
+  atStatus();
+  if ($('f_at_approve')) $('f_at_approve').onclick = async () => { if (!confirm('確認鎖定的程式檔沒問題，用目前的內容重新核准？\n（如果不是你自己改的，請先查清楚是誰改的）')) return; try { const r = await api('/api/agents/' + id + '/afterturn/approve', { method: 'POST', body: '{}' }); toast('🔒 已重新核准（鎖定 ' + r.pinned + ' 個檔）'); atStatus(); } catch (e) { toast(e.message); } };
+  if ($('f_at_run')) $('f_at_run').onclick = async () => { try { await api('/api/agents/' + id + '/afterturn/run', { method: 'POST', body: '{}' }); toast('▶️ 已開始執行'); setTimeout(atStatus, 1500); } catch (e) { toast(e.message); } };
   if ($('f_movesafe')) $('f_movesafe').onclick = async () => { if (await moveSafe(id)) openAgentForm(id); };
   $('f_cancel').onclick = closeModal;
 
@@ -1225,6 +1243,7 @@ async function openAgentForm(id) {
       extraDirs: dirs.filter((d) => d.path),
       rtk: engineSel.value === 'claude' && !$('f_standalone').checked && $('f_rtk').checked,
       brief: $('f_brief').checked,
+      afterTurn: { command: $('f_at_cmd').value, args: $('f_at_args').value, ifChanged: $('f_at_if').value, timeoutSec: $('f_at_to').value, pin: $('f_at_pin').value },
       todoKeeper: $('f_todokeeper').checked, freshEachTurn: $('f_fresh').checked, maintains: [...document.querySelectorAll('#f_maint input:checked')].map((x) => x.value), dataSources: $('f_sources').value,
       takeTurns: $('f_turns').checked && !$('f_standalone').checked, canInterrupt: $('f_urgent').checked && !$('f_standalone').checked, team: $('f_team').value,
       standalone: $('f_standalone').checked, personaFile: $('f_pfile').value, env: $('f_env').value,
@@ -1971,7 +1990,7 @@ async function openAudit(id) {
   try { recs = (await api('/api/audit/' + id + '?limit=60')).records; } catch (e) { toast(e.message); return; }
   openModal(`<h2>📜 ${esc(a ? a.name : id)} 的稽核紀錄</h2>
     <p class="lead">每一輪的輸入、執行的指令與結束碼、回覆和錯誤（最新的在上面）。完整紀錄在 data/audit/${esc(id)}.jsonl。</p>
-    <div class="hn-list">${recs.map((r) => `<div class="hn-item"><div class="grow" style="white-space:normal">
+    <div class="hn-list">${recs.map((r) => r.type === 'afterTurn' ? `<div class="hn-item"><div class="grow" style="white-space:normal"><b>${fmtTime(r.ts)}</b>｜⚙️ 每輪結束後執行 <code>${esc(r.command || '')}</code>：${r.skipped ? '🔒 沒有執行（鎖定的檔案被改過：' + esc((r.changed || []).slice(0, 5).join('、')) + '）' : (r.exitCode === 0 ? '✅ 成功' : '❌ 結束碼 ' + r.exitCode + (r.timedOut ? '（逾時）' : '')) + '｜' + ((r.ms || 0) / 1000).toFixed(1) + ' 秒'}${r.out && r.exitCode !== 0 ? `<small>${esc(r.out.slice(-400))}</small>` : ''}</div></div>` : `<div class="hn-item"><div class="grow" style="white-space:normal">
       <b>${fmtTime(r.ts)}</b>｜${r.via === 'telegram' ? '📱 Telegram' + (r.tgUser ? '（' + esc(r.tgUser) + '）' : '') : '💻 網頁'}｜${(r.ms / 1000).toFixed(1)} 秒${r.cliExit ? '｜CLI 結束碼 ' + r.cliExit : ''}
       <small>輸入：${esc(r.input.slice(0, 300))}</small>
       ${r.calls.map((c) => `<small>${c.isError ? '❌' : '✅'} ${esc(c.tool)}：<code>${esc(c.command)}</code>${c.exitCode != null ? '（結束碼 ' + c.exitCode + '）' : ''}${c.isError && c.output ? '<br>' + esc(c.output.slice(0, 300)) : ''}</small>`).join('')}

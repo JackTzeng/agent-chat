@@ -15,6 +15,7 @@
 - 📄 成員設定檔 `data/agents/<名稱>.md`（`agent.configMd`；server.js 的 `renderAgentMd`／`parseAgentMd`／`syncAgentMds` 每 3 秒比對修改時間，`AGENT_MD_POLL_MS` 可調）：人設、職責、唯讀資料表、勾選項目、群組呼叫詞；網頁儲存寫回、改前備份到 `.backup/`。安全設定（引擎、權限、資料夾、密鑰）不放進去
 - `maint.js` 🔧 維運：`agent.maintains`（照顧哪些成員）；`contextFor` 附設定檔／錯誤回報／稽核紀錄（server.js `startRun` 注入、hash 去重）；回覆裡的「【修改設定檔】」→ `state.mdProposals` 提案 → 核准才寫入（`/api/md-proposals`、Telegram `/md`、hook `md-proposal`），寫前備份、檔案 hash 不同就拒絕
 - 🐞 錯誤回報：`data/feedback.jsonl`（只增不改，`addFeedback`，bot 回覆存 3000 字）＋處理狀態 `state.feedbackStatus`（`setFeedbackStatus`）；`/api/feedback`、側邊欄「🐞 錯誤回報」、Telegram `/fb`
+- `afterturn.js` ⚙️ 每輪結束後執行（沙箱外，獨立成員）：`agent.afterTurn`（command／args／ifChanged／timeoutSec／pin＋`approvedHash`／`approvedFiles`）；`startRun` 呼叫 `before()` 記下監看檔，`done` hook 呼叫 `after()`；同成員單一執行＋合併；🔒 指紋不符就不執行（`/api/agents/:id/afterturn/approve` 重新核准）；結果 `appendAudit` 寫稽核紀錄，失敗用 `logExchange` 提示
 - `skills.js` 🧩 Skill：成員回覆【安裝 Skill】→ 下載 GitHub tar.gz（`SKILL_TARBALL_BASE` 可換，測試用）→ 檢查（檔案、腳本）→ 使用者核准 → 複製到 `.claude/skills`；移除＝搬到 `data/skills-trash`
 - `outbox.js` 📮 通知補送：LINE／Telegram 第一次直接送，暫時性失敗（連不上、5xx、Telegram 429）才 `outbox.add()` 存進 `state.outbox`，背景退避重送；頻道由各模組 `register('line'|'tg:main'|'tg:<成員id>', fn)`。待辦寫入用 `opId` 冪等（`todo.js` 的 `write()`＋`Code.gs` 的 CacheService）
 - `clistatus.js` 🧰 CLI 狀態頁（登入、MCP、成員用得到哪些；只看不改，只跑不耗額度的查詢指令，不回傳指令參數／網址／金鑰）
@@ -24,7 +25,7 @@
 
 ## 開發慣例
 - 不加任何 npm 相依套件；Node 18+。
-- **跑測試**：逐檔跑 `node --test tests/xxx.test.js`（`node --test tests/` 會失敗）。全部：`for f in tests/*.test.js; do node --test $f; done`。目前 24 檔全過。
+- **跑測試**：逐檔跑 `node --test tests/xxx.test.js`（`node --test tests/` 會失敗）。全部：`for f in tests/*.test.js; do node --test $f; done`。目前 25 檔全過。
 - 新增 `.js` 模組時，要把檔名加進**每個測試檔的 FILES／檔案清單**（它們會把原始碼複製到暫存資料夾跑真的伺服器），否則 `require` 找不到。
 - 測試用「假 CLI」（`tests/*.test.js` 裡的 MOCK_*）加真的伺服器，環境變數：`CLAUDE_BIN`／`CODEX_BIN`／`AGY_BIN`、`AGENTCHAT_NO_UPDATE_CHECK=1`、`AGENT_ENV_ALLOWLIST`。
 - 發版：同步改 `server.js` 的 `VERSION`、`public/index.html` 的 `UI_VERSION`、`CHANGELOG.md`（最上面加一節）、必要時 `README.md`；commit 訊息用「v3.x.y：做了什麼」；推到 `main`。使用者在網頁按「⬆️ 更新／重新啟動」取得新版（updater 遇到已追蹤檔案被改動會拒絕更新，所以**開發請用另一個 clone，不要直接改正在跑的那個資料夾**）。
