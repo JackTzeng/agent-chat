@@ -134,6 +134,27 @@ test('未結案模式：照 weekly-open-cases-report Skill 的四條規則判斷
   assert.match(odd, /找不到編號欄、找不到狀態欄、找不到實際結案日欄/);
 });
 
+test('日期模式（整理: 日期）：派工表上找自己那一欄，對應今日、明日的工作', () => {
+  const now = new Date(2026, 10, 23, 9).getTime(); // 11/23 週一
+  const H = ['第1欄', '王小明WXM', '李小華LXH', '陳大文CDW', '林美美LMM'];
+  const rows = [
+    ['2026/11/20', '說明會', 'x', '14:00 說明會\n-----------\n14:00~ OFF', 'x'],
+    ['2026/11/23', '外訓', '開會', '早上 A 批次核對\n------------------------------\n下午: 教育訓練', 'x'],
+    ['2026-11-24', '討論', 'x', 'B 批次核對\n------------\nC 批次包裝', 'x'],
+    ['2026/11/25', 'x', 'x', '09:30 部門會議', 'x'],
+    ['', '（備註列）', '', '', ''],
+  ];
+  const { rules, persona } = todo.parseSourceSections('你是助理。\n\n## 資料表：班表\n整理: 日期｜日期欄=A｜範圍=今日, 明日\n列出: 日期 = A, 我的派工 = CDW\n附上時機: 派工\n- 只轉述 CDW 的工作。');
+  assert.equal(persona, '你是助理。');
+  const prof = todo.mergeProfile({}, rules.get('班表'));
+  const out = todo.profileSummary({ name: '班表', tabs: [{ sheet: '班表', headers: H, rows }] }, prof, '', now);
+  assert.match(out, /【今日 11\/23（週一）】班表 1 筆/); assert.match(out, /- 班表｜2026\/11\/23（今天）｜早上 A 批次核對；下午: 教育訓練/);
+  assert.match(out, /【明日 11\/24（週二）】班表 1 筆/); assert.match(out, /2026-11-24（明天）｜B 批次核對；C 批次包裝/);
+  assert.doesNotMatch(out, /逾期|資料需確認|說明會|部門會議|外訓/, '不列過去、不列別人、不列範圍外');
+  assert.match(out, /【這份表的回答規則】\n- 只轉述 CDW 的工作。/);
+  assert.equal(todo.sourceRelevant('班表', prof, '明天要做什麼'), false, '只有問到「派工」才查'); assert.equal(todo.sourceRelevant('班表', prof, '我的派工'), true);
+});
+
 test('normDate / fmtDue / canonOwner / safe', () => {
   const now = new Date(2026, 10, 19, 8, 52).getTime(); // 2026/11/19 週四
   assert.equal(todo.normDate('2026-11-27', now), '2026-11-27'); assert.equal(todo.normDate('2026/1/5', now), '2026-01-05');
