@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.35.0';
+const VERSION = '3.36.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -2069,6 +2069,46 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/todo' && req.method === 'GET') return send(res, 200, todoBook.status());
     if (p === '/api/todo' && req.method === 'PUT') { try { return send(res, 200, todoBook.update(await readBody(req))); } catch (e) { return send(res, e.status || 400, { error: e.message }); } }
     // 📊 唯讀資料表：列出「設定」分頁登記的表，每份實際讀一次（看得到幾筆、哪幾欄是到期日）
+    // 📊 資料表管理頁：所有資料表（設定檔）＋誰在用
+    if (p === '/api/sources' && req.method === 'GET') {
+      let files = []; try { files = fs.readdirSync(SOURCE_DIR).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3)); } catch {}
+      const names = [...new Set([...files, ...CONFIG.agents.flatMap((a) => a.dataSources || [])])].filter(validSourceName).sort();
+      const sources = names.map((n) => { const t = sourceProfileText(n), pr = t && todoLib.parseSourceProfile(t.text);
+        return { name: n, exists: !!t, custom: !!(t && t.custom), form: todoLib.formFromProfile(pr), usedBy: CONFIG.agents.filter((a) => (a.dataSources || []).includes(n)).map((a) => ({ id: a.id, name: a.name })) }; });
+      const examples = {}; try { for (const f of fs.readdirSync(path.join(ROOT, 'templates', 'sources')).filter((x) => /範例\.md$/.test(x)).sort()) examples[f.replace(/範例\.md$/, '')] = todoLib.formFromProfile(todoLib.parseSourceProfile(fs.readFileSync(path.join(ROOT, 'templates', 'sources', f), 'utf8'))); } catch {}
+      return send(res, 200, { sources, examples, todoConfigured: todoBook.configured() });
+    }
+    // 試讀：照表單填的網址、分頁讀一次，回傳實際抓到的分頁名稱、欄位標題、範例（不存任何東西）
+    if (p === '/api/sources/peek' && req.method === 'POST') {
+      const b = await readBody(req);
+      if (!todoBook.configured()) return send(res, 400, { error: '要先在「📋 待辦清單」連上你的 Google Sheet（讀表是透過它的 Apps Script）' });
+      try { return send(res, 200, await todoBook.peek({ url: String(b.url || '').trim(), tabs: String(b.tabs || ''), headerRow: parseInt(b.headerRow, 10) || 0 })); }
+      catch (e) { return send(res, 400, { error: e.message }); }
+    }
+    // 用表單存：產生 .md（舊版自動備份）；改名時一併更新用到它的成員
+    if (p === '/api/sources/form' && req.method === 'PUT') {
+      const b = await readBody(req), name = String(b.name || '').trim(), oldName = String(b.oldName || '').trim();
+      if (!validSourceName(name)) return send(res, 400, { error: '名稱不對（1～20 字，不能有 \\ / : * ? " < > | .）' });
+      const text = todoLib.renderSourceMd(b.form || {});
+      if (!todoLib.parseSourceProfile(text)) return send(res, 400, { error: '至少要填「網址」' });
+      fs.mkdirSync(SOURCE_DIR, { recursive: true });
+      const f = path.join(SOURCE_DIR, name + '.md');
+      if (oldName && oldName !== name) {
+        if (fs.existsSync(f)) return send(res, 400, { error: '已經有一份叫「' + name + '」的資料表' });
+        const of = path.join(SOURCE_DIR, oldName + '.md'); if (validSourceName(oldName) && fs.existsSync(of)) { backupAgentMd(of); fs.unlinkSync(of); }
+        for (const a of CONFIG.agents) if ((a.dataSources || []).includes(oldName)) { a.dataSources = a.dataSources.map((x) => (x === oldName ? name : x)); if (a.configMd) writeAgentMd(a); }
+        saveConfig(); reloadAgents(); agentsChanged();
+      } else backupAgentMd(f);
+      fs.writeFileSync(f, text); todoBook.drop();
+      return send(res, 200, { ok: true, name, text });
+    }
+    if ((m0 = p.match(/^\/api\/sources\/([^/]+)$/)) && req.method === 'DELETE') {
+      const name = decodeURIComponent(m0[1]); if (!validSourceName(name)) return send(res, 400, { error: '名稱不對' });
+      const f = path.join(SOURCE_DIR, name + '.md'); if (fs.existsSync(f)) { backupAgentMd(f); fs.unlinkSync(f); }
+      for (const a of CONFIG.agents) if ((a.dataSources || []).includes(name)) { a.dataSources = a.dataSources.filter((x) => x !== name); if (!a.dataSources.length) delete a.dataSources; if (a.configMd) writeAgentMd(a); }
+      saveConfig(); reloadAgents(); agentsChanged(); todoBook.drop();
+      return send(res, 200, { ok: true });
+    }
     if (p === '/api/sources/profile' && req.method === 'GET') {
       const name = String(url.searchParams.get('name') || '').trim();
       if (!validSourceName(name)) return send(res, 400, { error: '名稱不對（1～20 字，不能有 \\ / : * ? " < > | .）' });

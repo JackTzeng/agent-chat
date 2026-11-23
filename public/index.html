@@ -351,6 +351,7 @@
 </div>
 <div class="toast" id="toast"></div>
 <div class="modal-bg" id="modalBg"><div class="modal" id="modal"></div></div>
+<div class="modal-bg" id="modal2Bg" style="z-index:30"><div class="modal wide" id="modal2"></div></div>
 
 <script>
 // ---- token（對外開放時用；網址帶 ?token=xxx 一次即可，會記在這台裝置）----
@@ -370,7 +371,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.35.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.36.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -859,10 +860,14 @@ function squareAvatar(file) {
 
 function openModal(html) { $('modal').innerHTML = html; $('modal').classList.remove('wide'); $('modalBg').classList.add('open'); }
 function closeModal() { $('modalBg').classList.remove('open'); }
+// 第二層視窗：疊在原本的視窗上面（例如在成員設定裡按「＋ 新增資料表」），關掉後原本的視窗和還沒存的內容都還在
+function openModal2(html) { $('modal2').innerHTML = html; $('modal2Bg').classList.add('open'); }
+function closeModal2() { $('modal2Bg').classList.remove('open'); }
 // 視窗關掉後內容還留在頁面上（只是隱藏），所以「要不要重新整理某個視窗」要看它是不是真的開著，不能只看元素在不在
 const modalShowing = (id) => !!$(id) && $('modalBg').classList.contains('open');
 $('modalBg').addEventListener('mousedown', (e) => { if (e.target === $('modalBg')) closeModal(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+document.addEventListener('keydown', (e) => { if (e.key !== 'Escape') return; if ($('modal2Bg').classList.contains('open')) closeModal2(); else closeModal(); });
+$('modal2Bg').addEventListener('mousedown', (e) => { if (e.target === $('modal2Bg')) closeModal2(); });
 
 function opts(list, labels, selected) {
   return list.map((v) => `<option value="${esc(v)}" ${v === selected ? 'selected' : ''}>${esc(labels[v] || v)}</option>`).join('');
@@ -1012,13 +1017,9 @@ async function openAgentForm(id) {
         <span class="help">省 AI 額度：一般對話每一輪都會把前面的內容整段重送一次，附了清單、資料表的成員會越聊越貴。勾了之後每則都從頭開始，系統只附最近 3 則對話讓它接得上話（例如補問期限後回「下週一」）。適合 LINE 群組、待辦管家、查表這種一問一答的成員；要長時間連續工作的成員不要勾。</span>
         <label class="opt" style="margin-top:8px"><input type="checkbox" id="f_todokeeper" ${a.todoKeeper ? 'checked' : ''}> 📋 待辦清單能力（把 Google Sheet 的待辦清單附給它，寫入由系統代做）</label>
         <span class="help">它看不到檔案、不能執行指令：每次對話，系統會先讀最新的待辦清單附在訊息裡；它只負責聽懂並寫出動作行，由 Agent Chat 檢查權限後寫進 Sheet。沒勾的成員就是一般對話（在 LINE 群組裡也是）。需要先在「📋 待辦清單」連上 Google Sheet。</span>
-        <label style="margin-top:10px;display:block">📊 唯讀資料表（選填，用逗號分隔）</label>
-        <input id="f_sources" value="${esc((a.dataSources || []).join('、'))}" placeholder="例如：儀器">
-        <span class="help">別人的 Google Sheet（例如儀器設備表），只讀不改、那份表不用動。這裡填一個名稱（例如「儀器」）並儲存，再打開下面的「✏️ 設定檔」寫上那份表的網址與分頁（或按「套用範例」）。每次對話系統會先讀最新的表、算好已逾期／7 天內／30 天內到期，再交給它回答。建立待辦 Sheet 的 Gmail 要打得開那份表；需要先在「📋 待辦清單」連上 Google Sheet（Apps Script 1.0.5 以上）。</span>
-        ${(a.dataSources || []).map((n, i) => `<details class="ln-guide" style="margin-top:6px"><summary>✏️ 「${esc(n)}」的設定檔（到期欄、完成判斷、範圍、要顯示的欄位、回答規則）</summary>
-          <textarea id="f_sp_${i}" rows="14" style="width:100%;font-family:monospace;font-size:12px" placeholder="載入中…"></textarea>
-          <div class="sk-row"><button type="button" class="primary" data-spsave="${i}">儲存設定檔</button><span data-spexs="${i}"></span><span class="help" id="f_sp_st_${i}"></span></div>
-          <span class="help">存在 Agent Chat 的 <code>data/sources/${esc(n)}.md</code>（不進 git、更新不會蓋掉），跟這份表有關的成員共用。沒有設定檔時，系統會自己猜到期日欄。存檔後下一則訊息就生效，不用重開對話。</span></details>`).join('')}
+        <label style="margin-top:10px;display:block">📊 唯讀資料表（勾選這位成員可以查的表）</label>
+        <div id="f_srclist" class="tpl"></div>
+        <div class="sk-row"><button type="button" id="f_src_add">＋ 新增資料表</button><span class="help">別人的 Google 試算表或雲端硬碟上的 Excel 檔，只讀不改。每次對話系統先讀最新的表、算好到期／未結案再交給它。全部的表在左下「📊 資料表」管理。</span></div>
       </div>
       <div class="field full">
         <label>🔧 維運：它負責照顧哪些成員（選填）</label>
@@ -1189,29 +1190,24 @@ async function openAgentForm(id) {
       $('f_pfile').value = t.personaFile || ''; $('f_tools').value = t.tools || ''; $('f_allow').value = t.allow || ''; $('f_tgprefix').value = t.tgPrefix || '';
       if (t.env && !$('f_env').value.trim()) $('f_env').value = t.env;
       $('f_brief').checked = !!t.brief; $('f_todokeeper').checked = !!t.todoKeeper; $('f_fresh').checked = !!t.freshEachTurn;
-      if (t.afterTurn) { const [c0, ...rest] = String(t.afterTurn).trim().split(/\s+/); $('f_at_cmd').value = c0; $('f_at_args').value = rest.join(' '); $('f_at_if').value = t.afterTurnIfChanged || ''; } if (t.dataSources) $('f_sources').value = t.dataSources;
+      if (t.afterTurn) { const [c0, ...rest] = String(t.afterTurn).trim().split(/\s+/); $('f_at_cmd').value = c0; $('f_at_args').value = rest.join(' '); $('f_at_if').value = t.afterTurnIfChanged || ''; } if (t.dataSources) { String(t.dataSources).split(/[,，、]+/).map((x) => x.trim()).filter(Boolean).forEach((n) => srcPicked.add(n)); renderSrcList(); }
       if (t.tgPrefix && TG && TG.allowedIds && TG.allowedIds.length === 1 && !$('f_tgusers').value) $('f_tgusers').value = TG.allowedIds[0];
       syncKind(); syncPermNote();
     }
     if (editing) $('f_reset').checked = true;
     toast(t.toast || '已套用「' + t.button + '」');
   }));
-  // 📊 資料表設定檔：每份表一個 .md，在這裡直接編輯（獨立存檔，不用按成員的「儲存」）
-  (a.dataSources || []).forEach(async (n, i) => {
-    const ta = $('f_sp_' + i), st = $('f_sp_st_' + i); let exs = {};
-    try { const r = await api('/api/sources/profile?name=' + encodeURIComponent(n)); ta.value = r.text; exs = r.examples || {}; ta.placeholder = '還沒有設定檔（系統會自己猜到期日欄）。可以按「套用範例」再修改。'; st.textContent = r.text ? (r.custom ? '✅ 使用你的設定檔' : '使用內建設定檔') : ''; }
-    catch (e) { st.textContent = '讀取失敗：' + e.message; }
-    const box = document.querySelector('[data-spexs="' + i + '"]');
-    for (const [label, text] of Object.entries(exs)) {
-      const b = document.createElement('button'); b.type = 'button'; b.textContent = '套用範例（' + label + '）';
-      b.onclick = () => { if (ta.value.trim() && !confirm('用範例取代目前的內容？\n（網址那一行會保留你原本寫的）')) return; const keep = (/^網址\s*[:：].*$/m.exec(ta.value) || [])[0]; ta.value = keep ? text.replace(/^網址\s*[:：].*$/m, keep) : text; st.textContent = '已填入範例，記得按「儲存設定檔」'; };
-      box.appendChild(b);
-    }
-    document.querySelector('[data-spsave="' + i + '"]').onclick = async () => {
-      try { await api('/api/sources/profile', { method: 'PUT', body: JSON.stringify({ name: n, text: ta.value }) }); st.textContent = ta.value.trim() ? '✅ 已儲存' : '✅ 已清除（改回系統自己猜）'; toast('已儲存「' + n + '」的設定檔'); }
-      catch (e) { st.textContent = '❌ ' + e.message; }
-    };
-  });
+  // 📊 唯讀資料表：勾選；「＋ 新增」在第二層視窗開表單，存好自動勾上（成員設定還沒存的內容不會不見）
+  let srcPicked = new Set(a.dataSources || []);
+  const renderSrcList = async () => {
+    let R; try { R = await api('/api/sources'); } catch { R = { sources: [] }; }
+    for (const el of document.querySelectorAll('#f_srclist input:checked')) srcPicked.add(el.value);
+    for (const el of document.querySelectorAll('#f_srclist input:not(:checked)')) srcPicked.delete(el.value);
+    $('f_srclist').innerHTML = R.sources.length ? R.sources.map((x) => `<label class="opt" style="margin-right:12px"><input type="checkbox" value="${esc(x.name)}" ${srcPicked.has(x.name) ? 'checked' : ''}> ${esc(x.name)}<span class="help">（${SRC_MODE[(x.form || {}).mode] || '沒有設定檔'}）</span> <a href="#" data-srcedit="${esc(x.name)}" title="編輯">✏️</a></label>`).join('') : '<span class="help">還沒有任何資料表，按「＋ 新增資料表」。</span>';
+    document.querySelectorAll('[data-srcedit]').forEach((el) => (el.onclick = (e) => { e.preventDefault(); openSourceForm(el.dataset.srcedit, { onSaved: (n) => { srcPicked.add(n); renderSrcList(); } }); }));
+  };
+  renderSrcList();
+  $('f_src_add').onclick = () => openSourceForm(null, { onSaved: (n) => { srcPicked.add(n); renderSrcList(); } });
   if ($('f_md_on')) $('f_md_on').onclick = async () => { try { const r = await api('/api/agents/' + id + '/md', { method: 'POST', body: '{}' }); toast('📄 已建立 ' + r.file); openAgentForm(id); } catch (e) { toast(e.message); } };
   if ($('f_md_off')) $('f_md_off').onclick = async () => { if (!confirm('不再使用設定檔？（檔案會保留，之後只在網頁改）')) return; try { await api('/api/agents/' + id + '/md', { method: 'DELETE' }); toast('已停用設定檔'); openAgentForm(id); } catch (e) { toast(e.message); } };
   // ⚙️ 每輪結束後執行：狀態、重新核准、手動執行
@@ -1244,7 +1240,7 @@ async function openAgentForm(id) {
       rtk: engineSel.value === 'claude' && !$('f_standalone').checked && $('f_rtk').checked,
       brief: $('f_brief').checked,
       afterTurn: { command: $('f_at_cmd').value, args: $('f_at_args').value, ifChanged: $('f_at_if').value, timeoutSec: $('f_at_to').value, pin: $('f_at_pin').value },
-      todoKeeper: $('f_todokeeper').checked, freshEachTurn: $('f_fresh').checked, maintains: [...document.querySelectorAll('#f_maint input:checked')].map((x) => x.value), dataSources: $('f_sources').value,
+      todoKeeper: $('f_todokeeper').checked, freshEachTurn: $('f_fresh').checked, maintains: [...document.querySelectorAll('#f_maint input:checked')].map((x) => x.value), dataSources: [...document.querySelectorAll('#f_srclist input:checked')].map((x) => x.value),
       takeTurns: $('f_turns').checked && !$('f_standalone').checked, canInterrupt: $('f_urgent').checked && !$('f_standalone').checked, team: $('f_team').value,
       standalone: $('f_standalone').checked, personaFile: $('f_pfile').value, env: $('f_env').value,
       tools: $('f_tools').value, allowedTools: $('f_allow').value, disallowedTools: $('f_deny').value,
@@ -1820,6 +1816,7 @@ function renderUsage() {
     `<div class="ulink" id="updLine" title="檢查新版本、一鍵更新並重新啟動">⬆️ 更新${UPD_BADGE ? ' <span class="hn-dot">新</span>' : ''}</div>` +
     `<div class="ulink" id="cliLine" title="三個 CLI 的登入狀態、MCP、Skill（含安裝申請）">🧰 CLI 狀態${SKILL_PENDING ? ' <span class="hn-dot" title="有 Skill 安裝申請等你核准">' + SKILL_PENDING + '</span>' : ''}</div>` +
     '<div class="ulink" id="lineLink" title="讓助理（或任何成員）用 LINE 跟你對話、收提醒">💚 LINE</div>' +
+    '<div class="ulink" id="srcLine" title="唯讀資料表：讓成員查別人的 Google 試算表／Excel 檔">📊 資料表</div>' +
     (FB_COUNTS && FB_COUNTS.total ? '<div class="ulink" id="fbLine" title="LINE／Telegram 使用者說的「錯誤回報」：列表、標記處理狀態">🐞 錯誤回報' + (FB_COUNTS.open + FB_COUNTS.doing ? ' <span class="hn-dot">' + (FB_COUNTS.open + FB_COUNTS.doing) + '</span>' : '') + '</div>' : '') +
     (MD_BADGE ? '<div class="ulink" id="mdLine" title="維修工程師提出的設定檔修改，核准後才會寫入">📝 待核准修改 <span class="hn-dot">' + MD_BADGE + '</span></div>' : '') +
     '<div class="ulink" id="repLine" title="出問題時產生一個回報檔，帶給 Claude 排查">🐞 問題回報</div>' +
@@ -1832,6 +1829,7 @@ function renderUsage() {
   $('repLine').onclick = () => openReport();
   if ($('mdLine')) $('mdLine').onclick = () => openMdProposals();
   if ($('fbLine')) $('fbLine').onclick = () => openFeedback();
+  $('srcLine').onclick = () => openSources();
   $('lineLink').onclick = () => openLine();
   $('cliLine').onclick = () => (SKILL_PENDING ? openSkills() : openCliStatus());
   $('logoutLine').onclick = openLogout;
@@ -2452,6 +2450,144 @@ window.addEventListener('unhandledrejection', (e) => reportClientError('promise'
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
 const TIMER_STATUS = { ok: '✅ 無異常', alert: '🔔 有異常', failed: '❌ 失敗', stopped: '⏹ 停止', interrupted: '⚠️ 中斷', skipped: '⏭ 略過', queued: '🕒 排隊', started: '⚙️ 開始',
   idle: '💤 沒有待辦（沒叫醒成員）', paused: '⏸ 成員暫停', resumed: '▶️ 自動恢復' };
+// ---------- 📊 資料表（唯讀資料表的管理頁＋新增／編輯表單）----------
+const SRC_MODE = { query: '一般查詢', due: '到期追蹤', open: '未結案巡檢' };
+const SRC_DEFAULT_KW = { query: '', due: '設備, 儀器, 校驗, 校正, 到期, 逾期, 保養, 效期', open: '未結, 結案, 案件, CAPA, OOS, INC, DE, CC, 偏差, 異常, 變更, 追蹤' };
+async function openSources() {
+  let R; try { R = await api('/api/sources'); } catch (e) { toast(e.message); return; }
+  openModal(`<h2>📊 資料表</h2>
+    <p class="lead">讓成員查別人的 Google 試算表（或雲端硬碟上的 Excel 檔），<b>只讀不改</b>、那份表不用動。每份表一個設定（存在 <code>data/sources/名稱.md</code>）；到成員設定勾選它可以查哪幾份。</p>
+    ${R.todoConfigured ? '' : '<div class="sk-bad">⚠️ 讀表要透過你 Google Sheet 的 Apps Script：請先到「💚 LINE」→「📋 待辦清單」連上 Google Sheet。</div>'}
+    <div class="sk-row"><button class="primary" id="src_new">＋ 新增資料表</button><button id="src_chk">🔍 全部讀讀看</button></div>
+    <div id="src_chkout" class="ln-check"></div>
+    ${R.sources.length ? R.sources.map((x) => { const f = x.form || {}; return `<div style="border:1px solid var(--line,#ddd);border-radius:10px;padding:10px;margin:8px 0">
+      <div><b>${esc(x.name)}</b>　<span class="help">${x.exists ? SRC_MODE[f.mode] || '' : '⚠️ 還沒有設定'}${(f.tabs || []).length ? '｜分頁：' + esc(f.tabs.map((t) => t.label).join('、')) : ''}</span></div>
+      <div class="help">${f.url ? esc(f.url.replace(/^https:\/\/docs\.google\.com\/spreadsheets\/d\//, '…/d/').slice(0, 60)) : '（沒有網址）'}｜使用的成員：${x.usedBy.length ? esc(x.usedBy.map((a) => a.name).join('、')) : '沒有'}</div>
+      <div class="sk-row" style="margin-top:6px"><button data-srced="${esc(x.name)}">✏️ 編輯</button><button data-srcdel="${esc(x.name)}">刪除</button></div></div>`; }).join('') : '<p class="help">還沒有任何資料表。</p>'}
+    <div class="modal-actions"><span class="spacer"></span><button id="src_close">關閉</button></div>`);
+  $('modal').classList.add('wide');
+  $('src_close').onclick = closeModal;
+  $('src_new').onclick = () => openSourceForm(null, { onSaved: () => openSources() });
+  document.querySelectorAll('[data-srced]').forEach((b) => (b.onclick = () => openSourceForm(b.dataset.srced, { onSaved: () => openSources() })));
+  document.querySelectorAll('[data-srcdel]').forEach((b) => (b.onclick = async () => {
+    const x = R.sources.find((y) => y.name === b.dataset.srcdel);
+    if (!confirm('刪除資料表「' + x.name + '」？' + (x.usedBy.length ? '\n' + x.usedBy.map((a) => a.name).join('、') + ' 會不再查這份表。' : '') + '\n（設定檔會備份在 data/sources/.backup，那份 Google 表本身不受影響）')) return;
+    try { await api('/api/sources/' + encodeURIComponent(x.name), { method: 'DELETE' }); toast('已刪除'); } catch (e) { toast(e.message); }
+    openSources();
+  }));
+  $('src_chk').onclick = async () => {
+    $('src_chkout').textContent = '讀取中…';
+    try { const r = await api('/api/todo/sources', { method: 'POST', body: '{}' });
+      $('src_chkout').innerHTML = r.sources.map((s) => (s.ok ? `✅ <b>${esc(s.name)}</b>：讀到 ${s.rows} 筆（${esc(s.sheet)}）` : `❌ <b>${esc(s.name)}</b>：${esc(s.error)}`)).join('<br>') || '沒有資料表';
+    } catch (e) { $('src_chkout').textContent = e.message; }
+  };
+}
+
+// ＋ 新增／編輯資料表（第二層視窗）：填網址 → 讀取欄位 → 選類型與欄位；存成 .md
+async function openSourceForm(name, { onSaved } = {}) {
+  let R; try { R = await api('/api/sources'); } catch (e) { toast(e.message); return; }
+  const cur = name ? R.sources.find((x) => x.name === name) : null;
+  const f = (cur && cur.form) || { mode: 'query', tabs: [], columns: [], windows: ['今日', '7天', '1個月'], doneText: '已完成', closedText: '結案' };
+  const colLines = (cols) => (cols || []).map((c) => (c.parts && c.parts.length && !(c.parts.length === 1 && c.parts[0] === c.label) ? c.label + ' = ' + c.parts.join(' + ') : c.label)).join('\n');
+  const tabLines = (tabs) => (tabs || []).map((t) => (t.label && t.label !== t.spec ? t.label + ' = ' + t.spec : t.spec)).join('\n');
+  const WIN = ['今日', '7天', '14天', '1個月', '3個月'];
+  openModal2(`<h2>📊 ${cur ? '編輯「' + esc(name) + '」' : '新增資料表'}</h2>
+    <div class="fgrid">
+      <div class="field"><label>名稱（成員設定與對話裡用這個名字）</label><input id="sf_name" value="${esc(name || '')}" maxlength="20" placeholder="例如：儀器"></div>
+      <div class="field"><label>從範例開始（選填）</label><select id="sf_ex"><option value="">—</option>${Object.keys(R.examples || {}).map((k) => `<option>${esc(k)}</option>`).join('')}</select></div>
+      <div class="field full"><label>網址（瀏覽器上方那串；Google 試算表或雲端硬碟上的 Excel 檔都可以）</label><input id="sf_url" value="${esc(f.url || '')}" placeholder="https://docs.google.com/spreadsheets/d/…"></div>
+      <div class="field full"><label>分頁（一行一個；留空＝第一個分頁）</label>
+        <textarea id="sf_tabs" rows="3" placeholder="一廠&#10;三廠&#10;（報告上要換名字可以寫：三廠OOS = 三廠+OOS，+ 表示名稱同時含這些字，有好幾頁時自動挑今年的）">${esc(tabLines(f.tabs))}</textarea></div>
+      <div class="field full"><div class="sk-row"><button type="button" class="primary" id="sf_peek">📥 讀取欄位</button><span class="help">照上面的網址與分頁讀一次，看抓到哪些分頁、哪些欄位（不會存任何東西）</span></div><div id="sf_peekout" class="ln-check"></div></div>
+      <div class="field full"><label>類型</label><div class="tpl">
+        ${Object.entries(SRC_MODE).map(([k, v]) => `<label class="opt" style="margin-right:12px"><input type="radio" name="sf_mode" value="${k}" ${f.mode === k ? 'checked' : ''}> ${v}</label>`).join('')}</div>
+        <span class="help" id="sf_modehelp"></span></div>
+      <div class="field sf-due"><label>到期欄（必填）</label><input id="sf_due" list="sf_hdrs" value="${esc(f.due || '')}" placeholder="欄位字母（H）或標題"></div>
+      <div class="field sf-due"><label>名稱欄（日期壞掉時用來判斷要不要提醒）</label><input id="sf_namecol" list="sf_hdrs" value="${esc(f.nameCol || '')}"></div>
+      <div class="field sf-due"><label>完成欄（選填）＋完成字</label><div class="sk-row"><input id="sf_donecol" list="sf_hdrs" value="${esc(f.doneCol || '')}" style="flex:1"><input id="sf_donetext" value="${esc(f.doneText || '已完成')}" style="width:90px" title="這一欄含這幾個字才算完成"></div></div>
+      <div class="field sf-due"><label>分組名稱（報告第一欄，預設＝分頁）</label><input id="sf_group" value="${esc(f.groupLabel || '')}" placeholder="例如：廠別"></div>
+      <div class="field full sf-due"><label>查詢範圍</label><div class="tpl">${WIN.map((w) => `<label class="opt" style="margin-right:10px"><input type="checkbox" class="sf_win" value="${w}" ${(f.windows || []).includes(w) ? 'checked' : ''}> ${w}</label>`).join('')}</div></div>
+      <div class="field sf-open"><label>編號欄（含這些字的第一欄）</label><input id="sf_idcols" value="${esc((f.idCols || []).join(', ') || '編號, 單號, NO')}"></div>
+      <div class="field sf-open"><label>狀態欄＋結案字</label><div class="sk-row"><input id="sf_status" list="sf_hdrs" value="${esc(f.statusCol || '狀態')}" style="flex:1"><input id="sf_closed" value="${esc(f.closedText || '結案')}" style="width:80px" title="狀態「完全等於」這幾個字才算結案"></div></div>
+      <div class="field sf-open"><label>實際結案日欄（標題含這些字；從右邊找）</label><input id="sf_closekeys" value="${esc((f.closeKeys || []).join(', ') || '實際完成日, 異常排除日, 實際結案, 結案日期')}"></div>
+      <div class="field sf-open"><label>不算結案日（標題含這些字的跳過）＋期限欄</label><div class="sk-row"><input id="sf_notclose" value="${esc((f.notCloseKeys || []).join(', ') || '應結案, 預計, 預定')}" style="flex:1"><input id="sf_deadline" list="sf_hdrs" value="${esc(f.deadline || '應結案')}" style="width:110px" title="期限欄：用來算逾期天數"></div></div>
+      <div class="field full sf-cols"><label>回報時要列的欄位（一行一個；可以寫欄位字母或標題；合併用 +，例如「廠牌/型號/序號 = 廠牌 + 型號 + 序號」）</label>
+        <textarea id="sf_cols" rows="4">${esc(colLines(f.columns))}</textarea><div class="tpl" id="sf_hdrchips"></div></div>
+      <div class="field full"><label>關鍵字（訊息提到這些字才附上這份表，省 AI 額度）</label><div class="sk-row"><input id="sf_kw" value="${esc((f.keywords || []).join(', '))}" style="flex:1"><label class="opt"><input type="checkbox" id="sf_always" ${f.always ? 'checked' : ''}> 每則都附</label></div></div>
+      <div class="field full"><label>回答規則（給 AI 看的，選填）</label><textarea id="sf_rules" rows="4" placeholder="例如：先講各廠台數與合計，再一台一行列出；不要提到校驗方式">${esc(f.rules || '')}</textarea></div>
+    </div>
+    <datalist id="sf_hdrs"></datalist>
+    <p class="help">存成 <code>data/sources/名稱.md</code>（舊版自動備份）。也可以直接用記事本改那份檔案，存檔下一則訊息就生效。</p>
+    <div class="modal-actions">${cur ? '<button id="sf_del">刪除</button>' : ''}<span class="spacer"></span><button id="sf_cancel">取消</button><button class="primary" id="sf_save">儲存</button></div>`);
+  const mode = () => (document.querySelector('input[name=sf_mode]:checked') || {}).value || 'query';
+  const MODE_HELP = {
+    query: '把表的內容交給 AI 回答（60 筆以內附全部；超過只附跟問題有關的列）。適合一般名單、聯絡表。',
+    due: '系統先算好「已逾期／今日／未來幾天內到期」再交給 AI，適合校驗、保養、效期。',
+    open: '系統逐列判斷有沒有結案（編號有刪除線＝作廢、狀態＝結案、實際結案日有值），每個分頁列出未結案件。',
+  };
+  const syncMode = () => {
+    const m = mode();
+    document.querySelectorAll('.sf-due').forEach((x) => (x.style.display = m === 'due' ? '' : 'none'));
+    document.querySelectorAll('.sf-open').forEach((x) => (x.style.display = m === 'open' ? '' : 'none'));
+    document.querySelectorAll('.sf-cols').forEach((x) => (x.style.display = m === 'query' ? 'none' : ''));
+    $('sf_modehelp').textContent = MODE_HELP[m];
+    $('sf_kw').placeholder = SRC_DEFAULT_KW[m] ? '沒填就用：' + SRC_DEFAULT_KW[m] : '例如表的名稱、裡面常被問的字';
+  };
+  document.querySelectorAll('input[name=sf_mode]').forEach((r) => (r.onchange = syncMode));
+  syncMode();
+  const letter = (i) => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+  const tabSpecs = () => $('sf_tabs').value.split('\n').map((l) => l.split('=').pop().trim()).filter(Boolean).join(',');
+  $('sf_peek').onclick = async () => {
+    $('sf_peekout').textContent = '讀取中…（Excel 檔比較久）';
+    try {
+      const r = await api('/api/sources/peek', { method: 'POST', body: JSON.stringify({ url: $('sf_url').value, tabs: tabSpecs() }) });
+      const hd = r.tabs[0] ? r.tabs[0].headers : [];
+      $('sf_hdrs').innerHTML = hd.map((h, i) => `<option value="${esc(h)}">${letter(i)} 欄</option>`).join('');
+      $('sf_hdrchips').innerHTML = hd.length ? '<span class="help">點欄位加進上面：</span>' + hd.map((h, i) => `<button type="button" data-addcol="${esc(h)}" title="${letter(i)} 欄">${letter(i)}｜${esc(h.slice(0, 16))}</button>`).join('') : '';
+      document.querySelectorAll('[data-addcol]').forEach((b) => (b.onclick = () => { const t = $('sf_cols'); t.value = (t.value.trim() ? t.value.trim() + '\n' : '') + b.dataset.addcol; }));
+      $('sf_peekout').innerHTML = (r.excel ? '📗 這是 Excel 檔（' + esc(r.fileName) + '），由雲端硬碟原檔唯讀讀取。<br>' : '') +
+        r.tabs.map((t) => `✅ ${t.spec ? esc(t.spec) + ' → ' : ''}分頁「<b>${esc(t.sheet)}</b>」${t.rows} 筆｜欄位：${esc(t.headers.map((h, i) => letter(i) + ' ' + h).join('、').slice(0, 400))}`).join('<br>') +
+        (r.allSheets ? '<br><span class="help">檔案裡的分頁：' + esc(r.allSheets.join('、').slice(0, 500)) + '</span>' : '<br><span class="help">（重貼 Code.gs 1.0.9 後，這裡會列出所有分頁名稱）</span>');
+    } catch (e) { $('sf_peekout').innerHTML = '❌ ' + esc(e.message); }
+  };
+  $('sf_ex').onchange = () => {
+    const ex = (R.examples || {})[$('sf_ex').value]; if (!ex) return;
+    if (!confirm('用「' + $('sf_ex').value + '」範例填入類型、欄位與規則？（名稱和網址保留你填的）')) { $('sf_ex').value = ''; return; }
+    document.querySelector('input[name=sf_mode][value="' + ex.mode + '"]').checked = true;
+    const set = (id, v) => { if ($(id)) $(id).value = v || ''; };
+    set('sf_tabs', tabLines(ex.tabs)); set('sf_due', ex.due); set('sf_namecol', ex.nameCol); set('sf_donecol', ex.doneCol); set('sf_donetext', ex.doneText || '已完成'); set('sf_group', ex.groupLabel);
+    set('sf_idcols', (ex.idCols || []).join(', ')); set('sf_status', ex.statusCol); set('sf_closed', ex.closedText || '結案'); set('sf_closekeys', (ex.closeKeys || []).join(', '));
+    set('sf_notclose', (ex.notCloseKeys || []).join(', ')); set('sf_deadline', ex.deadline);
+    set('sf_cols', colLines(ex.columns)); set('sf_kw', (ex.keywords || []).join(', ')); set('sf_rules', ex.rules); $('sf_always').checked = !!ex.always;
+    document.querySelectorAll('.sf_win').forEach((c) => (c.checked = (ex.windows || []).includes(c.value)));
+    syncMode();
+  };
+  $('sf_cancel').onclick = closeModal2;
+  if ($('sf_del')) $('sf_del').onclick = async () => {
+    if (!confirm('刪除資料表「' + name + '」？用到它的成員會不再查這份表。')) return;
+    try { await api('/api/sources/' + encodeURIComponent(name), { method: 'DELETE' }); toast('已刪除'); closeModal2(); if (onSaved) onSaved(null); } catch (e) { toast(e.message); }
+  };
+  $('sf_save').onclick = async () => {
+    const m = mode(), split = (v) => v.split(/[,，、]+/).map((x) => x.trim()).filter(Boolean);
+    const lines = (id) => $(id).value.split('\n').map((l) => l.trim()).filter(Boolean);
+    const form = {
+      url: $('sf_url').value.trim(), mode: m,
+      tabs: lines('sf_tabs').map((l) => { const [a, b] = l.includes('=') ? l.split('=').map((x) => x.trim()) : [l, l]; return { label: a, spec: b || a }; }),
+      due: $('sf_due').value, nameCol: $('sf_namecol').value, doneCol: $('sf_donecol').value, doneText: $('sf_donetext').value, groupLabel: $('sf_group').value,
+      windows: [...document.querySelectorAll('.sf_win:checked')].map((c) => c.value),
+      idCols: split($('sf_idcols').value), statusCol: $('sf_status').value, closedText: $('sf_closed').value,
+      closeKeys: split($('sf_closekeys').value), notCloseKeys: split($('sf_notclose').value), deadline: $('sf_deadline').value,
+      columns: m === 'query' ? [] : lines('sf_cols').map((l) => { const [a, b] = l.includes('=') ? l.split('=').map((x) => x.trim()) : [l, '']; return { label: a, parts: b ? b.split('+').map((x) => x.trim()).filter(Boolean) : [a] }; }),
+      keywords: split($('sf_kw').value), always: $('sf_always').checked, rules: $('sf_rules').value,
+    };
+    if (m === 'due' && !form.due.trim()) { toast('到期追蹤要填「到期欄」'); return; }
+    try {
+      const r = await api('/api/sources/form', { method: 'PUT', body: JSON.stringify({ name: $('sf_name').value.trim(), oldName: name || '', form }) });
+      toast('✅ 已儲存資料表「' + r.name + '」'); closeModal2(); if (onSaved) onSaved(r.name);
+    } catch (e) { toast(e.message); }
+  };
+}
+
 // ---------- 🐞 錯誤回報列表（LINE／Telegram 使用者說的「錯誤回報」）----------
 const FB_LABEL = { open: '🔴 未處理', doing: '🟡 處理中', done: '✅ 已解決' };
 async function refreshFbBadge() { try { const c = (await api('/api/feedback')).counts; if (JSON.stringify(c) !== JSON.stringify(FB_COUNTS)) { FB_COUNTS = c; renderUsage(); } } catch {} }

@@ -263,6 +263,49 @@ function openCasesSummary(src, prof, text, now = Date.now()) {
   return out.join('\n');
 }
 
+// 📊「＋ 新增資料表」表單 ↔ 設定檔（.md）。表單只是幫你寫 .md，.md 仍然是唯一的設定來源（也可以直接改檔）
+const one = (v) => String(v == null ? '' : v).replace(/[\r\n]+/g, ' ').trim();
+const list = (a) => (Array.isArray(a) ? a : String(a || '').split(/[,，、]+/)).map(one).filter(Boolean);
+function renderSourceMd(f) {
+  const mode = f.mode === 'open' ? 'open' : f.mode === 'due' ? 'due' : 'query';
+  const L = ['---', '# 由 Agent Chat「📊 資料表」產生；也可以直接改這份檔案（改完存檔下一則訊息就生效）'];
+  if (one(f.url)) L.push('網址: ' + one(f.url));
+  const tabs = (f.tabs || []).map((t) => ({ label: one(t.label), spec: one(t.spec) || one(t.label) })).filter((t) => t.spec);
+  if (tabs.length) L.push('分頁: ' + tabs.map((t) => (t.label && t.label !== t.spec ? t.label + ' = ' + t.spec : t.spec)).join(', '));
+  if (parseInt(f.headerRow, 10) > 0) L.push('標題列: ' + parseInt(f.headerRow, 10));
+  if (mode === 'due') {
+    if (one(f.due)) L.push('到期欄: ' + one(f.due));
+    if (one(f.doneCol)) L.push('完成欄: ' + one(f.doneCol), '完成字: ' + (one(f.doneText) || '已完成'));
+    if (one(f.nameCol)) L.push('名稱欄: ' + one(f.nameCol));
+    if (one(f.groupLabel)) L.push('分組名稱: ' + one(f.groupLabel));
+    if (list(f.windows).length) L.push('範圍: ' + list(f.windows).join(', '));
+  }
+  if (mode === 'open') {
+    L.push('模式: 未結案');
+    if (list(f.idCols).length) L.push('編號欄: ' + list(f.idCols).join(', '));
+    if (one(f.statusCol)) L.push('狀態欄: ' + one(f.statusCol));
+    L.push('結案字: ' + (one(f.closedText) || '結案'));
+    if (list(f.closeKeys).length) L.push('結案日欄: ' + list(f.closeKeys).join(', '));
+    if (list(f.notCloseKeys).length) L.push('不算結案日: ' + list(f.notCloseKeys).join(', '));
+    if (one(f.deadline)) L.push('期限欄: ' + one(f.deadline));
+  }
+  for (const c of f.columns || []) {
+    const parts = list(c.parts).length ? list(c.parts) : [one(c.label)], label = one(c.label) || parts.join('/');
+    if (parts[0]) L.push('欄位: ' + (parts.length === 1 && parts[0] === label ? label : label + ' = ' + parts.join(' + ')));
+  }
+  const kw = f.always ? ['*'] : list(f.keywords);
+  if (kw.length) L.push('關鍵字: ' + kw.join(', '));
+  L.push('---', String(f.rules || '').trim());
+  return L.join('\n').trim() + '\n';
+}
+function formFromProfile(p) {
+  if (!p) return null;
+  return { url: p.url || p.urlRaw || '', tabs: p.tabList || [], mode: p.mode === 'open' ? 'open' : p.due ? 'due' : 'query', headerRow: p.headerRow || 0,
+    due: p.due || '', doneCol: p.doneCol || '', doneText: p.doneText || '', nameCol: p.nameCol || '', groupLabel: p.groupLabel || '', windows: p.windows || [],
+    idCols: p.idCols || [], statusCol: p.statusCol || '', closedText: p.closedText || '', closeKeys: p.closeKeys || [], notCloseKeys: p.notCloseKeys || [], deadline: p.deadline || '',
+    columns: p.columns || [], always: (p.keywords || []).includes('*'), keywords: (p.keywords || []).filter((k) => k !== '*'), rules: p.rules || '' };
+}
+
 // 這則訊息跟這份表有沒有關係：提到表的名稱或關鍵字才附。設定檔「關鍵字: *」＝每則都附；沒寫就用模式的預設
 const DEFAULT_KEYWORDS = {
   due: ['設備', '儀器', '校驗', '校正', '到期', '逾期', '保養', '效期', '過期', '下次'],
@@ -372,9 +415,15 @@ function create(ctx) {
     const prof = ctx.sourceProfile ? ctx.sourceProfile(name) : null;
     const k = 'src:' + name + '|' + (prof ? [prof.url, prof.tabs, prof.headerRow].join('|') : ''), c = cache[k];
     if (c && Date.now() - c.at < 120000) return c.data;
+    const data = await fetchSource(name, prof && prof.url, prof && prof.tabs, prof && prof.headerRow);
+    cache[k] = { at: Date.now(), data }; return data;
+  }
+  // 讀一份表（Google 試算表或 Excel 檔）：Apps Script 讀原生試算表；Excel 檔由它原檔下載，這裡解開、挑分頁、讀刪除線
+  async function fetchSource(name, url, tabsSpec, headerRow) {
     let data;
-    try { data = await call('readSource', prof && prof.url ? { name, url: prof.url, tab: prof.tabs || '', headerRow: prof.headerRow || 0 } : { name, headerRow: (prof && prof.headerRow) || 0 }); }
-    catch (e) { if (prof && prof.url && /沒有登記/.test(e.message)) throw new Error('Google Sheet 的 Apps Script 是舊版，看不懂設定檔裡的網址：請重貼 Code.gs（1.0.5）並部署新版本'); throw e; }
+    try { data = await call('readSource', url ? { name, url, tab: tabsSpec || '', headerRow: headerRow || 0 } : { name, headerRow: headerRow || 0 }); }
+    catch (e) { if (url && /沒有登記/.test(e.message)) throw new Error('Google Sheet 的 Apps Script 是舊版，看不懂設定檔裡的網址：請重貼 Code.gs（1.0.5）並部署新版本'); throw e; }
+    const prof = { tabs: tabsSpec, headerRow };
     if (data.xlsx) {
       // Excel 檔（.xlsx）：Google 端只負責原檔唯讀下載，這裡解開、挑分頁、讀刪除線
       const book = xlsxLib.open(Buffer.from(data.xlsx, 'base64'));
@@ -384,9 +433,16 @@ function create(ctx) {
         if (!n) throw new Error('「' + name + '」找不到分頁：' + sp + '（檔案裡的分頁：' + book.sheets.slice(0, 30).join('、') + '）');
         return { spec: sp, ...xlsxLib.toTab(book, n, (prof && prof.headerRow) || 0) };
       });
-      data = { name, tabs, sheet: tabs[0].sheet, headers: tabs[0].headers, rows: tabs[0].rows, fileName: data.fileName, modified: data.modified, size: data.size, allSheets: book.sheets };
+      data = { name, tabs, sheet: tabs[0].sheet, headers: tabs[0].headers, rows: tabs[0].rows, fileName: data.fileName, modified: data.modified, size: data.size, allSheets: book.sheets, excel: true };
     }
-    cache[k] = { at: Date.now(), data }; return data;
+    return data;
+  }
+  // ＋ 新增資料表：先讀讀看（不存任何東西），回傳每個分頁實際抓到的名稱、欄位標題、前 3 列範例
+  async function peek({ url, tabs, headerRow }) {
+    const d = await fetchSource('預覽', url, tabs, headerRow);
+    const list = d.tabs && d.tabs.length ? d.tabs : [{ sheet: d.sheet, headers: d.headers, rows: d.rows }];
+    return { excel: !!d.excel, fileName: d.fileName || '', allSheets: d.allSheets || null,
+      tabs: list.map((t) => ({ spec: t.spec || '', sheet: t.sheet, headers: t.headers || [], rows: (t.rows || []).length, sample: (t.rows || []).slice(0, 3).map((r) => r.map((v) => String(v).slice(0, 40))) })) };
   }
   async function sourcesContext(names, text, now = Date.now()) {
     const out = [];
@@ -495,10 +551,10 @@ function create(ctx) {
   }
   async function ping() { const r = await call('ping'); drop(); return r; }
   async function digest(send) { return call('digest', { send: !!send }); }
-  return { configured, status, update, ping, digest, call, whoIs, register, setEmail, setRole, sources, readSource, sourcesContext, context, execute, items, members, drop };
+  return { configured, status, update, ping, digest, call, whoIs, register, setEmail, setRole, sources, readSource, peek, sourcesContext, context, execute, items, members, drop };
 }
 
 // 在網頁（Agent Chat 的對話框）跟待辦管家說話的人＝管理這台 Agent Chat 的你：視同主管
 const WEB_OWNER = { userId: 'web', name: '管理員', role: '主管' };
 
-module.exports = { create, urlProblem, WEB_OWNER, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS, claimsWrite, sourceSummary, parseSourceProfile, profileSummary, openCasesSummary, sourceRelevant };
+module.exports = { create, urlProblem, WEB_OWNER, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS, claimsWrite, sourceSummary, parseSourceProfile, profileSummary, openCasesSummary, sourceRelevant, renderSourceMd, formFromProfile };

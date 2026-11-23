@@ -317,7 +317,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   await J('/api/agents/todo', 'PUT', { ...cfgMd, freshEachTurn: true });
   assert.equal((await J('/api/agents/pm/md', 'POST')).file.endsWith(path.join('agents', 'PM.md')), true, '任何成員都可以開設定檔');
 
-  const ping = await J('/api/todo/ping', 'POST'); assert.equal(ping.open, 0); assert.equal(ping.version, '1.0.8');
+  const ping = await J('/api/todo/ping', 'POST'); assert.equal(ping.open, 0); assert.equal(ping.version, '1.0.9');
 
   // 2) 還沒啟用的群組：任何訊息都不處理、不回應；配對碼才能啟用
   assert.equal(await hook([gmsg('U_wang', 'ADD1')]), 200); await sleep(400);
@@ -481,6 +481,22 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   await say('U_wang', 'EQUIP 再問一次到期的設備');
   const pp = lastAgyPrompt(); assert.match(pp, /【未來 7 天內到期（含今天）】設備 1 台，合計 1 台/); assert.match(pp, /【逾期未完成】.*合計 1 台/); assert.match(pp, /【這份表的回答規則】\n照系統的分類回答。/);
   await waitFor(idleTodo, 'todo idle EQ3');
+  // 📊 資料表管理：試讀（不存）、用表單存、改名時一併更新用到它的成員、刪除
+  const pk = await J('/api/sources/peek', 'POST', { url: EQ_URL, tabs: '設備' });
+  assert.deepEqual(pk.tabs.map((t) => [t.sheet, t.rows]), [['設備', 3]]); assert.deepEqual(pk.tabs[0].headers, ['設備名稱', '編號', '校正到期日', '狀態']); assert.equal(pk.tabs[0].sample.length, 3);
+  assert.ok(Array.isArray(pk.allSheets) && pk.allSheets.includes('設備'), 'Apps Script 1.0.9 回傳所有分頁名稱');
+  const sl = await J('/api/sources');
+  assert.ok(sl.sources.find((x) => x.name === '儀器').usedBy.some((u) => u.id === 'todo')); assert.ok(sl.examples['設備校驗'] && sl.examples['未結案巡檢']);
+  await J('/api/sources/form', 'PUT', { name: '耗材', form: { url: EQ_URL, mode: 'due', tabs: [{ label: '設備', spec: '設備' }], due: 'C', windows: ['7天'], columns: [{ label: '設備名稱', parts: ['設備名稱'] }], keywords: ['耗材'] } });
+  assert.match(fs.readFileSync(path.join(dir, 'data', 'sources', '耗材.md'), 'utf8'), /^到期欄: C$/m);
+  assert.equal((await call('/api/sources/form', 'PUT', { name: '壞的', form: { mode: 'query' } })).status, 400, '沒有網址不存');
+  const cfgS = (await J('/api/config')).agents.find((a) => a.id === 'todo');
+  await J('/api/agents/todo', 'PUT', { ...cfgS, dataSources: [...(cfgS.dataSources || []), '耗材'] });
+  await J('/api/sources/form', 'PUT', { name: '耗材2', oldName: '耗材', form: { url: EQ_URL, mode: 'query' } });
+  assert.ok(!fs.existsSync(path.join(dir, 'data', 'sources', '耗材.md')) && fs.existsSync(path.join(dir, 'data', 'sources', '耗材2.md')));
+  assert.ok((await J('/api/config')).agents.find((a) => a.id === 'todo').dataSources.includes('耗材2'), '改名時成員跟著改');
+  await J('/api/sources/' + encodeURIComponent('耗材2'), 'DELETE');
+  assert.ok(!(await J('/api/config')).agents.find((a) => a.id === 'todo').dataSources.includes('耗材2'), '刪除時成員不再查');
   const srcChk = (await J('/api/todo/sources', 'POST')).sources;
   assert.deepEqual(srcChk.map((x) => [x.name, x.ok, x.rows, x.sheet]), [['儀器', true, 3, '設備 3 筆']]); assert.equal(srcChk[0].profileDue, 'C（校正到期日）'); assert.deepEqual(srcChk[0].dueCols, ['校正到期日']);
   // 不在待辦 Sheet 登記、只在設定檔寫網址：一樣讀得到

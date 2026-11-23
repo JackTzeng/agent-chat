@@ -11,7 +11,7 @@
  *
  * 欄位都是用「欄位名稱」找的：你可以調整欄位順序、自己加欄位，不會壞。
  */
-var VERSION = '1.0.8';
+var VERSION = '1.0.9';
 var TASK_SHEET = '待辦', MEMBER_SHEET = '成員', SETTING_SHEET = '設定', LOG_SHEET = '紀錄';
 var TASK_HEADERS = ['編號', '事項', '負責人', '期限', '狀態', '優先', '備註', '提出人', '建立時間', '最後更新', '更新者', '完成時間'];
 var MEMBER_HEADERS = ['姓名', 'Email', '角色', 'LINE 名稱', 'LINE ID'];
@@ -288,7 +288,8 @@ function opReadSource_(req) {
     tabs.push({ spec: n, sheet: sh.getName(), headers: headers, rows: rows, strikes: strikes, truncated: rng.getNumRows() > 2001 });
   });
   // headers／rows／sheet：第一個分頁（舊版 Agent Chat 相容）
-  return { name: src.name, tabs: tabs, sheet: tabs[0].sheet, headers: tabs[0].headers, rows: tabs[0].rows, truncated: tabs[0].truncated };
+  // allSheets：所有分頁名稱（Agent Chat 的「＋ 新增資料表」用來讓你直接選分頁）
+  return { name: src.name, tabs: tabs, sheet: tabs[0].sheet, headers: tabs[0].headers, rows: tabs[0].rows, truncated: tabs[0].truncated, allSheets: all.map(function (s) { return s.getName(); }) };
 }
 
 // 指定／取消主管：權限由 Agent Chat 檢查（發言者是主管，或是 bot 的擁有者）；這裡只認 LINE ID
