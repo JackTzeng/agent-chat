@@ -251,7 +251,7 @@ function create(ctx) {
     if (rate.size > 2000) rate.clear();
     if (hits.length > RATE_MAX) { if (hits.length === RATE_MAX + 1) return send(gid, '⏳ 你傳太快了，請過幾分鐘再叫我。', tok); return; }
     if (agent && ctx.groupRisk) { const risk = ctx.groupRisk(agent); if (risk.block) { note('群組訊息被擋下：' + risk.block); return send(gid, '⚠️ 這個群組目前不能使用（管理者的安全設定需要調整）。', tok); } }
-    if (!agent) return send(gid, '⚠️ 這個群組還沒交給任何成員。請管理者到 Agent Chat 的「💚 LINE」④，選好「群組交給」哪位成員並按「儲存群組成員」。', tok);
+    if (!agent) return send(gid, '⚠️ 這個群組還沒交給任何成員。請管理者到 Agent Chat 的「📡 通訊管道」→「💚 LINE」④，選好「群組交給」哪位成員並按「儲存群組成員」。', tok);
     const uid = src.userId ? String(src.userId) : '';
     const body = t.text;
     // 系統直接回的話（沒叫 AI）也記進這位成員的對話框，網頁上才看得到群組裡發生什麼
@@ -322,7 +322,7 @@ function create(ctx) {
     const isPaired = allowed().includes(uid);
     S().lastEventAt = Date.now();
     if (ev.type === 'follow') {
-      return say(isPaired ? helpText() : '👋 你好！我是 Agent Chat 的 LINE bot。\n要開始使用，請在電腦上打開 Agent Chat →「💚 LINE」→ 按「產生配對碼」，把 6 位數字傳給我。');
+      return say(isPaired ? helpText() : '👋 你好！我是 Agent Chat 的 LINE bot。\n要開始使用，請在電腦上打開 Agent Chat →「📡 通訊管道」→「💚 LINE」→ 按「產生配對碼」，把 6 位數字傳給我。');
     }
     if (ev.type !== 'message') return;
     const m = ev.message || {};
@@ -340,7 +340,7 @@ function create(ctx) {
       }
       if (m.type === 'text' && /^\d{6}$/.test(text)) pairWrong('一對一');
       if (m.type === 'text' && /^\d{6}$/.test(text)) badPairing.set(uid, { count: (bad && bad.until > Date.now() ? bad.count : 0) + 1, until: Date.now() + 10 * 60 * 1000 });
-      return say('🔒 還沒配對。請在電腦上打開 Agent Chat →「💚 LINE」→ 按「產生配對碼」，把 6 位數字傳給我。');
+      return say('🔒 還沒配對。請在電腦上打開 Agent Chat →「📡 通訊管道」→「💚 LINE」→ 按「產生配對碼」，把 6 位數字傳給我。');
     }
     const agent = targetAgent();
     if (!agent) return say('⚠️ 這個 LINE bot 還沒有指定要連到哪位成員，請到 Agent Chat 的「💚 LINE」設定。');

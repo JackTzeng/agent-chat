@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.36.0';
+const VERSION = '3.37.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1739,6 +1739,46 @@ const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
 const PERMISSION_MODES = ['default', 'plan', 'acceptEdits', 'auto'];
 const SANDBOXES = ['read-only', 'workspace-write'];
 
+// 📡 一位成員的 Telegram 設定（前綴、專屬 bot、只接受哪些帳號與名稱、專屬 bot 收群組）：驗證並正規化
+function cleanTelegram(ti, existingId, old) {
+  const t = {}, ot = (old && old.telegram) || {};
+  const prefix = String(ti.prefix || '').trim();
+  if (prefix) {
+    if (prefix.length > 12 || /\s/.test(prefix)) throw new Error('Telegram 前綴最多 12 個字、不能有空白，例如 /記帳');
+    const dupP = AGENTS.find((x) => x.id !== existingId && x.telegram && x.telegram.prefix === prefix);
+    if (dupP) throw new Error('前綴「' + prefix + '」已經給 ' + dupP.name + ' 用了');
+    t.prefix = prefix;
+  }
+  const tok = ti.clearBotToken ? '' : String(ti.botToken || '').trim() || ot.botToken || '';
+  if (tok) {
+    if (!TG_TOKEN_RE.test(tok)) throw new Error('專屬 bot token 格式不對，應該像 123456789:ABC…');
+    const mainTok = process.env.TELEGRAM_BOT_TOKEN || (CONFIG.telegram || {}).botToken;
+    if (tok === mainTok) throw new Error('專屬 bot 不能和主 bot 用同一個 token（同一個 bot 只能有一個程式接收訊息），請在 BotFather 另外開一個');
+    if (CONFIG.agents.some((x) => x.id !== existingId && x.telegram && x.telegram.botToken === tok)) throw new Error('這個 bot token 已經給其他成員用了');
+    t.botToken = tok;
+  }
+  // 「123456789」或「123456789=Jack」（名稱會在訊息前面以【傳訊者：Jack】告訴成員）
+  const entries = parseLines(String(ti.userIds || '').replace(/[,，、\s]+/g, '\n')).slice(0, 10);
+  const ids = [], names = {};
+  for (const e of entries) {
+    const m = e.match(/^(\d{3,15})(?:[=＝](.+))?$/);
+    if (!m) throw new Error('Telegram 帳號要寫成「數字 ID」或「數字 ID=名稱」：' + e);
+    if (m[2] !== undefined) {
+      const nm = m[2].trim();
+      if (!nm || nm.length > 20 || /[【】\[\]<>]/.test(nm)) throw new Error('傳訊者名稱最多 20 個字，不能有括號：' + e);
+      names[m[1]] = nm;
+    }
+    if (!ids.includes(m[1])) ids.push(m[1]);
+  }
+  if (ids.length) t.userIds = ids.map(Number);
+  if (Object.keys(names).length) t.names = names;
+  if (ti.groups) {
+    if (!t.botToken) throw new Error('「接受群組訊息」只能用在專屬 bot，請先填專屬 bot token');
+    if (!ids.length) throw new Error('「接受群組訊息」一定要填「只接受這些 Telegram 帳號 ID」，群組裡其他人的訊息才會被擋掉');
+    t.groups = true;
+  }
+  return Object.keys(t).length ? t : null;
+}
 function cleanAgent(input, existingId) {
   const str = (v, max = 4000) => String(v ?? '').trim().slice(0, max);
   const a = {
@@ -1871,45 +1911,10 @@ function cleanStandalone(a, input, existingId) {
       if (rules.length) a[key] = rules;
     }
   }
-  // Telegram 路由（只給獨立成員）：訊息前綴、專屬 bot、只接受哪些帳號
-  if (a.standalone && input.telegram && typeof input.telegram === 'object') {
-    const t = {}, ti = input.telegram, ot = old.telegram || {};
-    const prefix = String(ti.prefix || '').trim();
-    if (prefix) {
-      if (prefix.length > 12 || /\s/.test(prefix)) throw new Error('Telegram 前綴最多 12 個字、不能有空白，例如 /記帳');
-      const dupP = AGENTS.find((x) => x.id !== existingId && x.telegram && x.telegram.prefix === prefix);
-      if (dupP) throw new Error('前綴「' + prefix + '」已經給 ' + dupP.name + ' 用了');
-      t.prefix = prefix;
-    }
-    const tok = ti.clearBotToken ? '' : String(ti.botToken || '').trim() || ot.botToken || '';
-    if (tok) {
-      if (!TG_TOKEN_RE.test(tok)) throw new Error('專屬 bot token 格式不對，應該像 123456789:ABC…');
-      const mainTok = process.env.TELEGRAM_BOT_TOKEN || (CONFIG.telegram || {}).botToken;
-      if (tok === mainTok) throw new Error('專屬 bot 不能和主 bot 用同一個 token（同一個 bot 只能有一個程式接收訊息），請在 BotFather 另外開一個');
-      if (CONFIG.agents.some((x) => x.id !== existingId && x.telegram && x.telegram.botToken === tok)) throw new Error('這個 bot token 已經給其他成員用了');
-      t.botToken = tok;
-    }
-    // 「123456789」或「123456789=Jack」（名稱會在訊息前面以【傳訊者：Jack】告訴成員）
-    const entries = parseLines(String(ti.userIds || '').replace(/[,，、\s]+/g, '\n')).slice(0, 10);
-    const ids = [], names = {};
-    for (const e of entries) {
-      const m = e.match(/^(\d{3,15})(?:[=＝](.+))?$/);
-      if (!m) throw new Error('Telegram 帳號要寫成「數字 ID」或「數字 ID=名稱」：' + e);
-      if (m[2] !== undefined) {
-        const nm = m[2].trim();
-        if (!nm || nm.length > 20 || /[【】\[\]<>]/.test(nm)) throw new Error('傳訊者名稱最多 20 個字，不能有括號：' + e);
-        names[m[1]] = nm;
-      }
-      if (!ids.includes(m[1])) ids.push(m[1]);
-    }
-    if (ids.length) t.userIds = ids.map(Number);
-    if (Object.keys(names).length) t.names = names;
-    if (ti.groups) {
-      if (!t.botToken) throw new Error('「接受群組訊息」只能用在專屬 bot，請先填專屬 bot token');
-      if (!ids.length) throw new Error('「接受群組訊息」一定要填「只接受這些 Telegram 帳號 ID」，群組裡其他人的訊息才會被擋掉');
-      t.groups = true;
-    }
-    if (Object.keys(t).length) a.telegram = t;
+  // Telegram 路由（只給獨立成員）：訊息前綴、專屬 bot、只接受哪些帳號。沒送 telegram（例如成員設定按儲存）＝沿用原本的；通訊設定在「📡 通訊管道」改
+  if (a.standalone) {
+    if (input.telegram && typeof input.telegram === 'object') { const t = cleanTelegram(input.telegram, existingId, old); if (t) a.telegram = t; }
+    else if (old.telegram) a.telegram = old.telegram;
   }
 }
 
@@ -2296,6 +2301,31 @@ const server = http.createServer(async (req, res) => {
       CONFIG.agents.push(a);
       saveConfig(); reloadAgents(); harness.docs(); agentsChanged();
       return send(res, 200, { ok: true, id: a.id });
+    }
+    // 📡 通訊管道：只改一位成員的 Telegram（前綴、專屬 bot、帳號名單、收群組）與 LINE（一對一、群組、呼叫詞），不動其他設定
+    if ((m0 = p.match(/^\/api\/agents\/([\w-]+)\/channels$/)) && req.method === 'PUT') {
+      const a = CONFIG.agents.find((x) => x.id === m0[1]);
+      if (!a) return send(res, 404, { error: '找不到這位成員' });
+      const b = await readBody(req);
+      try {
+        let tg;
+        if (b.telegram && typeof b.telegram === 'object') {
+          const any = ['prefix', 'botToken', 'userIds'].some((k) => String(b.telegram[k] || '').trim()) || b.telegram.groups;
+          if (!a.standalone && any) throw new Error('Telegram 前綴、專屬 bot、帳號名單只限「🧍 獨立成員」；其他成員用主 bot 的 /to ' + a.name + ' 切換過去');
+          tg = a.standalone ? cleanTelegram(b.telegram, a.id, a) : null;
+        }
+        if (b.line && typeof b.line === 'object') {
+          const L = CONFIG.line || {}, up = {};
+          if (b.line.dm === true && L.agentId !== a.id) up.agentId = a.id; else if (b.line.dm === false && L.agentId === a.id) up.agentId = '';
+          if (b.line.group === true && L.groupAgentId !== a.id) up.groupAgentId = a.id; else if (b.line.group === false && L.groupAgentId === a.id) up.groupAgentId = '';
+          if (b.line.group === true && typeof b.line.words === 'string') up.groupWords = b.line.words;
+          if (Object.keys(up).length) lineBot.update(up); // 會檢查群組只能交給唯讀成員
+        }
+        if (b.telegram && typeof b.telegram === 'object') { if (tg) a.telegram = tg; else delete a.telegram; }
+      } catch (e) { return send(res, 400, { error: e.message }); }
+      if (a.configMd) writeAgentMd(a);
+      saveConfig(); reloadAgents(); agentsChanged(); broadcast({ kind: 'line' });
+      return send(res, 200, { ok: true });
     }
     // ⚙️ 每輪結束後執行：狀態、重新核准（記下目前的指紋）、手動執行一次
     if ((m0 = p.match(/^\/api\/agents\/([\w-]+)\/afterturn(?:\/(approve|run))?$/))) {

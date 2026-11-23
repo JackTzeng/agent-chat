@@ -283,4 +283,19 @@ test('standalone ledger member: no tasks, telegram routing, photos, continuity, 
   tg.push(LEDGER, 333, { text: '計程車 200' });
   await waitFor(() => tg.sent.find((s) => s.token === LEDGER && s.chat === 333 && /【傳訊者：YC】計程車 200/.test(s.text)), 'private with name');
   assert.equal((await api('/api/audit/' + id)).records.find((x) => /計程車/.test(x.input)).tgUser, '333');
+
+  // 📡 通訊管道：成員設定按儲存（不送 telegram）會沿用原本的通訊設定；通訊設定用 /channels 單獨改
+  const cfgL = (await api('/api/config')).agents.find((x) => x.id === id);
+  const { telegram: _t, ...noTg } = cfgL;
+  await api('/api/agents/' + id, 'PUT', { ...noTg, role: '家庭記帳（改過）', env: 'LEDGER_SHEET_ID=sheet-abc', allowedTools: (cfgL.allowedTools || []).join('\n') });
+  const afterSave = (await api('/api/config')).agents.find((x) => x.id === id);
+  assert.equal(afterSave.role, '家庭記帳（改過）'); assert.equal(afterSave.telegram.prefix, '/記帳'); assert.equal(afterSave.telegram.hasBotToken, true, '專屬 bot 還在');
+  await api('/api/agents/' + id + '/channels', 'PUT', { telegram: { prefix: '/帳', userIds: '111=Jack', groups: false } });
+  const ch = (await api('/api/config')).agents.find((x) => x.id === id);
+  assert.equal(ch.telegram.prefix, '/帳'); assert.deepEqual(ch.telegram.userIds, [111]); assert.equal(ch.telegram.names['111'], 'Jack'); assert.equal(ch.telegram.hasBotToken, true, '沒填 token＝沿用');
+  assert.equal(ch.role, '家庭記帳（改過）', '只改通訊，不動其他設定');
+  await assert.rejects(api('/api/agents/' + id + '/channels', 'PUT', { telegram: { prefix: '有 空白' } }), /前綴/);
+  const team = (await api('/api/config')).agents.find((x) => !x.standalone);
+  await assert.rejects(api('/api/agents/' + team.id + '/channels', 'PUT', { telegram: { prefix: '/x' } }), /只限「🧍 獨立成員」/);
+  await api('/api/agents/' + team.id + '/channels', 'PUT', { telegram: { prefix: '' } }); // 空的不算，不報錯
 });
