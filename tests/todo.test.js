@@ -66,8 +66,10 @@ test('call: Google refusing (401 / sign-in page / 404) explains "who can access"
   mode.v = 500; await assert.rejects(td.ping(), /不是預期的格式（HTTP 500）/);
 });
 
-test('資料表設定檔：多分頁、固定欄位、完成判斷、範圍、資料需確認（照設備校驗 Skill 的規則）', () => {
-  const prof = todo.parseSourceProfile(fs.readFileSync(path.join(__dirname, '..', 'templates', 'sources', '設備校驗範例.md'), 'utf8'));
+// 判讀規則範例（templates/rules）→ 成員人設的「## 資料表：…」段落 → 跟資料表的連線設定合併
+const ruleProf = (file, conn) => todo.mergeProfile(conn || {}, todo.parseSourceSections('你是助理。\n\n## 資料表：T\n' + fs.readFileSync(path.join(__dirname, '..', 'templates', 'rules', file), 'utf8').replace(/^<!--[\s\S]*?-->\s*/, '')).rules.get('T'));
+test('判讀規則（到期）：多分頁、固定欄位、完成判斷、範圍、資料需確認（照設備校驗 Skill 的規則）', () => {
+  const prof = ruleProf('設備校驗.md');
   assert.equal(prof.due, 'H'); assert.deepEqual(prof.windows, ['今日', '7天', '1個月']); assert.equal(prof.columns.length, 6);
   assert.equal(todo.parseSourceProfile('---\n範圍: 7天\n---\n'), null, '沒有到期欄就不算設定檔');
   const now = new Date(2026, 10, 20, 9).getTime();
@@ -97,7 +99,8 @@ test('資料表設定檔：多分頁、固定欄位、完成判斷、範圍、�
 });
 
 test('未結案模式：照 weekly-open-cases-report Skill 的四條規則判斷，九個區段都要出現', () => {
-  const prof = todo.parseSourceProfile(fs.readFileSync(path.join(__dirname, '..', 'templates', 'sources', '未結案巡檢範例.md'), 'utf8'));
+  const conn = todo.parseSourceProfile('---\n網址: https://docs.google.com/spreadsheets/d/CTRLXYZ/edit\n分頁: 一廠異常INC = 一廠+INC, 一廠偏差DE = 一廠+DE, 一廠CAPA = 一廠+CAPA, 一廠OOS = 一廠+OOS, 三廠INC = 三廠+INC, 三廠DE = 三廠+DE, 三廠CAPA = 三廠+CAPA, 三廠OOS = 三廠+OOS, 全廠CC = 一二三廠+CC\n---\n');
+  const prof = ruleProf('未結案巡檢.md', conn);
   assert.equal(prof.mode, 'open'); assert.equal(prof.tabList.length, 9); assert.deepEqual(prof.tabList[8], { label: '全廠CC', spec: '一二三廠+CC' });
   const now = new Date(2026, 10, 20, 9).getTime();
   const H = ['OOS編號', '發生日期', '說明', '負責人', '狀態', '應結案日期(30個工作天)', '備註', '實際完成日 (結案日期)'];
@@ -241,7 +244,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'afterturn.js', 'xlsx.js', 'agents.example.json'])
     fs.copyFileSync(path.join(source, f), path.join(dir, f));
   fs.mkdirSync(path.join(dir, 'templates', 'todo'), { recursive: true }); fs.copyFileSync(path.join(source, 'templates', 'todo', 'Code.gs'), path.join(dir, 'templates', 'todo', 'Code.gs'));
-  fs.cpSync(path.join(source, 'templates', 'sources'), path.join(dir, 'templates', 'sources'), { recursive: true });
+  fs.cpSync(path.join(source, 'templates', 'rules'), path.join(dir, 'templates', 'rules'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({
     teams: [{ id: 'main', name: '開發組', icon: '🛠', workflow: '1. 隨便', cwd: './workspace' }],
@@ -250,9 +253,12 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
     agents: [
       { id: 'pm', name: 'PM', role: 'PM', engine: 'claude', permissionMode: 'auto', cwd: './workspace', team: 'main' },
       { id: 'todo', name: '待辦管家', role: '部門待辦', engine: 'agy', model: 'gemini-3.8-flash-high', agyAccess: 'read', cwd: './workspace/todo', standalone: true, dataSources: ['儀器'] },
-      { id: 'chat', name: '小幫手', role: '一般對話', engine: 'agy', model: 'gemini-3.8-flash-high', agyAccess: 'read', cwd: './workspace/chat', standalone: true },
+      { id: 'chat', name: '小幫手', role: '一般對話', engine: 'agy', model: 'gemini-3.8-flash-high', agyAccess: 'read', cwd: './workspace/chat', standalone: true, persona: '你是小幫手。', dataSources: ['舊表'] },
     ],
   }));
+  // 舊格式（v3.25～v3.37）：判讀規則寫在資料表設定檔裡 → 啟動時要搬到用它的成員人設
+  fs.mkdirSync(path.join(dir, 'data', 'sources'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'data', 'sources', '舊表.md'), '---\n網址: https://docs.google.com/spreadsheets/d/OLDSHEET1234567890/edit\n分頁: 一廠, 三廠\n到期欄: H\n完成欄: P\n完成字: 已完成\n範圍: 7天\n欄位: 名稱 = B\n關鍵字: 舊表專用詞\n---\n- 舊的回答規則 OLDRULE\n');
   const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, 'agy'), MOCK_AGY, { mode: 0o755 });
   const log = path.join(dir, 'calls.log');
@@ -299,6 +305,13 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   let st = await J('/api/line'); assert.equal(st.groups, 0); assert.equal(st.groupAgentName, '待辦管家'); assert.equal(st.todo.configured, true);
   const raw = JSON.stringify(st) + JSON.stringify(await J('/api/todo')) + JSON.stringify(await J('/api/config'));
   assert.ok(!raw.includes(g.props.KEY) && !raw.includes(SECRET) && !raw.includes(TOKEN), '不回傳任何密鑰');
+  // 📊 遷移：舊資料表設定檔裡的規則搬到用它的成員人設；資料表只剩怎麼讀
+  const chatP = (await J('/api/config')).agents.find((a) => a.id === 'chat').persona;
+  assert.match(chatP, /^你是小幫手。\n\n## 資料表：舊表\n整理: 到期｜日期欄=H｜完成欄=P｜完成字=已完成｜範圍=7天\n列出: 名稱 = B\n附上時機: 舊表專用詞\n- 舊的回答規則 OLDRULE$/);
+  const oldMd = fs.readFileSync(path.join(dir, 'data', 'sources', '舊表.md'), 'utf8');
+  assert.match(oldMd, /^網址: https:\/\/docs\.google\.com\/spreadsheets\/d\/OLDSHEET/m); assert.match(oldMd, /^分頁: 一廠, 三廠$/m); assert.doesNotMatch(oldMd, /到期欄|OLDRULE/);
+  assert.ok(fs.readdirSync(path.join(dir, 'data', 'sources', '.backup')).some((f) => f.startsWith('舊表-')), '舊版有備份');
+
   // 📄 成員設定檔：會對外的 bot 自動集中到 data/agents/<名稱>.md；改檔幾秒內生效、格式壞掉不套用、網頁儲存寫回並留備份
   const mdFile = path.join(dir, 'data', 'agents', '待辦管家.md');
   assert.ok(fs.existsSync(mdFile), '遷移：自動建立設定檔');
@@ -474,7 +487,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   // 設定檔：從成員設定存進 data/sources/儀器.md，下一則就照規則整理（多分頁、完成判斷）
   assert.equal((await call('/api/sources/profile', 'PUT', { name: '../x', text: '' })).status, 400, '名稱不能帶路徑');
   assert.equal((await call('/api/sources/profile', 'PUT', { name: '儀器', text: '隨便寫' })).status, 400, '格式不對不存');
-  const ex = (await J('/api/sources/profile?name=' + encodeURIComponent('儀器'))); assert.equal(ex.text, ''); assert.match(ex.example, /到期欄: H/);
+  const ex = (await J('/api/sources/profile?name=' + encodeURIComponent('儀器'))); assert.equal(ex.text, '');
   await J('/api/sources/profile', 'PUT', { name: '儀器', text: '---\n到期欄: C\n完成欄: D\n完成字: 已完成\n名稱欄: 設備名稱\n範圍: 7天\n欄位: 設備名稱\n欄位: 到期 = C\n---\n照系統的分類回答。\n' });
   assert.equal((await J('/api/sources/profile?name=' + encodeURIComponent('儀器'))).custom, true);
   assert.ok(fs.existsSync(path.join(dir, 'data', 'sources', '儀器.md')));
@@ -486,9 +499,10 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   assert.deepEqual(pk.tabs.map((t) => [t.sheet, t.rows]), [['設備', 3]]); assert.deepEqual(pk.tabs[0].headers, ['設備名稱', '編號', '校正到期日', '狀態']); assert.equal(pk.tabs[0].sample.length, 3);
   assert.ok(Array.isArray(pk.allSheets) && pk.allSheets.includes('設備'), 'Apps Script 1.0.9 回傳所有分頁名稱');
   const sl = await J('/api/sources');
-  assert.ok(sl.sources.find((x) => x.name === '儀器').usedBy.some((u) => u.id === 'todo')); assert.ok(sl.examples['設備校驗'] && sl.examples['未結案巡檢']);
-  await J('/api/sources/form', 'PUT', { name: '耗材', form: { url: EQ_URL, mode: 'due', tabs: [{ label: '設備', spec: '設備' }], due: 'C', windows: ['7天'], columns: [{ label: '設備名稱', parts: ['設備名稱'] }], keywords: ['耗材'] } });
-  assert.match(fs.readFileSync(path.join(dir, 'data', 'sources', '耗材.md'), 'utf8'), /^到期欄: C$/m);
+  assert.ok(sl.sources.find((x) => x.name === '儀器').usedBy.some((u) => u.id === 'todo')); assert.match(sl.ruleExamples['設備校驗'], /^整理: 到期｜日期欄=H/m); assert.match(sl.ruleExamples['未結案巡檢'], /^整理: 未結案/m);
+  await J('/api/sources/form', 'PUT', { name: '耗材', form: { url: EQ_URL, tabs: [{ label: '「設備」', spec: '「設備」' }], headerRow: 1, due: 'C' } });
+  const mdS = fs.readFileSync(path.join(dir, 'data', 'sources', '耗材.md'), 'utf8');
+  assert.match(mdS, /^分頁: 設備$/m, '分頁名稱前後的引號會拿掉'); assert.match(mdS, /^標題列: 1$/m); assert.doesNotMatch(mdS, /到期欄/, '資料表只存怎麼讀，不存判讀規則');
   assert.equal((await call('/api/sources/form', 'PUT', { name: '壞的', form: { mode: 'query' } })).status, 400, '沒有網址不存');
   const cfgS = (await J('/api/config')).agents.find((a) => a.id === 'todo');
   await J('/api/agents/todo', 'PUT', { ...cfgS, dataSources: [...(cfgS.dataSources || []), '耗材'] });
@@ -497,11 +511,11 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   assert.ok((await J('/api/config')).agents.find((a) => a.id === 'todo').dataSources.includes('耗材2'), '改名時成員跟著改');
   await J('/api/sources/' + encodeURIComponent('耗材2'), 'DELETE');
   assert.ok(!(await J('/api/config')).agents.find((a) => a.id === 'todo').dataSources.includes('耗材2'), '刪除時成員不再查');
-  const srcChk = (await J('/api/todo/sources', 'POST')).sources;
+  const srcChk = (await J('/api/todo/sources', 'POST')).sources.filter((x) => x.name !== '舊表');
   assert.deepEqual(srcChk.map((x) => [x.name, x.ok, x.rows, x.sheet]), [['儀器', true, 3, '設備 3 筆']]); assert.equal(srcChk[0].profileDue, 'C（校正到期日）'); assert.deepEqual(srcChk[0].dueCols, ['校正到期日']);
   // 不在待辦 Sheet 登記、只在設定檔寫網址：一樣讀得到
   await J('/api/sources/profile', 'PUT', { name: '設備2', text: '---\n網址: ' + EQ_URL + '\n分頁: 設備\n---\n' });
-  const srcChk2 = (await J('/api/todo/sources', 'POST')).sources;
+  const srcChk2 = (await J('/api/todo/sources', 'POST')).sources.filter((x) => x.name !== '舊表');
   assert.deepEqual(srcChk2.map((x) => [x.name, x.ok, x.rows]), [['儀器', true, 3], ['設備2', true, 3]]);
   // 未結案巡檢：線上 Google 試算表、分頁關鍵字、刪除線 → 照規則判斷好再交給模型
   const CTRL = 'https://docs.google.com/spreadsheets/d/CTRLSHEET/edit';
@@ -509,11 +523,11 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   const oosT = Object.assign(new Sheet('三廠-' + yNow + '年OOS'), { data: [['OOS編號', '說明', '狀態', '實際結案日期'], ['OOS-9', 'pH', '追蹤', ''], ['OOS-8', '作廢', '追蹤', ''], ['OOS-7', '含量', '結案', '']] });
   oosT.strikes.add('3,1'); oosT.readOnly = true;
   g.books.set(CTRL, { sheets: [oosT, Object.assign(new Sheet('一二三廠-CC'), { data: [['CC編號', '狀態', '實際結案日期'], ['CC-1', '追蹤', '2026-11-01']] })] });
-  const tpl = (await J('/api/sources/profile?name=' + encodeURIComponent('未結案'))).examples['未結案巡檢'];
-  assert.ok(tpl, '有未結案巡檢範例');
-  await J('/api/sources/profile', 'PUT', { name: '未結案', text: tpl.replace(/^網址:.*$/m, '網址: ' + CTRL).replace(/^分頁:.*$/m, '分頁: 三廠OOS = 三廠+OOS, 全廠CC = 一二三廠+CC') });
+  // 新做法：資料表只填怎麼讀（網址、分頁），判讀規則寫在成員人設的「## 資料表：未結案」段落
+  const ruleEx = (await J('/api/sources')).ruleExamples['未結案巡檢'];
+  await J('/api/sources/form', 'PUT', { name: '未結案', form: { url: CTRL, tabs: [{ label: '三廠OOS', spec: '三廠+OOS' }, { label: '全廠CC', spec: '一二三廠+CC' }] } });
   const cfgA = (await J('/api/config')).agents.find((a) => a.id === 'todo');
-  await J('/api/agents/todo', 'PUT', { ...cfgA, dataSources: '儀器, 未結案' });
+  await J('/api/agents/todo', 'PUT', { ...cfgA, persona: cfgA.persona + '\n\n## 資料表：未結案\n' + ruleEx, dataSources: '儀器, 未結案' });
   await waitFor(idleTodo, 'todo idle OC');
   await say('U_wang', 'EQUIP 未結案的有哪些，還有設備');
   const pOC = lastAgyPrompt();
@@ -525,7 +539,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   g.driveFiles.set('CTRLXLSX', { name: 'CAPA/OOS/QD/CC總表.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', bytes: makeXlsx({
     ['一廠-INC異常事件通報']: [['二廠\nINC NO.', '索號日期', '狀態', '實際完成日\n(結案日期)'], ['2026年度'], ['ES-INC02-2601', { date: '2026-06-22' }, '追蹤', ''], [{ v: 'ES-INC02-2602', strike: true }, { date: '2026-06-22' }, '追蹤', ''], ['ES-INC02-2603', { date: '2026-06-22' }, '追蹤', { date: '2026-07-01' }]],
     ['三廠-' + yNow + '年OOS']: [['OOS編號', '狀態'], ['OOS-1', '結案']] }) });
-  await J('/api/sources/profile', 'PUT', { name: '未結案', text: tpl.replace(/^網址:.*$/m, '網址: https://docs.google.com/spreadsheets/d/CTRLXLSX/edit?gid=656880455#gid=656880455').replace(/^分頁:.*$/m, '分頁: 一廠異常INC = 一廠+INC, 三廠OOS = 三廠+OOS') });
+  await J('/api/sources/form', 'PUT', { name: '未結案', form: { url: 'https://docs.google.com/spreadsheets/d/CTRLXLSX/edit?gid=656880455#gid=656880455', tabs: [{ label: '一廠異常INC', spec: '一廠+INC' }, { label: '三廠OOS', spec: '三廠+OOS' }] } });
   await say('U_wang', 'EQUIP 再看一次未結案');
   const pX = lastAgyPrompt();
   assert.match(pX, /檔案：CAPA\/OOS\/QD\/CC總表\.xlsx（最後修改 2026-11-19 17:30）/);
@@ -573,7 +587,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   await waitFor(idleTodo, 'todo idle KW');
   await say('U_wang', 'QUERY 我的待辦');
   const pKW = lastAgyPrompt(); assert.doesNotMatch(pKW, /【唯讀資料表：/); assert.match(pKW, /另有唯讀資料表：儀器、未結案；這則訊息沒提到相關的事/);
-  assert.ok(todo.sourceRelevant('儀器', null, 'HPLC 下次校正？')); assert.ok(!todo.sourceRelevant('儀器', null, '你好'));
+  assert.ok(todo.sourceRelevant('儀器', null, 'HPLC 下次校正？')); assert.ok(!todo.sourceRelevant('儀器', { due: 'H' }, '你好'), '有到期規則：閒聊不附'); assert.ok(todo.sourceRelevant('名單', {}, '你好'), '沒有任何規則的一般查詢：每則都附');
   assert.ok(todo.sourceRelevant('未結案', { mode: 'open' }, '三廠 oos 還有幾件')); assert.ok(todo.sourceRelevant('x', { keywords: ['*'] }, '你好'));
   await waitFor(idleTodo, 'todo idle KW2');
 

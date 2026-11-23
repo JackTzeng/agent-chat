@@ -192,7 +192,7 @@ function create(ctx) {
   // 群組補問按鈕送出的字要能叫到 bot：用第一個呼叫詞，沒設就用成員名稱（以前寫死「待辦」，改了呼叫詞按鈕就失效）
   const callPrefix = () => (groupWords()[0] || (groupAgent() || {}).name || '') + ' ';
   // 📊 成員有唯讀資料表：先讀表、整理好放在訊息前面（讀不到也會寫明原因，不會讓它瞎猜）
-  const srcCtx = async (agent, text) => ((agent && (agent.dataSources || []).length && ctx.todo && ctx.todo.configured()) ? (await ctx.todo.sourcesContext(agent.dataSources, text)) + '\n\n' : '');
+  const srcCtx = async (agent, text) => ((agent && (agent.dataSources || []).length && ctx.todo && ctx.todo.configured()) ? (await ctx.todo.sourcesContext(agent, text)) + '\n\n' : '');
   const groupIds = () => (cfg().groups || []).map(String);
   const groupHelp = (who) => {
     const a = groupAgent(), n = (a || {}).name || 'bot';

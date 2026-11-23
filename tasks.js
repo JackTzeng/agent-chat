@@ -205,7 +205,8 @@ exports.create = function create(ctx) {
     const task = get(opts.taskId), w = wf(task), st = stageIn(task, opts.stageId), stage = (id) => stageIn(task, id), team = teamOf(task);
     const lines = [];
     lines.push('【你的身分】你是「' + agent.name + '」' + (agent.role ? '，職責：' + agent.role : ''));
-    if (agent.persona) lines.push(agent.persona);
+    const persona = require('./todo').stripSourceSections(agent.persona); // 「## 資料表：…」段落只在附上資料時一起附
+    if (persona) lines.push(persona);
     if (ctx.accessText) lines.push('', ctx.accessText(agent));
     lines.push('', '【團隊成員（' + team.name + '）】');
     for (const a of teamMembers(team.id)) lines.push('- ' + a.name + '：' + (a.role || a.engine) + (a.id === agent.id ? '（就是你）' : ''));

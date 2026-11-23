@@ -360,6 +360,7 @@ try { localStorage.removeItem('agentchat_token'); } catch {}
 if (location.search) history.replaceState(null, '', location.pathname + location.hash);
 const withToken = (u) => u;
 let UPD_BADGE = false;
+let RULE_EX = {}; // 📊 判讀規則範例（templates/rules）
 let FB_COUNTS = null; // 🐞 錯誤回報各狀態件數（有回報才在側邊欄顯示）
 let FB_FILTER = 'todo';
 let MD_BADGE = 0; // 📝 待核准的設定檔修改提案數
@@ -371,7 +372,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.37.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.38.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1000,7 +1001,7 @@ async function openAgentForm(id) {
         <span class="help">它看不到檔案、不能執行指令：每次對話，系統會先讀最新的待辦清單附在訊息裡；它只負責聽懂並寫出動作行，由 Agent Chat 檢查權限後寫進 Sheet。沒勾的成員就是一般對話（在 LINE 群組裡也是）。需要先在「📋 待辦清單」連上 Google Sheet。</span>
         <label style="margin-top:10px;display:block">📊 唯讀資料表（勾選這位成員可以查的表）</label>
         <div id="f_srclist" class="tpl"></div>
-        <div class="sk-row"><button type="button" id="f_src_add">＋ 新增資料表</button><span class="help">別人的 Google 試算表或雲端硬碟上的 Excel 檔，只讀不改。每次對話系統先讀最新的表、算好到期／未結案再交給它。全部的表在左下「📊 資料表」管理。</span></div>
+        <div class="sk-row"><button type="button" id="f_src_add">＋ 新增資料表</button><span class="help">別人的 Google 試算表或雲端硬碟上的 Excel 檔，只讀不改。怎麼讀在左下「📊 資料表」設定；<b>讀了之後怎麼判斷寫在上面的人設</b>，每張表一段「## 資料表：名稱」（可以用「＋ 插入判讀規則」從範例開始）。只在附上那張表的資料時才一起附給它，不會每輪都送。</span></div>
       </div>
       <div class="field full">
         <label>🔧 維運：它負責照顧哪些成員（選填）</label>
@@ -1183,7 +1184,20 @@ async function openAgentForm(id) {
     let R; try { R = await api('/api/sources'); } catch { R = { sources: [] }; }
     for (const el of document.querySelectorAll('#f_srclist input:checked')) srcPicked.add(el.value);
     for (const el of document.querySelectorAll('#f_srclist input:not(:checked)')) srcPicked.delete(el.value);
-    $('f_srclist').innerHTML = R.sources.length ? R.sources.map((x) => `<label class="opt" style="margin-right:12px"><input type="checkbox" value="${esc(x.name)}" ${srcPicked.has(x.name) ? 'checked' : ''}> ${esc(x.name)}<span class="help">（${SRC_MODE[(x.form || {}).mode] || '沒有設定檔'}）</span> <a href="#" data-srcedit="${esc(x.name)}" title="編輯">✏️</a></label>`).join('') : '<span class="help">還沒有任何資料表，按「＋ 新增資料表」。</span>';
+    RULE_EX = R.ruleExamples || {};
+    const hasSec = (n) => new RegExp('^##\\s*資料表[:：]\\s*' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'm').test($('f_persona').value);
+    $('f_srclist').innerHTML = R.sources.length ? R.sources.map((x) => `<div style="margin:2px 0"><label class="opt"><input type="checkbox" value="${esc(x.name)}" ${srcPicked.has(x.name) ? 'checked' : ''}> ${esc(x.name)}</label>
+      <a href="#" data-srcedit="${esc(x.name)}" title="編輯怎麼讀這張表">✏️</a>
+      <span class="help">${hasSec(x.name) ? '✅ 人設裡有「## 資料表：' + esc(x.name) + '」判讀規則' : '沒有判讀規則（AI 直接看相關的資料列）'}</span>
+      ${hasSec(x.name) ? '' : `<select data-srcrule="${esc(x.name)}"><option value="">＋ 插入判讀規則…</option><option value="__blank">空白段落</option>${Object.keys(RULE_EX).map((k) => `<option>${esc(k)}</option>`).join('')}</select>`}</div>`).join('') : '<span class="help">還沒有任何資料表，按「＋ 新增資料表」。</span>';
+    document.querySelectorAll('[data-srcrule]').forEach((sel) => (sel.onchange = () => {
+      const n = sel.dataset.srcrule, k = sel.value; if (!k) return;
+      const body = k === '__blank' ? '附上時機: ' + n + '\n- （寫這位成員讀這張表時的規則，例如要列哪些欄、怎麼回答）' : RULE_EX[k];
+      const ta = $('f_persona'); ta.value = (ta.value.trim() + '\n\n## 資料表：' + n + '\n' + body).trim();
+      if (editing && $('f_reset')) $('f_reset').checked = false; // 判讀規則下一則就生效，不用開新對話
+      const cb = document.querySelector('#f_srclist input[value="' + CSS.escape(n) + '"]'); if (cb) cb.checked = true;
+      toast('已在人設最後加上「## 資料表：' + n + '」段落，可以直接改，記得按儲存'); ta.scrollIntoView({ block: 'center' }); renderSrcList();
+    }));
     document.querySelectorAll('[data-srcedit]').forEach((el) => (el.onclick = (e) => { e.preventDefault(); openSourceForm(el.dataset.srcedit, { onSaved: (n) => { srcPicked.add(n); renderSrcList(); } }); }));
   };
   renderSrcList();
@@ -2159,7 +2173,7 @@ async function openTodo() {
   $('td_ping').onclick = () => act(async () => { out('連線中…'); const r = await api('/api/todo/ping', { method: 'POST', body: '{}' }); const latest = (await api('/api/todo/script').catch(() => ({}))).version; out((latest && r.version !== latest ? `⚠️ <b>Google 端的程式是 ${esc(r.version)}，最新是 ${esc(latest)}</b>：請展開上面的「⬆️ 更新 Google 端的程式」照做。<br>` : '') + `✅ 連上了：Apps Script 版本 ${esc(r.version)}，時區 ${esc(r.tz)}，「待辦」分頁目前有 ${r.open} 筆未完成（共 ${r.total} 筆）。<br><small>Agent Chat 只讀名叫「待辦」的分頁（欄位：編號、事項、負責人、期限、狀態…）；其他分頁的內容它看不到。</small>`); });
   $('td_src').onclick = () => act(async () => {
     out('讀取中…'); const r = await api('/api/todo/sources', { method: 'POST', body: '{}' });
-    out(r.sources.length ? r.sources.map((s) => s.ok ? `✅ <b>${esc(s.name)}</b>：讀到 ${s.rows} 筆（分頁「${esc(s.sheet)}」）｜欄位：${esc(s.headers.join('、'))}｜到期日欄：${s.profileDue ? '設定檔指定 ' + esc(s.profileDue) : s.dueCols.length ? esc(s.dueCols.join('、')) : '⚠️ 找不到（標題要含「到期」「期限」「效期」「下次」之一）'}` : `❌ <b>${esc(s.name)}</b>：${esc(s.error)}`).join('<br>') : '還沒有任何唯讀資料表：到成員設定的「📊 唯讀資料表」填名稱並儲存，再在「✏️ 設定檔」寫上網址與分頁');
+    out(r.sources.length ? r.sources.map((s) => (s.ok ? `✅ <b>${esc(s.name)}</b>：讀到 ${s.rows} 筆（${esc(s.sheet)}）｜欄位：${esc(s.headers.join('、').slice(0, 300))}` : `❌ <b>${esc(s.name)}</b>：${esc(s.error)}`)).join('<br>') : '還沒有任何唯讀資料表：到左下「📊 資料表」按「＋ 新增資料表」');
   });
   const digest = (send) => act(async () => {
     if (send && !confirm('現在就寄出提醒信給負責人與主管？（只有「已逾期或快到期」的事項才會寄；今天是週末且設定為週末不寄的話不會寄）')) return;
@@ -2492,18 +2506,16 @@ async function openMemberChannels(id, { onSaved } = {}) {
 }
 
 // ---------- 📊 資料表（唯讀資料表的管理頁＋新增／編輯表單）----------
-const SRC_MODE = { query: '一般查詢', due: '到期追蹤', open: '未結案巡檢' };
-const SRC_DEFAULT_KW = { query: '', due: '設備, 儀器, 校驗, 校正, 到期, 逾期, 保養, 效期', open: '未結, 結案, 案件, CAPA, OOS, INC, DE, CC, 偏差, 異常, 變更, 追蹤' };
 async function openSources() {
   let R; try { R = await api('/api/sources'); } catch (e) { toast(e.message); return; }
   openModal(`<h2>📊 資料表</h2>
-    <p class="lead">讓成員查別人的 Google 試算表（或雲端硬碟上的 Excel 檔），<b>只讀不改</b>、那份表不用動。每份表一個設定（存在 <code>data/sources/名稱.md</code>）；到成員設定勾選它可以查哪幾份。</p>
+    <p class="lead">讓成員查別人的 Google 試算表（或雲端硬碟上的 Excel 檔），<b>只讀不改</b>、那份表不用動。這裡只管<b>怎麼讀</b>（網址、分頁）；讀了之後怎麼判斷，寫在每位成員自己的人設裡（成員設定 →「📊 唯讀資料表」→「＋ 插入判讀規則」）。</p>
     ${R.todoConfigured ? '' : '<div class="sk-bad">⚠️ 讀表要透過你 Google Sheet 的 Apps Script：請先到「📡 通訊管道」→「💚 LINE」→「📋 待辦清單」連上 Google Sheet。</div>'}
     <div class="sk-row"><button class="primary" id="src_new">＋ 新增資料表</button><button id="src_chk">🔍 全部讀讀看</button></div>
     <div id="src_chkout" class="ln-check"></div>
     ${R.sources.length ? R.sources.map((x) => { const f = x.form || {}; return `<div style="border:1px solid var(--line,#ddd);border-radius:10px;padding:10px;margin:8px 0">
-      <div><b>${esc(x.name)}</b>　<span class="help">${x.exists ? SRC_MODE[f.mode] || '' : '⚠️ 還沒有設定'}${(f.tabs || []).length ? '｜分頁：' + esc(f.tabs.map((t) => t.label).join('、')) : ''}</span></div>
-      <div class="help">${f.url ? esc(f.url.replace(/^https:\/\/docs\.google\.com\/spreadsheets\/d\//, '…/d/').slice(0, 60)) : '（沒有網址）'}｜使用的成員：${x.usedBy.length ? esc(x.usedBy.map((a) => a.name).join('、')) : '沒有'}</div>
+      <div><b>${esc(x.name)}</b>　<span class="help">${x.exists ? '' : '⚠️ 還沒有設定'}${(f.tabs || []).length ? '分頁：' + esc(f.tabs.map((t) => t.label).join('、')) : '第一個分頁'}</span></div>
+      <div class="help">${f.url ? esc(f.url.replace(/^https:\/\/docs\.google\.com\/spreadsheets\/d\//, '…/d/').slice(0, 60)) : '（沒有網址）'}｜使用的成員：${x.usedBy.length ? x.usedBy.map((a) => esc(a.name) + (a.hasRules ? '（有判讀規則）' : '')).join('、') : '沒有'}</div>
       <div class="sk-row" style="margin-top:6px"><button data-srced="${esc(x.name)}">✏️ 編輯</button><button data-srcdel="${esc(x.name)}">刪除</button></div></div>`; }).join('') : '<p class="help">還沒有任何資料表。</p>'}
     <div class="modal-actions"><span class="spacer"></span><button id="src_close">關閉</button></div>`);
   $('modal').classList.add('wide');
@@ -2524,104 +2536,44 @@ async function openSources() {
   };
 }
 
-// ＋ 新增／編輯資料表（第二層視窗）：填網址 → 讀取欄位 → 選類型與欄位；存成 .md
+// ＋ 新增／編輯資料表（第二層視窗）：只管「怎麼讀」——名稱、網址、分頁、標題列；讀了之後怎麼判斷，寫在各成員人設的「## 資料表：名稱」段落
 async function openSourceForm(name, { onSaved } = {}) {
   let R; try { R = await api('/api/sources'); } catch (e) { toast(e.message); return; }
   const cur = name ? R.sources.find((x) => x.name === name) : null;
-  const f = (cur && cur.form) || { mode: 'query', tabs: [], columns: [], windows: ['今日', '7天', '1個月'], doneText: '已完成', closedText: '結案' };
-  const colLines = (cols) => (cols || []).map((c) => (c.parts && c.parts.length && !(c.parts.length === 1 && c.parts[0] === c.label) ? c.label + ' = ' + c.parts.join(' + ') : c.label)).join('\n');
+  const f = (cur && cur.form) || { tabs: [], headerRow: 0 };
   const tabLines = (tabs) => (tabs || []).map((t) => (t.label && t.label !== t.spec ? t.label + ' = ' + t.spec : t.spec)).join('\n');
-  const WIN = ['今日', '7天', '14天', '1個月', '3個月'];
   openModal2(`<h2>📊 ${cur ? '編輯「' + esc(name) + '」' : '新增資料表'}</h2>
+    <p class="lead">這裡只設定<b>怎麼讀</b>這張表。讀了之後怎麼判斷（到期、未結案、要列哪些欄、怎麼回答），寫在<b>每位成員自己的人設</b>裡，同一張表可以給不同成員不同規則。</p>
     <div class="fgrid">
-      <div class="field"><label>名稱（成員設定與對話裡用這個名字）</label><input id="sf_name" value="${esc(name || '')}" maxlength="20" placeholder="例如：儀器"></div>
-      <div class="field"><label>從範例開始（選填）</label><select id="sf_ex"><option value="">—</option>${Object.keys(R.examples || {}).map((k) => `<option>${esc(k)}</option>`).join('')}</select></div>
+      <div class="field"><label>名稱（成員設定與人設裡用這個名字）</label><input id="sf_name" value="${esc(name || '')}" maxlength="20" placeholder="例如：儀器"></div>
+      <div class="field"><label>標題列（選填）</label><input id="sf_hdr" type="number" min="0" max="50" value="${esc(String(f.headerRow || ''))}" placeholder="自動判斷"><span class="help">標題在第幾列；空白＝系統自己找（跳過上面的大標）</span></div>
       <div class="field full"><label>網址（瀏覽器上方那串；Google 試算表或雲端硬碟上的 Excel 檔都可以）</label><input id="sf_url" value="${esc(f.url || '')}" placeholder="https://docs.google.com/spreadsheets/d/…"></div>
       <div class="field full"><label>分頁（一行一個；留空＝第一個分頁）</label>
-        <textarea id="sf_tabs" rows="3" placeholder="一廠&#10;三廠&#10;（報告上要換名字可以寫：三廠OOS = 三廠+OOS，+ 表示名稱同時含這些字，有好幾頁時自動挑今年的）">${esc(tabLines(f.tabs))}</textarea></div>
-      <div class="field full"><div class="sk-row"><button type="button" class="primary" id="sf_peek">📥 讀取欄位</button><span class="help">照上面的網址與分頁讀一次，看抓到哪些分頁、哪些欄位（不會存任何東西）</span></div><div id="sf_peekout" class="ln-check"></div></div>
-      <div class="field full"><label>類型</label><div class="tpl">
-        ${Object.entries(SRC_MODE).map(([k, v]) => `<label class="opt" style="margin-right:12px"><input type="radio" name="sf_mode" value="${k}" ${f.mode === k ? 'checked' : ''}> ${v}</label>`).join('')}</div>
-        <span class="help" id="sf_modehelp"></span></div>
-      <div class="field sf-due"><label>到期欄（必填）</label><input id="sf_due" list="sf_hdrs" value="${esc(f.due || '')}" placeholder="欄位字母（H）或標題"></div>
-      <div class="field sf-due"><label>名稱欄（日期壞掉時用來判斷要不要提醒）</label><input id="sf_namecol" list="sf_hdrs" value="${esc(f.nameCol || '')}"></div>
-      <div class="field sf-due"><label>完成欄（選填）＋完成字</label><div class="sk-row"><input id="sf_donecol" list="sf_hdrs" value="${esc(f.doneCol || '')}" style="flex:1"><input id="sf_donetext" value="${esc(f.doneText || '已完成')}" style="width:90px" title="這一欄含這幾個字才算完成"></div></div>
-      <div class="field sf-due"><label>分組名稱（報告第一欄，預設＝分頁）</label><input id="sf_group" value="${esc(f.groupLabel || '')}" placeholder="例如：廠別"></div>
-      <div class="field full sf-due"><label>查詢範圍</label><div class="tpl">${WIN.map((w) => `<label class="opt" style="margin-right:10px"><input type="checkbox" class="sf_win" value="${w}" ${(f.windows || []).includes(w) ? 'checked' : ''}> ${w}</label>`).join('')}</div></div>
-      <div class="field sf-open"><label>編號欄（含這些字的第一欄）</label><input id="sf_idcols" value="${esc((f.idCols || []).join(', ') || '編號, 單號, NO')}"></div>
-      <div class="field sf-open"><label>狀態欄＋結案字</label><div class="sk-row"><input id="sf_status" list="sf_hdrs" value="${esc(f.statusCol || '狀態')}" style="flex:1"><input id="sf_closed" value="${esc(f.closedText || '結案')}" style="width:80px" title="狀態「完全等於」這幾個字才算結案"></div></div>
-      <div class="field sf-open"><label>實際結案日欄（標題含這些字；從右邊找）</label><input id="sf_closekeys" value="${esc((f.closeKeys || []).join(', ') || '實際完成日, 異常排除日, 實際結案, 結案日期')}"></div>
-      <div class="field sf-open"><label>不算結案日（標題含這些字的跳過）＋期限欄</label><div class="sk-row"><input id="sf_notclose" value="${esc((f.notCloseKeys || []).join(', ') || '應結案, 預計, 預定')}" style="flex:1"><input id="sf_deadline" list="sf_hdrs" value="${esc(f.deadline || '應結案')}" style="width:110px" title="期限欄：用來算逾期天數"></div></div>
-      <div class="field full sf-cols"><label>回報時要列的欄位（一行一個；可以寫欄位字母或標題；合併用 +，例如「廠牌/型號/序號 = 廠牌 + 型號 + 序號」）</label>
-        <textarea id="sf_cols" rows="4">${esc(colLines(f.columns))}</textarea><div class="tpl" id="sf_hdrchips"></div></div>
-      <div class="field full"><label>關鍵字（訊息提到這些字才附上這份表，省 AI 額度）</label><div class="sk-row"><input id="sf_kw" value="${esc((f.keywords || []).join(', '))}" style="flex:1"><label class="opt"><input type="checkbox" id="sf_always" ${f.always ? 'checked' : ''}> 每則都附</label></div></div>
-      <div class="field full"><label>回答規則（給 AI 看的，選填）</label><textarea id="sf_rules" rows="4" placeholder="例如：先講各廠台數與合計，再一台一行列出；不要提到校驗方式">${esc(f.rules || '')}</textarea></div>
+        <textarea id="sf_tabs" rows="4" placeholder="照試算表下方分頁標籤上的字，一行一個，不用加引號&#10;報告上想換個名字可以寫：三廠OOS = 三廠+OOS（+ 表示名稱同時含這些字，有好幾頁時自動挑今年的）">${esc(tabLines(f.tabs))}</textarea></div>
+      <div class="field full"><div class="sk-row"><button type="button" class="primary" id="sf_peek">📥 讀讀看</button><span class="help">照上面的設定讀一次，看抓到哪些分頁、哪些欄位（不會存任何東西）</span></div><div id="sf_peekout" class="ln-check"></div></div>
     </div>
-    <datalist id="sf_hdrs"></datalist>
-    <p class="help">存成 <code>data/sources/名稱.md</code>（舊版自動備份）。也可以直接用記事本改那份檔案，存檔下一則訊息就生效。</p>
+    ${cur && cur.usedBy.length ? `<p class="help">使用的成員：${cur.usedBy.map((u) => esc(u.name) + (u.hasRules ? '（有判讀規則）' : '（沒有判讀規則：AI 直接看相關的資料列）')).join('、')}</p>` : ''}
+    <p class="help">存成 <code>data/sources/名稱.md</code>（舊版自動備份）。</p>
     <div class="modal-actions">${cur ? '<button id="sf_del">刪除</button>' : ''}<span class="spacer"></span><button id="sf_cancel">取消</button><button class="primary" id="sf_save">儲存</button></div>`);
-  const mode = () => (document.querySelector('input[name=sf_mode]:checked') || {}).value || 'query';
-  const MODE_HELP = {
-    query: '把表的內容交給 AI 回答（60 筆以內附全部；超過只附跟問題有關的列）。適合一般名單、聯絡表。',
-    due: '系統先算好「已逾期／今日／未來幾天內到期」再交給 AI，適合校驗、保養、效期。',
-    open: '系統逐列判斷有沒有結案（編號有刪除線＝作廢、狀態＝結案、實際結案日有值），每個分頁列出未結案件。',
-  };
-  const syncMode = () => {
-    const m = mode();
-    document.querySelectorAll('.sf-due').forEach((x) => (x.style.display = m === 'due' ? '' : 'none'));
-    document.querySelectorAll('.sf-open').forEach((x) => (x.style.display = m === 'open' ? '' : 'none'));
-    document.querySelectorAll('.sf-cols').forEach((x) => (x.style.display = m === 'query' ? 'none' : ''));
-    $('sf_modehelp').textContent = MODE_HELP[m];
-    $('sf_kw').placeholder = SRC_DEFAULT_KW[m] ? '沒填就用：' + SRC_DEFAULT_KW[m] : '例如表的名稱、裡面常被問的字';
-  };
-  document.querySelectorAll('input[name=sf_mode]').forEach((r) => (r.onchange = syncMode));
-  syncMode();
   const letter = (i) => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
-  const tabSpecs = () => $('sf_tabs').value.split('\n').map((l) => l.split('=').pop().trim()).filter(Boolean).join(',');
+  const unq = (x) => x.trim().replace(/^[「『"]|[」』"]$/g, '').trim();
+  const tabs = () => $('sf_tabs').value.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const [a, b] = l.includes('=') ? l.split('=').map(unq) : [unq(l), unq(l)]; return { label: a, spec: b || a }; });
   $('sf_peek').onclick = async () => {
     $('sf_peekout').textContent = '讀取中…（Excel 檔比較久）';
     try {
-      const r = await api('/api/sources/peek', { method: 'POST', body: JSON.stringify({ url: $('sf_url').value, tabs: tabSpecs() }) });
-      const hd = r.tabs[0] ? r.tabs[0].headers : [];
-      $('sf_hdrs').innerHTML = hd.map((h, i) => `<option value="${esc(h)}">${letter(i)} 欄</option>`).join('');
-      $('sf_hdrchips').innerHTML = hd.length ? '<span class="help">點欄位加進上面：</span>' + hd.map((h, i) => `<button type="button" data-addcol="${esc(h)}" title="${letter(i)} 欄">${letter(i)}｜${esc(h.slice(0, 16))}</button>`).join('') : '';
-      document.querySelectorAll('[data-addcol]').forEach((b) => (b.onclick = () => { const t = $('sf_cols'); t.value = (t.value.trim() ? t.value.trim() + '\n' : '') + b.dataset.addcol; }));
+      const r = await api('/api/sources/peek', { method: 'POST', body: JSON.stringify({ url: $('sf_url').value, tabs: tabs().map((t) => t.spec).join(','), headerRow: $('sf_hdr').value }) });
       $('sf_peekout').innerHTML = (r.excel ? '📗 這是 Excel 檔（' + esc(r.fileName) + '），由雲端硬碟原檔唯讀讀取。<br>' : '') +
-        r.tabs.map((t) => `✅ ${t.spec ? esc(t.spec) + ' → ' : ''}分頁「<b>${esc(t.sheet)}</b>」${t.rows} 筆｜欄位：${esc(t.headers.map((h, i) => letter(i) + ' ' + h).join('、').slice(0, 400))}`).join('<br>') +
-        (r.allSheets ? '<br><span class="help">檔案裡的分頁：' + esc(r.allSheets.join('、').slice(0, 500)) + '</span>' : '<br><span class="help">（重貼 Code.gs 1.0.9 後，這裡會列出所有分頁名稱）</span>');
+        r.tabs.map((t) => `✅ ${t.spec ? esc(t.spec) + ' → ' : ''}分頁「<b>${esc(t.sheet)}</b>」${t.rows} 筆｜欄位：${esc(t.headers.map((h, i) => letter(i) + ' ' + h).join('、').slice(0, 500))}`).join('<br>') +
+        (r.allSheets ? '<br><span class="help">檔案裡的分頁：' + esc(r.allSheets.join('、').slice(0, 600)) + '</span>' : '<br><span class="help">（重貼 Code.gs 1.0.9 後，這裡會列出所有分頁名稱）</span>');
     } catch (e) { $('sf_peekout').innerHTML = '❌ ' + esc(e.message); }
-  };
-  $('sf_ex').onchange = () => {
-    const ex = (R.examples || {})[$('sf_ex').value]; if (!ex) return;
-    if (!confirm('用「' + $('sf_ex').value + '」範例填入類型、欄位與規則？（名稱和網址保留你填的）')) { $('sf_ex').value = ''; return; }
-    document.querySelector('input[name=sf_mode][value="' + ex.mode + '"]').checked = true;
-    const set = (id, v) => { if ($(id)) $(id).value = v || ''; };
-    set('sf_tabs', tabLines(ex.tabs)); set('sf_due', ex.due); set('sf_namecol', ex.nameCol); set('sf_donecol', ex.doneCol); set('sf_donetext', ex.doneText || '已完成'); set('sf_group', ex.groupLabel);
-    set('sf_idcols', (ex.idCols || []).join(', ')); set('sf_status', ex.statusCol); set('sf_closed', ex.closedText || '結案'); set('sf_closekeys', (ex.closeKeys || []).join(', '));
-    set('sf_notclose', (ex.notCloseKeys || []).join(', ')); set('sf_deadline', ex.deadline);
-    set('sf_cols', colLines(ex.columns)); set('sf_kw', (ex.keywords || []).join(', ')); set('sf_rules', ex.rules); $('sf_always').checked = !!ex.always;
-    document.querySelectorAll('.sf_win').forEach((c) => (c.checked = (ex.windows || []).includes(c.value)));
-    syncMode();
   };
   $('sf_cancel').onclick = closeModal2;
   if ($('sf_del')) $('sf_del').onclick = async () => {
-    if (!confirm('刪除資料表「' + name + '」？用到它的成員會不再查這份表。')) return;
+    if (!confirm('刪除資料表「' + name + '」？用到它的成員會不再查這份表（人設裡的規則段落會留著，你可以自己刪）。')) return;
     try { await api('/api/sources/' + encodeURIComponent(name), { method: 'DELETE' }); toast('已刪除'); closeModal2(); if (onSaved) onSaved(null); } catch (e) { toast(e.message); }
   };
   $('sf_save').onclick = async () => {
-    const m = mode(), split = (v) => v.split(/[,，、]+/).map((x) => x.trim()).filter(Boolean);
-    const lines = (id) => $(id).value.split('\n').map((l) => l.trim()).filter(Boolean);
-    const form = {
-      url: $('sf_url').value.trim(), mode: m,
-      tabs: lines('sf_tabs').map((l) => { const [a, b] = l.includes('=') ? l.split('=').map((x) => x.trim()) : [l, l]; return { label: a, spec: b || a }; }),
-      due: $('sf_due').value, nameCol: $('sf_namecol').value, doneCol: $('sf_donecol').value, doneText: $('sf_donetext').value, groupLabel: $('sf_group').value,
-      windows: [...document.querySelectorAll('.sf_win:checked')].map((c) => c.value),
-      idCols: split($('sf_idcols').value), statusCol: $('sf_status').value, closedText: $('sf_closed').value,
-      closeKeys: split($('sf_closekeys').value), notCloseKeys: split($('sf_notclose').value), deadline: $('sf_deadline').value,
-      columns: m === 'query' ? [] : lines('sf_cols').map((l) => { const [a, b] = l.includes('=') ? l.split('=').map((x) => x.trim()) : [l, '']; return { label: a, parts: b ? b.split('+').map((x) => x.trim()).filter(Boolean) : [a] }; }),
-      keywords: split($('sf_kw').value), always: $('sf_always').checked, rules: $('sf_rules').value,
-    };
-    if (m === 'due' && !form.due.trim()) { toast('到期追蹤要填「到期欄」'); return; }
+    const form = { url: $('sf_url').value.trim(), tabs: tabs(), headerRow: parseInt($('sf_hdr').value, 10) || 0 };
     try {
       const r = await api('/api/sources/form', { method: 'PUT', body: JSON.stringify({ name: $('sf_name').value.trim(), oldName: name || '', form }) });
       toast('✅ 已儲存資料表「' + r.name + '」'); closeModal2(); if (onSaved) onSaved(r.name);

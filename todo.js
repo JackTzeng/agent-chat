@@ -263,48 +263,76 @@ function openCasesSummary(src, prof, text, now = Date.now()) {
   return out.join('\n');
 }
 
-// 📊「＋ 新增資料表」表單 ↔ 設定檔（.md）。表單只是幫你寫 .md，.md 仍然是唯一的設定來源（也可以直接改檔）
+// 📊 資料表（共用）＝只管「怎麼讀」：網址、分頁、標題列。表單只寫這幾行（data/sources/名稱.md）
+// 「讀了之後怎麼判斷」寫在各成員自己的人設裡的「## 資料表：名稱」段落（見 parseSourceSections），同一張表可以給不同成員不同規則
 const one = (v) => String(v == null ? '' : v).replace(/[\r\n]+/g, ' ').trim();
 const list = (a) => (Array.isArray(a) ? a : String(a || '').split(/[,，、]+/)).map(one).filter(Boolean);
 function renderSourceMd(f) {
-  const mode = f.mode === 'open' ? 'open' : f.mode === 'due' ? 'due' : 'query';
-  const L = ['---', '# 由 Agent Chat「📊 資料表」產生；也可以直接改這份檔案（改完存檔下一則訊息就生效）'];
+  const L = ['---', '# 資料表的連線設定（只管怎麼讀）。讀了之後怎麼判斷，寫在各成員人設裡的「## 資料表：名稱」段落'];
   if (one(f.url)) L.push('網址: ' + one(f.url));
-  const tabs = (f.tabs || []).map((t) => ({ label: one(t.label), spec: one(t.spec) || one(t.label) })).filter((t) => t.spec);
+  const tabs = (f.tabs || []).map((t) => ({ label: one(t.label).replace(/^[「『"]|[」』"]$/g, ''), spec: one(t.spec || t.label).replace(/^[「『"]|[」』"]$/g, '') })).filter((t) => t.spec);
   if (tabs.length) L.push('分頁: ' + tabs.map((t) => (t.label && t.label !== t.spec ? t.label + ' = ' + t.spec : t.spec)).join(', '));
   if (parseInt(f.headerRow, 10) > 0) L.push('標題列: ' + parseInt(f.headerRow, 10));
-  if (mode === 'due') {
-    if (one(f.due)) L.push('到期欄: ' + one(f.due));
-    if (one(f.doneCol)) L.push('完成欄: ' + one(f.doneCol), '完成字: ' + (one(f.doneText) || '已完成'));
-    if (one(f.nameCol)) L.push('名稱欄: ' + one(f.nameCol));
-    if (one(f.groupLabel)) L.push('分組名稱: ' + one(f.groupLabel));
-    if (list(f.windows).length) L.push('範圍: ' + list(f.windows).join(', '));
-  }
-  if (mode === 'open') {
-    L.push('模式: 未結案');
-    if (list(f.idCols).length) L.push('編號欄: ' + list(f.idCols).join(', '));
-    if (one(f.statusCol)) L.push('狀態欄: ' + one(f.statusCol));
-    L.push('結案字: ' + (one(f.closedText) || '結案'));
-    if (list(f.closeKeys).length) L.push('結案日欄: ' + list(f.closeKeys).join(', '));
-    if (list(f.notCloseKeys).length) L.push('不算結案日: ' + list(f.notCloseKeys).join(', '));
-    if (one(f.deadline)) L.push('期限欄: ' + one(f.deadline));
-  }
-  for (const c of f.columns || []) {
-    const parts = list(c.parts).length ? list(c.parts) : [one(c.label)], label = one(c.label) || parts.join('/');
-    if (parts[0]) L.push('欄位: ' + (parts.length === 1 && parts[0] === label ? label : label + ' = ' + parts.join(' + ')));
-  }
-  const kw = f.always ? ['*'] : list(f.keywords);
-  if (kw.length) L.push('關鍵字: ' + kw.join(', '));
-  L.push('---', String(f.rules || '').trim());
+  L.push('---', String(f.note || '').trim());
   return L.join('\n').trim() + '\n';
 }
-function formFromProfile(p) {
-  if (!p) return null;
-  return { url: p.url || p.urlRaw || '', tabs: p.tabList || [], mode: p.mode === 'open' ? 'open' : p.due ? 'due' : 'query', headerRow: p.headerRow || 0,
-    due: p.due || '', doneCol: p.doneCol || '', doneText: p.doneText || '', nameCol: p.nameCol || '', groupLabel: p.groupLabel || '', windows: p.windows || [],
-    idCols: p.idCols || [], statusCol: p.statusCol || '', closedText: p.closedText || '', closeKeys: p.closeKeys || [], notCloseKeys: p.notCloseKeys || [], deadline: p.deadline || '',
-    columns: p.columns || [], always: (p.keywords || []).includes('*'), keywords: (p.keywords || []).filter((k) => k !== '*'), rules: p.rules || '' };
+function formFromProfile(p) { return p ? { url: p.url || p.urlRaw || '', tabs: p.tabList || [], headerRow: p.headerRow || 0, note: '' } : null; }
+const hasRules = (p) => !!(p && (p.due || p.mode || (p.columns || []).length || (p.keywords || []).length || String(p.rules || '').trim()));
+
+// 成員人設裡的「## 資料表：名稱」段落 → 這位成員讀這張表的規則
+//   整理: 到期｜日期欄=H｜完成欄=P｜完成字=已完成｜名稱欄=儀器名稱｜分組=廠別｜範圍=今日, 7天, 1個月
+//   整理: 未結案｜編號欄=編號, 單號, NO｜狀態欄=狀態｜結案字=結案｜結案日欄=實際完成日, 實際結案｜不算結案日=應結案｜期限欄=應結案
+//   列出: 儀器名稱, 廠牌/型號/序號 = 廠牌 + 型號 + 序號, 預訂校驗日期 = H
+//   附上時機: 設備, 儀器, 校驗（* ＝每則都附）
+//   其餘文字＝給 AI 的回答規則
+const SECTION_RE = /^##\s*資料表[:：]\s*(.+?)\s*$/;
+function parseSourceSections(persona) {
+  const sections = new Map(), keep = [];
+  let cur = null;
+  for (const line of String(persona || '').split(/\r?\n/)) {
+    const m = SECTION_RE.exec(line);
+    if (m) { cur = { name: m[1].trim(), lines: [] }; sections.set(cur.name, cur); continue; }
+    if (cur && /^#{1,2}\s/.test(line)) cur = null; // 下一個標題：段落結束
+    if (cur) cur.lines.push(line); else keep.push(line);
+  }
+  const rules = new Map();
+  for (const [name, sec] of sections) rules.set(name, parseRuleLines(sec.lines));
+  return { rules, persona: keep.join('\n').replace(/\n{3,}/g, '\n\n').trim() };
 }
+const stripSourceSections = (persona) => parseSourceSections(persona).persona;
+function parseRuleLines(lines) {
+  const r = { columns: [], windows: [], text: [] };
+  for (const raw of lines) {
+    const kv = /^\s*(整理|列出|附上時機|標題列)\s*[:：]\s*(.*)$/.exec(raw);
+    if (!kv) { r.text.push(raw); continue; }
+    const v = kv[2].trim();
+    if (kv[1] === '列出') { for (const c of v.split(/[,，、]+/).map((x) => x.trim()).filter(Boolean)) { const [label, spec] = c.includes('=') ? c.split('=').map((x) => x.trim()) : [c, c]; r.columns.push({ label, parts: spec.split('+').map((x) => x.trim()).filter(Boolean) }); } }
+    else if (kv[1] === '附上時機') r.keywords = list(v);
+    else if (kv[1] === '標題列') r.headerRow = parseInt(v, 10) || 0;
+    else {
+      const parts = v.split(/[｜|]/).map((x) => x.trim()).filter(Boolean), kind = parts.shift() || '';
+      const f = {}; for (const p of parts) { const m = /^([^=＝]+?)\s*[=＝]\s*(.*)$/.exec(p); if (m) f[m[1].trim()] = m[2].trim(); }
+      if (/未結/.test(kind)) Object.assign(r, { mode: 'open', idCols: f['編號欄'] ? list(f['編號欄']) : undefined, statusCol: f['狀態欄'], closedText: f['結案字'],
+        closeKeys: f['結案日欄'] ? list(f['結案日欄']) : undefined, notCloseKeys: f['不算結案日'] ? list(f['不算結案日']) : undefined, deadline: f['期限欄'] });
+      else if (/到期/.test(kind)) Object.assign(r, { due: f['日期欄'] || f['到期欄'], doneCol: f['完成欄'], doneText: f['完成字'], nameCol: f['名稱欄'], groupLabel: f['分組'] || f['分組名稱'], windows: f['範圍'] ? list(f['範圍']) : [] });
+    }
+  }
+  r.rules = r.text.join('\n').trim(); delete r.text;
+  for (const k of Object.keys(r)) if (r[k] === undefined) delete r[k];
+  return r;
+}
+// 舊格式（v3.25～v3.37：規則寫在資料表設定檔裡）→ 成員人設的段落文字（遷移用）
+function rulesSectionFromProfile(name, p) {
+  const L = ['## 資料表：' + name];
+  if (p.mode === 'open') L.push('整理: 未結案' + [['編號欄', list(p.idCols).join(', ')], ['狀態欄', p.statusCol], ['結案字', p.closedText], ['結案日欄', list(p.closeKeys).join(', ')], ['不算結案日', list(p.notCloseKeys).join(', ')], ['期限欄', p.deadline]].filter(([, v]) => v).map(([k, v]) => '｜' + k + '=' + v).join(''));
+  else if (p.due) L.push('整理: 到期' + [['日期欄', p.due], ['完成欄', p.doneCol], ['完成字', p.doneCol ? p.doneText || '已完成' : ''], ['名稱欄', p.nameCol], ['分組', p.groupLabel], ['範圍', list(p.windows).join(', ')]].filter(([, v]) => v).map(([k, v]) => '｜' + k + '=' + v).join(''));
+  if ((p.columns || []).length) L.push('列出: ' + p.columns.map((c) => (c.parts.length === 1 && c.parts[0] === c.label ? c.label : c.label + ' = ' + c.parts.join(' + '))).join(', '));
+  if ((p.keywords || []).length) L.push('附上時機: ' + p.keywords.join(', '));
+  if (String(p.rules || '').trim()) L.push(String(p.rules).trim());
+  return L.join('\n');
+}
+// 連線設定（資料表）＋這位成員的規則 → 給整理函式用的設定
+function mergeProfile(conn, rule) { return { ...(conn || {}), ...(rule || {}), url: conn && conn.url, tabs: conn && conn.tabs, tabList: conn && conn.tabList, headerRow: (rule && rule.headerRow) || (conn && conn.headerRow) || 0 }; }
 
 // 這則訊息跟這份表有沒有關係：提到表的名稱或關鍵字才附。設定檔「關鍵字: *」＝每則都附；沒寫就用模式的預設
 const DEFAULT_KEYWORDS = {
@@ -313,7 +341,8 @@ const DEFAULT_KEYWORDS = {
 };
 function sourceRelevant(name, prof, text) {
   const t = String(text || '').toLowerCase();
-  const kw = prof && prof.keywords ? prof.keywords : DEFAULT_KEYWORDS[prof && prof.mode === 'open' ? 'open' : 'due'];
+  // 沒寫「附上時機」：到期／未結案用預設關鍵字；一般查詢（沒有整理方式）每則都附——寧可多附也不要該附沒附
+  const kw = prof && prof.keywords ? prof.keywords : prof && prof.mode === 'open' ? DEFAULT_KEYWORDS.open : prof && prof.due ? DEFAULT_KEYWORDS.due : ['*'];
   if (kw.includes('*')) return true;
   return [name, ...kw].some((k) => k && t.includes(String(k).toLowerCase()));
 }
@@ -444,14 +473,17 @@ function create(ctx) {
     return { excel: !!d.excel, fileName: d.fileName || '', allSheets: d.allSheets || null,
       tabs: list.map((t) => ({ spec: t.spec || '', sheet: t.sheet, headers: t.headers || [], rows: (t.rows || []).length, sample: (t.rows || []).slice(0, 3).map((r) => r.map((v) => String(v).slice(0, 40))) })) };
   }
-  async function sourcesContext(names, text, now = Date.now()) {
-    const out = [];
-    const skipped = [];
-    for (const n of (names || []).slice(0, 5)) {
-      // 省額度：訊息沒提到這份表的事就不附（agy 同一段對話每輪都會重送前面的內容，附一次就一直佔著）
-      const pf = ctx.sourceProfile ? ctx.sourceProfile(n) : null;
-      if (!sourceRelevant(n, pf, text)) { skipped.push(n); continue; }
-      try { const src = await readSource(n), prof = ctx.sourceProfile ? ctx.sourceProfile(n) : null; out.push(prof && prof.mode === 'open' ? openCasesSummary(src, prof, text, now) : prof && prof.due ? profileSummary(src, prof, text, now) : sourceSummary(src, text, now)); }
+  // 附給成員的資料表：連線設定（共用）＋這位成員人設裡的規則段落；沒有段落但舊的資料表設定檔有規則的，先沿用（相容）
+  async function sourcesContext(agentOrNames, text, now = Date.now()) {
+    const agent = Array.isArray(agentOrNames) ? null : agentOrNames;
+    const names = agent ? agent.dataSources || [] : agentOrNames || [];
+    const own = agent ? parseSourceSections(agent.persona).rules : new Map();
+    const out = [], skipped = [];
+    for (const n of names.slice(0, 5)) {
+      const conn = ctx.sourceProfile ? ctx.sourceProfile(n) : null;
+      const prof = mergeProfile(conn, own.get(n) || (hasRules(conn) ? conn : null));
+      if (!sourceRelevant(n, prof, text)) { skipped.push(n); continue; }
+      try { const src = await readSource(n); out.push(prof.mode === 'open' ? openCasesSummary(src, prof, text, now) : prof.due ? profileSummary(src, prof, text, now) : sourceSummary(src, text, now) + (prof.rules ? '\n【這份表的回答規則】\n' + prof.rules : '')); }
       catch (e) { out.push('【唯讀資料表：' + safe(n, 20) + '】系統現在讀不到（' + short(e.message, 120) + '）。請如實告訴使用者，不要猜。'); }
     }
     if (skipped.length) out.push('（另有唯讀資料表：' + skipped.map((x) => safe(x, 20)).join('、') + '；這則訊息沒提到相關的事，所以沒附。被問到時系統會自動附上，你不用去找。）');
@@ -557,4 +589,4 @@ function create(ctx) {
 // 在網頁（Agent Chat 的對話框）跟待辦管家說話的人＝管理這台 Agent Chat 的你：視同主管
 const WEB_OWNER = { userId: 'web', name: '管理員', role: '主管' };
 
-module.exports = { create, urlProblem, WEB_OWNER, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS, claimsWrite, sourceSummary, parseSourceProfile, profileSummary, openCasesSummary, sourceRelevant, renderSourceMd, formFromProfile };
+module.exports = { create, urlProblem, WEB_OWNER, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS, claimsWrite, sourceSummary, parseSourceProfile, profileSummary, openCasesSummary, sourceRelevant, renderSourceMd, formFromProfile, parseSourceSections, stripSourceSections, rulesSectionFromProfile, mergeProfile, hasRules };
