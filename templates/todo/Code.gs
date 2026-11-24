@@ -11,7 +11,7 @@
  *
  * 欄位都是用「欄位名稱」找的：你可以調整欄位順序、自己加欄位，不會壞。
  */
-var VERSION = '1.0.9';
+var VERSION = '1.0.10';
 var TASK_SHEET = '待辦', MEMBER_SHEET = '成員', SETTING_SHEET = '設定', LOG_SHEET = '紀錄';
 var TASK_HEADERS = ['編號', '事項', '負責人', '期限', '狀態', '優先', '備註', '提出人', '建立時間', '最後更新', '更新者', '完成時間'];
 var MEMBER_HEADERS = ['姓名', 'Email', '角色', 'LINE 名稱', 'LINE ID'];
@@ -273,7 +273,7 @@ function opReadSource_(req) {
     if (nr < 1 || nc < 1) { tabs.push({ spec: n, sheet: sh.getName(), headers: [], rows: [], strikes: [] }); return; }
     var r0 = sh.getRange(1, 1, nr, nc), vals = r0.getValues(), disp = r0.getDisplayValues();
     var lines = r0.getFontLines ? r0.getFontLines() : null; // 刪除線（line-through）：巡檢規則常用來表示作廢
-    var cellOf = function (i, j) { var v = vals[i][j]; return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : String(disp[i][j] == null ? '' : disp[i][j]).slice(0, 200); };
+    var cellOf = function (i, j) { var v = vals[i][j]; return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : String(disp[i][j] == null ? '' : disp[i][j]).slice(0, 300); }; // 每格最多 300 字（Agent Chat 再依規則段落的「每格字數」截）
     // 標題列：設定檔指定（第幾列）；不然在前 8 列裡找第一個「有字的格子數 ≥ 最多那列的 6 成」的列（跳過上面的大標、說明）
     var cnt = function (i) { return disp[i].filter(function (x) { return String(x).trim(); }).length; }, h = 0;
     if (headerRow >= 1 && headerRow <= nr) h = headerRow - 1;

@@ -93,9 +93,17 @@ const dayDiff = (iso, now = Date.now()) => { const a = /^(\d{4})-(\d{2})-(\d{2})
 const DUE_HEAD = /(到期|期限|效期|有效|下次|due|expir|next)/i;
 const NAME_HEAD = /(名稱|設備|儀器|品名|項目|name)/i, ID_HEAD = /(編號|代號|財產|序號|\bid\b|no\.?$)/i, STATUS_HEAD = /(狀態|status)/i;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
-function sourceSummary(src, text, now = Date.now()) {
+// 資料表的格子內容 → 給 AI 看的一行：整行只有 - ─ = 的分隔線換成「／」，再壓成一行、截到 n 字（規則段落可用「每格字數」調整）
+function cellText(v, n) {
+  const lines = String(v == null ? '' : v).replace(/[｜|]/g, '/').split(/\r?\n/).map((l) => (/^\s*[-─━=＝－—_]{3,}\s*$/.test(l) ? '／' : l.replace(/[-─━=＝－—_]{5,}/g, '／')));
+  return safe(lines.join(' ').replace(/\s*／(\s*／)*\s*/g, '／').replace(/\s+/g, ' ').replace(/^／|／$/g, '').trim(), n);
+}
+// 預設 300 字（跟 Apps Script、Excel 讀到的上限一樣）；規則段落寫「每格字數」可以改小（例如很寬的表，省額度）
+const CELL_DEFAULT = 300;
+const cellLimit = (prof) => { const n = parseInt(prof && prof.cellChars, 10); return n > 0 ? Math.min(1000, n) : CELL_DEFAULT; };
+function sourceSummary(src, text, now = Date.now(), prof = null) {
   const H = src.headers || [], R = src.rows || [];
-  const cell = (r, i) => safe(String(r[i] == null ? '' : r[i]).replace(/[｜|]/g, '/'), 60);
+  const cell = (r, i) => cellText(r[i], cellLimit(prof));
   const dueCols = H.map((h, i) => i).filter((i) => DUE_HEAD.test(H[i]) && R.filter((r) => String(r[i] || '').trim()).length && R.filter((r) => ISO_RE.test(String(r[i] || ''))).length >= 0.5 * R.filter((r) => String(r[i] || '').trim()).length);
   const nameI = H.findIndex((h) => NAME_HEAD.test(h)), idI = H.findIndex((h) => ID_HEAD.test(h)), stI = H.findIndex((h) => STATUS_HEAD.test(h));
   const label = (r) => [idI >= 0 ? cell(r, idI) : '', nameI >= 0 ? cell(r, nameI) : ''].filter(Boolean).join(' ') || [cell(r, 0), cell(r, 1)].filter(Boolean).join(' ');
@@ -180,7 +188,7 @@ function windowDays(w, now) {
 }
 function profileSummary(src, prof, text, now = Date.now()) {
   const tabs = src.tabs && src.tabs.length ? src.tabs : [{ sheet: src.sheet || src.name, headers: src.headers || [], rows: src.rows || [] }];
-  const clean = (v) => safe(String(v == null ? '' : v).replace(/[｜|]/g, '/').replace(/\s+/g, ' '), 60);
+  const clean = (v) => cellText(v, cellLimit(prof));
   const groupLabel = prof.groupLabel || '分頁';
   const wins = (prof.windows.length ? prof.windows : ['7天', '30天']).map((w) => windowDays(w, now)).filter(Boolean);
   const sec = { late: [], need: [], win: wins.map(() => []) }, missing = new Set();
@@ -222,7 +230,7 @@ function profileSummary(src, prof, text, now = Date.now()) {
 // 1 編號有刪除線＝作廢，排除；2 狀態完全等於「結案」＝已結案；3 實際結案日欄（從右邊找第一個符合的）有值＝已結案；4 其餘＝未結案
 function openCasesSummary(src, prof, text, now = Date.now()) {
   const tabs = src.tabs && src.tabs.length ? src.tabs : [{ sheet: src.sheet || src.name, headers: src.headers || [], rows: src.rows || [], strikes: [] }];
-  const clean = (v) => safe(String(v == null ? '' : v).replace(/[｜|]/g, '/').replace(/\s+/g, ' ').trim(), 50);
+  const clean = (v) => cellText(v, cellLimit(prof));
   const has = (h, keys) => (keys || []).some((k) => h.includes(k));
   const closedText = prof.closedText || '結案', closeKeys = prof.closeKeys || ['實際完成日', '異常排除日', '實際結案', '結案日期'], notKeys = prof.notCloseKeys || ['應結案', '預計', '預定'];
   const EMPTY = /^(-+|—+|\/|n\/?a|無)?$/i;
@@ -303,15 +311,17 @@ const stripSourceSections = (persona) => parseSourceSections(persona).persona;
 function parseRuleLines(lines) {
   const r = { columns: [], windows: [], text: [] };
   for (const raw of lines) {
-    const kv = /^\s*(整理|列出|附上時機|標題列)\s*[:：]\s*(.*)$/.exec(raw);
+    const kv = /^\s*(整理|列出|附上時機|標題列|每格字數)\s*[:：]\s*(.*)$/.exec(raw);
     if (!kv) { r.text.push(raw); continue; }
     const v = kv[2].trim();
     if (kv[1] === '列出') { for (const c of v.split(/[,，、]+/).map((x) => x.trim()).filter(Boolean)) { const [label, spec] = c.includes('=') ? c.split('=').map((x) => x.trim()) : [c, c]; r.columns.push({ label, parts: spec.split('+').map((x) => x.trim()).filter(Boolean) }); } }
     else if (kv[1] === '附上時機') r.keywords = list(v);
     else if (kv[1] === '標題列') r.headerRow = parseInt(v, 10) || 0;
+    else if (kv[1] === '每格字數') r.cellChars = parseInt(v, 10) || undefined;
     else {
       const parts = v.split(/[｜|]/).map((x) => x.trim()).filter(Boolean), kind = parts.shift() || '';
       const f = {}; for (const p of parts) { const m = /^([^=＝]+?)\s*[=＝]\s*(.*)$/.exec(p); if (m) f[m[1].trim()] = m[2].trim(); }
+      if (f['每格字數']) r.cellChars = parseInt(f['每格字數'], 10) || undefined; // 三種整理方式都適用；「整理: 一般｜每格字數=300」＝不做計算、只放寬字數
       if (/未結/.test(kind)) Object.assign(r, { mode: 'open', idCols: f['編號欄'] ? list(f['編號欄']) : undefined, statusCol: f['狀態欄'], closedText: f['結案字'],
         closeKeys: f['結案日欄'] ? list(f['結案日欄']) : undefined, notCloseKeys: f['不算結案日'] ? list(f['不算結案日']) : undefined, deadline: f['期限欄'] });
       else if (/到期/.test(kind)) Object.assign(r, { due: f['日期欄'] || f['到期欄'], doneCol: f['完成欄'], doneText: f['完成字'], nameCol: f['名稱欄'], groupLabel: f['分組'] || f['分組名稱'], windows: f['範圍'] ? list(f['範圍']) : [] });
@@ -483,7 +493,7 @@ function create(ctx) {
       const conn = ctx.sourceProfile ? ctx.sourceProfile(n) : null;
       const prof = mergeProfile(conn, own.get(n) || (hasRules(conn) ? conn : null));
       if (!sourceRelevant(n, prof, text)) { skipped.push(n); continue; }
-      try { const src = await readSource(n); out.push(prof.mode === 'open' ? openCasesSummary(src, prof, text, now) : prof.due ? profileSummary(src, prof, text, now) : sourceSummary(src, text, now) + (prof.rules ? '\n【這份表的回答規則】\n' + prof.rules : '')); }
+      try { const src = await readSource(n); out.push(prof.mode === 'open' ? openCasesSummary(src, prof, text, now) : prof.due ? profileSummary(src, prof, text, now) : sourceSummary(src, text, now, prof) + (prof.rules ? '\n【這份表的回答規則】\n' + prof.rules : '')); }
       catch (e) { out.push('【唯讀資料表：' + safe(n, 20) + '】系統現在讀不到（' + short(e.message, 120) + '）。請如實告訴使用者，不要猜。'); }
     }
     if (skipped.length) out.push('（另有唯讀資料表：' + skipped.map((x) => safe(x, 20)).join('、') + '；這則訊息沒提到相關的事，所以沒附。被問到時系統會自動附上，你不用去找。）');

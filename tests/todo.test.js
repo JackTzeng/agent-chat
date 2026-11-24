@@ -134,6 +134,25 @@ test('未結案模式：照 weekly-open-cases-report Skill 的四條規則判斷
   assert.match(odd, /找不到編號欄、找不到狀態欄、找不到實際結案日欄/);
 });
 
+test('每格字數（預設 300，規則段落可調）與分隔線換成「／」：三種整理方式都適用', () => {
+  const now = new Date(2026, 10, 23, 9).getTime();
+  const long = 'A 批次核對\n' + '-'.repeat(35) + '\nB 批次審核+包裝\n' + '甲'.repeat(250) + '乙'.repeat(100);
+  const sec = (txt) => todo.mergeProfile({}, todo.parseSourceSections('x\n## 資料表：T\n' + txt).rules.get('T'));
+  const due0 = sec('整理: 到期｜日期欄=A｜範圍=今日\n列出: 內容 = B'), due60 = sec('整理: 到期｜日期欄=A｜範圍=今日｜每格字數=60\n列出: 內容 = B');
+  const tab = { name: 'T', tabs: [{ sheet: 'S', headers: ['日期', '內容'], rows: [['2026-11-23', long]] }] };
+  const line = (out) => out.split('\n').find((l) => l.startsWith('- S｜'));
+  const d0 = line(todo.profileSummary(tab, due0, '', now));
+  assert.match(d0, /A 批次核對／B 批次審核\+包裝 甲{250}乙+…/, '分隔線換成「／」；預設 300 字'); assert.doesNotMatch(d0, /乙{100}/, '超過 300 字才截');
+  assert.match(line(todo.profileSummary(tab, due60, '', now)), /A 批次核對／B 批次審核\+包裝 甲+…$/, '寫了每格字數=60 就截短');
+  const open = sec('整理: 未結案｜每格字數=60\n列出: 編號, 內容');
+  const oc = todo.openCasesSummary({ name: 'T', tabs: [{ sheet: 'S', headers: ['編號', '內容', '狀態'], rows: [['N-1', long, '追蹤']], strikes: [] }] }, open, '', now);
+  assert.ok(!oc.includes('甲'.repeat(80)) && oc.includes('A 批次核對／B'));
+  const q = sec('每格字數: 120'), q2 = sec('整理: 一般｜每格字數=250');
+  assert.equal(q.cellChars, 120); assert.equal(q2.cellChars, 250); assert.ok(!q2.due && !q2.mode, '整理: 一般 不做任何計算');
+  assert.ok(todo.sourceSummary({ name: 'T', headers: ['編號', '內容'], rows: [['N-1', long]] }, '', now).includes('甲'.repeat(250)), '一般查詢預設也是 300 字');
+  assert.ok(!todo.sourceSummary({ name: 'T', headers: ['編號', '內容'], rows: [['N-1', long]] }, '', now, q).includes('甲'.repeat(150)));
+});
+
 test('normDate / fmtDue / canonOwner / safe', () => {
   const now = new Date(2026, 10, 19, 8, 52).getTime(); // 2026/11/19 週四
   assert.equal(todo.normDate('2026-11-27', now), '2026-11-27'); assert.equal(todo.normDate('2026/1/5', now), '2026-01-05');
@@ -330,7 +349,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   await J('/api/agents/todo', 'PUT', { ...cfgMd, freshEachTurn: true });
   assert.equal((await J('/api/agents/pm/md', 'POST')).file.endsWith(path.join('agents', 'PM.md')), true, '任何成員都可以開設定檔');
 
-  const ping = await J('/api/todo/ping', 'POST'); assert.equal(ping.open, 0); assert.equal(ping.version, '1.0.9');
+  const ping = await J('/api/todo/ping', 'POST'); assert.equal(ping.open, 0); assert.equal(ping.version, '1.0.10');
 
   // 2) 還沒啟用的群組：任何訊息都不處理、不回應；配對碼才能啟用
   assert.equal(await hook([gmsg('U_wang', 'ADD1')]), 200); await sleep(400);
