@@ -372,7 +372,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.39.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.40.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -2127,7 +2127,7 @@ async function openTodo() {
   try { T = await api('/api/todo'); } catch (e) { toast(e.message); return; }
   const keepUrl = modalShowing('td_close') && $('td_url') ? $('td_url').value : '';
   openModal(`<h2>📋 待辦清單（Google Sheet）</h2>
-    <p class="lead">部門待辦存在<b>你自己的 Google Sheet</b>：人可以直接改，LINE 群組裡 @待辦管家 也能登記、查詢、更新。<b>每天早上由 Google 自動寄 email 提醒</b>（負責人收自己的、主管收總表），不用 AI、不耗額度，電腦關機也會寄。</p>
+    <p class="lead">部門待辦存在<b>你自己的 Google Sheet</b>：人可以直接改，LINE 群組裡 @待辦管家 也能登記、查詢、更新。${T.email ? '<b>每天早上由 Google 自動寄 email 提醒</b>（負責人收自己的、主管收總表），不用 AI、不耗額度，電腦關機也會寄。' : ''}</p>
     <div class="ln-chips"><span class="cli-chip">${T.urlProblem ? '❌ 網址不對' : T.configured ? '✅ 已設定' : '❔ 還沒設定'}${T.urlHint && !T.urlProblem ? '：' + esc(T.urlHint) : ''}</span></div>
     ${T.urlProblem ? `<div class="sk-bad">${esc(T.urlProblem)}</div>` : ''}
     ${T.configured ? `<details class="ln-guide"><summary><b>⬆️ 更新 Google 端的程式（Code.gs）</b>：Agent Chat 更新後如果要求「重貼 Code.gs」，看這裡</summary>
@@ -2145,14 +2145,16 @@ async function openTodo() {
         <li>回 Apps Script 頁面，右上「部署 → 新增部署作業」→ 類型選齒輪「網頁應用程式」→ <b>執行身分：我</b>、<b>誰可以存取：所有人</b> → 部署 → 複製「網頁應用程式網址」（<code>https://script.google.com/macros/s/…/exec</code>）。（沒有密鑰的人打不開資料，下一步的密鑰才是鎖。）</li>
         <li>試算表選單「待辦機器人 → ② 顯示連線密鑰」，整段複製。</li>
         <li>把網址和密鑰貼到下面，按「儲存」→「🔍 測試連線」。</li>
-        <li>試算表選單「③ 安裝每日提醒信」（授權寄信）。再到「<b>成員</b>」分頁填各人的<b>姓名、Email、角色</b>（角色選「主管」的人會收到部門總表），到「<b>設定</b>」分頁填「總表收件人」（部門主管等也要收的人）。新同事第一次在群組 @待辦管家 說「我是 姓名」也會自動登記進來。</li>
+        ${T.email ? '<li>試算表選單「③ 安裝每日提醒信」（授權寄信）。再到「<b>成員</b>」分頁填各人的<b>姓名、Email、角色</b>（角色選「主管」的人會收到部門總表），到「<b>設定</b>」分頁填「總表收件人」（部門主管等也要收的人）。' : '<li>到「<b>成員</b>」分頁填各人的<b>姓名、角色</b>（也可以讓同事在群組說「我是 姓名」自己登記）。'}新同事第一次在群組 @待辦管家 說「我是 姓名」也會自動登記進來。</li>
       </ol></details>
     <div class="form-grid">
       <div class="field full"><label>Apps Script 網頁應用程式網址</label><input id="td_url" value="${esc(keepUrl)}" placeholder="${T.configured ? '已設定（' + esc(T.urlHint) + '），要換才貼' : 'https://script.google.com/macros/s/…/exec'}" autocomplete="off"></div>
       <div class="field full"><label>連線密鑰</label><input id="td_key" ${SECRET_ATTR} placeholder="${T.hasKey ? '已設定，要換才貼' : '約 40 個英數字'}"></div>
     </div>
-    <div class="sk-row"><button class="primary" id="td_save">儲存</button><button id="td_ping" ${T.configured ? '' : 'disabled'}>🔍 測試連線</button><button id="td_src" ${T.configured ? '' : 'disabled'} title="讀讀看「設定」分頁登記的唯讀資料表（例如儀器表）">📊 檢查唯讀資料表</button><button id="td_prev" ${T.configured ? '' : 'disabled'}>👀 預覽提醒信（不寄）</button><button id="td_send" ${T.configured ? '' : 'disabled'}>✉️ 現在寄一次</button>${T.configured ? '<button id="td_clear">移除設定</button>' : ''}</div>
+    <div class="sk-row"><button class="primary" id="td_save">儲存</button><button id="td_ping" ${T.configured ? '' : 'disabled'}>🔍 測試連線</button><button id="td_src" ${T.configured ? '' : 'disabled'} title="讀讀看「設定」分頁登記的唯讀資料表（例如儀器表）">📊 檢查唯讀資料表</button>${T.email ? `<button id="td_prev" ${T.configured ? '' : 'disabled'}>👀 預覽提醒信（不寄）</button><button id="td_send" ${T.configured ? '' : 'disabled'}>✉️ 現在寄一次</button>` : ''}${T.configured ? '<button id="td_clear">移除設定</button>' : ''}</div>
     <div class="ln-check" id="td_out"></div>
+    <label class="opt" style="margin-top:8px"><input type="checkbox" id="td_email" ${T.email ? 'checked' : ''}> ✉️ 使用 email 提醒（每日提醒信）</label>
+    <span class="help">關掉時：群組裡不會提到 email、「信箱 xxx」不收、這裡不顯示提醒信的按鈕與設定步驟。要真的停止寄信，還要在 Google Sheet 選單按「待辦機器人 → 移除每日提醒信」。</span>
     <p class="help">LINE 群組怎麼用：成員勾「📋 待辦清單能力」（或套用「待辦管家」範本），再到「📡 通訊管道」→「💚 LINE」④ 把群組交給它並啟用群組。同事 <code>@待辦管家 週五前 完成校正紀錄</code> 就會登記；<code>@待辦管家 我的待辦</code>、<code>#12 完成</code>、<code>#12 延到下週一</code>。成員只能改自己負責的，<b>主管</b>才能指派給別人、改別人的期限、取消事項。</p>
     <p class="help">📊 <b>唯讀資料表</b>（例如別人的儀器設備表，只讀不改）：到成員設定的「📊 唯讀資料表」填一個名稱（例如「儀器」）並儲存，再打開它的「✏️ 設定檔」寫上網址與分頁（有範例可以套用）。建立這份待辦 Sheet 的 Gmail 要打得開那份表。（也可以改在這份 Sheet 的「設定」分頁登記：A 欄 <code>唯讀資料表：儀器</code>、B 欄網址、C 欄分頁，只有登記的表能被讀，比較嚴格。）</p>
     <p class="help">⚠️ 這份清單是「方便追蹤的輔助工具」，不是正式紀錄。Google Sheet 在你的 Gmail 帳號底下，同事的訊息會經過 LINE、Google（agy）；事項裡請不要放機密資料。</p>
@@ -2180,7 +2182,8 @@ async function openTodo() {
     out('處理中…'); const r = await api('/api/todo/digest', { method: 'POST', body: JSON.stringify({ send }) });
     out(r.count ? (send ? '✅ 已寄出 ' : '會寄出 ') + r.count + ' 封：<br>' + r.mails.map((m) => '・' + esc(m.subject) + ' → ' + esc(m.to)).join('<br>') : '現在沒有需要提醒的事項（或今天是週末，設定為不寄）。');
   });
-  $('td_prev').onclick = () => digest(false); $('td_send').onclick = () => digest(true);
+  if ($('td_prev')) { $('td_prev').onclick = () => digest(false); $('td_send').onclick = () => digest(true); }
+  $('td_email').onchange = (e) => act(async () => { await api('/api/todo', { method: 'PUT', body: JSON.stringify({ email: e.target.checked }) }); toast(e.target.checked ? '已打開 email 提醒' : '已關閉 email 提醒'); openTodo(); });
   if ($('td_clear')) $('td_clear').onclick = () => { if (confirm('移除待辦清單的連線設定？Google Sheet 本身不會被刪除。')) act(async () => { await api('/api/todo', { method: 'PUT', body: JSON.stringify({ clear: true }) }); openTodo(); }); };
 }
 

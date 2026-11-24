@@ -282,11 +282,11 @@ function create(ctx) {
       if (!mm) return sysSay('👋 第一次使用？請先回覆「我是 你的姓名」（例如：@' + agent.name + ' 我是 王小明），登記後我就認得你了，再重新傳一次剛才的內容。', dn);
       try {
         const mem = await ctx.todo.register(uid, dn, mm[1].trim());
-        return sysSay('✅ 登記好了：' + mem.name + '（' + mem.role + '）。' + (mm[2].replace(/^[\s,，。.、;；:：!！?？]+/, '').trim() ? '\n後面那段話請再傳一次，我現在就認得你了。' : '') + (mem.email ? '' : '\n想收到逾期／快到期的 email 提醒，請回覆：@' + agent.name + ' 信箱 你的email'), dn || mem.name);
+        return sysSay('✅ 登記好了：' + mem.name + '（' + mem.role + '）。' + (mm[2].replace(/^[\s,，。.、;；:：!！?？]+/, '').trim() ? '\n後面那段話請再傳一次，我現在就認得你了。' : '') + (mem.email || !ctx.todo.emailOn() ? '' : '\n想收到逾期／快到期的 email 提醒，請回覆：@' + agent.name + ' 信箱 你的email'), dn || mem.name);
       } catch (e) { if (e.claimUserId && ctx.logExchange) ctx.logExchange(agent, '', '🔒 給管理員：有人想認領主管「' + mm[1] + '」被擋下。如果真的是本人，把這個 LINE ID 貼到 Sheet「成員」分頁那一列的 LINE ID 欄：' + e.claimUserId); return sysSay('⚠️ ' + e.message, dn); }
     }
     let mm;
-    if ((mm = /^信箱\s*[:：]?\s*(\S+@\S+)$/.exec(body))) { try { await ctx.todo.setEmail(uid, mm[1]); return sysSay('✅ 已記下你的 email，之後逾期或快到期會寄信提醒你。', who.name); } catch (e) { return sysSay('⚠️ ' + e.message, who.name); } }
+    if ((mm = /^信箱\s*[:：]?\s*(\S+@\S+)$/.exec(body))) { if (!ctx.todo.emailOn()) return sysSay('目前沒有使用 email 提醒。', who.name); try { await ctx.todo.setEmail(uid, mm[1]); return sysSay('✅ 已記下你的 email，之後逾期或快到期會寄信提醒你。', who.name); } catch (e) { return sysSay('⚠️ ' + e.message, who.name); } }
     // 👑 指定／取消主管：系統直接處理（不經過 AI，避免被話術騙）。只有主管、或 bot 的擁有者（一對一配對過的帳號）可以
     if ((mm = /^(設定主管|設為主管|指定主管|新增主管|取消主管|移除主管)\s*[:：]?\s*([\s\S]*)$/.exec(body))) {
       const promote = /設定|設為|指定|新增/.test(mm[1]);
@@ -302,7 +302,7 @@ function create(ctx) {
         }
         if (!target) return sysSay(tagged.length || mm[2].trim() ? '找不到這位成員：對方要先在群組說「@' + agent.name + ' 我是 姓名」登記，再來' + mm[1] + '。' : '請寫要' + mm[1] + '的人，例如：@' + agent.name + ' ' + mm[1] + ' @王小明', who.name);
         const r = await ctx.todo.setRole(target.userId, promote ? '主管' : '成員', who.name);
-        return sysSay((promote ? '👑 ' + r.name + ' 現在是主管了：可以指派事項給別人、改別人的期限、取消事項，也會收到部門總表 email（要先設定信箱）。' : '✅ ' + r.name + ' 改回一般成員。'), who.name);
+        return sysSay((promote ? '👑 ' + r.name + ' 現在是主管了：可以指派事項給別人、改別人的期限、取消事項' + (ctx.todo.emailOn() ? '，也會收到部門總表 email（要先設定信箱）。' : '。') : '✅ ' + r.name + ' 改回一般成員。'), who.name);
       } catch (e) { return sysSay('⚠️ ' + e.message, who.name); }
     }
     if (!body || /^(說明|help|\/help|\?|？)$/i.test(body)) return sysSay(groupHelp(who), who.name);

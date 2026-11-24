@@ -503,6 +503,8 @@ function create(ctx) {
     try { const r = await call('setRole', { userId, role, by }); drop(); return r.member; }
     catch (e) { if (/不認得的動作/.test(e.message)) throw new Error('Google Sheet 的 Apps Script 是舊版，請到「📋 待辦清單」照步驟重貼 Code.gs 並重新部署'); throw e; }
   }
+  // ✉️ email 提醒（每日提醒信）預設關：要用的人在「📋 待辦清單」打開；關掉時群組裡不提、也不收「信箱」
+  function emailOn() { return cfg().email === true; }
   async function setEmail(userId, email) { const r = await call('setEmail', { userId, email }); drop(); return r.member; }
 
   // 給模型看的現況：今天、發言者、成員、目前未完成的清單
@@ -545,7 +547,7 @@ function create(ctx) {
       const due = checkDue(), priority = checkPriority();
       const r = await write('add', { title, owner: own.name, due: due || '', priority: priority || '', note: short(f.note, 300), by: sender.name });
       return '✅ 已登記 #' + r.item.id + '｜' + r.item.title + '｜負責 ' + (r.item.owner || '未指定') + '｜' + (r.item.due ? '期限 ' + fmtDue(r.item.due) : '未設期限') +
-        (own.name && !own.known ? '\n（「' + own.name + '」還沒登記，收不到 email 提醒，請對方在群組回覆「我是 姓名」）' : '');
+        (own.name && !own.known ? '\n（「' + own.name + '」還沒登記' + (emailOn() ? '，收不到 email 提醒' : '') + '，請對方在群組回覆「我是 姓名」）' : '');
     }
     const id = parseInt(String(f.id ?? '').replace(/[^\d]/g, ''), 10);
     if (!id) throw new Error('要改哪一筆？請告訴我編號（例如 #12）');
@@ -577,10 +579,11 @@ function create(ctx) {
 
   function status() {
     let hint = ''; try { const u = new URL(cfg().url); hint = u.hostname + '/…' + u.pathname.split('/').filter(Boolean).slice(-2, -1)[0].slice(-6) + '/exec'; } catch {}
-    return { configured: configured(), hasKey: !!cfg().key, urlHint: hint, urlProblem: cfg().url ? urlProblem(cfg().url) : '' };
+    return { configured: configured(), hasKey: !!cfg().key, urlHint: hint, urlProblem: cfg().url ? urlProblem(cfg().url) : '', email: emailOn() };
   }
   function update(body) {
     const c = cfg();
+    if (typeof body.email === 'boolean') c.email = body.email; // ✉️ 使用 email 提醒（預設關）
     if (body.clear === true) { ctx.config.todo = {}; drop(); ctx.saveConfig(); return status(); }
     if (typeof body.url === 'string' && body.url.trim()) c.url = cleanUrl(body.url);
     if (typeof body.key === 'string' && body.key.trim()) {
@@ -593,7 +596,7 @@ function create(ctx) {
   }
   async function ping() { const r = await call('ping'); drop(); return r; }
   async function digest(send) { return call('digest', { send: !!send }); }
-  return { configured, status, update, ping, digest, call, whoIs, register, setEmail, setRole, sources, readSource, peek, sourcesContext, context, execute, items, members, drop };
+  return { configured, status, update, ping, digest, call, whoIs, register, setEmail, emailOn, setRole, sources, readSource, peek, sourcesContext, context, execute, items, members, drop };
 }
 
 // 在網頁（Agent Chat 的對話框）跟待辦管家說話的人＝管理這台 Agent Chat 的你：視同主管

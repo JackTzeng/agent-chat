@@ -154,6 +154,7 @@ test('每格字數（預設 300，規則段落可調）與分隔線換成「／�
 });
 
 test('normDate / fmtDue / canonOwner / safe', () => {
+  assert.equal(todo.create({ config: { todo: { url: 'x', key: 'y' } }, saveConfig() {} }).emailOn(), false, 'email 提醒預設關（要用才打開）');
   const now = new Date(2026, 10, 19, 8, 52).getTime(); // 2026/11/19 週四
   assert.equal(todo.normDate('2026-11-27', now), '2026-11-27'); assert.equal(todo.normDate('2026/1/5', now), '2026-01-05');
   assert.equal(todo.normDate('2026-02-31', now), null);
@@ -268,7 +269,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({
     teams: [{ id: 'main', name: '開發組', icon: '🛠', workflow: '1. 隨便', cwd: './workspace' }],
     line: { channelSecret: SECRET, channelAccessToken: TOKEN, groupAgentId: 'todo', groupWords: ['待辦'] },
-    todo: { url: gasUrl, key: g.props.KEY },
+    todo: { url: gasUrl, key: g.props.KEY, email: true }, // 這個測試要驗 email 相關流程；預設是關的（下面另外驗關掉時的行為）
     agents: [
       { id: 'pm', name: 'PM', role: 'PM', engine: 'claude', permissionMode: 'auto', cwd: './workspace', team: 'main' },
       { id: 'todo', name: '待辦管家', role: '部門待辦', engine: 'agy', model: 'gemini-3.8-flash-high', agyAccess: 'read', cwd: './workspace/todo', standalone: true, dataSources: ['儀器'] },
@@ -621,6 +622,17 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   assert.match(pF, /對方：💬（LINE 群組）小王：QUERY 第一句/);
   assert.equal((pF.match(/^(對方|你)：/gm) || []).length, 6, '只帶最近 3 來 3 往');
   await waitFor(idleTodo, 'todo idle F2');
+
+  // ✉️ email 提醒預設關（要用才打開）：關掉時群組不提 email、「信箱」不收、設定主管不提總表信
+  assert.equal((await J('/api/todo')).email, true);
+  await J('/api/todo', 'PUT', { email: false });
+  assert.equal((await J('/api/todo')).email, false);
+  assert.match(await say('U_wang', '信箱 other@example.com'), /^目前沒有使用 email 提醒。$/);
+  assert.equal(g.sheets.get('成員').data.find((r) => r[0] === '小王')[1], 'wang@example.com', '沒有寫進 Sheet');
+  assert.doesNotMatch(await say('U_newbie', '我是 新人甲'), /email/);
+  assert.doesNotMatch(await say('U_boss', '設定主管 新人甲'), /email/);
+  await say('U_boss', '取消主管 新人甲');
+  await J('/api/todo', 'PUT', { email: true });
 
   // 🐞 錯誤回報：系統直接記下來（不經過 AI），附上 bot 上一則的回覆，問題回報會一起附上
   const nFB = agyCalls();
