@@ -126,6 +126,48 @@ test('scheduler: fire once per slot, catch up once, skip overlap, quiet on 無�
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('🔒 precheck pinning: script edited after approval → not run until re-approved', async () => {
+  const AT = require('../afterturn');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-timers-pin-'));
+  const cwd = path.join(dir, 'ws'); fs.mkdirSync(path.join(cwd, 'pm'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'pm', 'check.mjs'), 'console.log("")');
+  fs.writeFileSync(path.join(cwd, 'pm', 'lib.mjs'), 'export const x = 1');
+  fs.writeFileSync(path.join(cwd, 'pm', 'data.json'), '{}');
+  const ran = [], notes = [];
+  const agent = { id: 'em', name: '阿資', cwd };
+  const s = T.create({ DATA_DIR: dir, agentById: (id) => (id === 'em' ? agent : null), dispatch: () => 'started', notify: (e) => notes.push(e),
+    runCheck: async (a, cmd) => { ran.push(cmd); return { code: 0, out: '' }; },
+    pinPrecheck: (a, cmd) => AT.commandPin(cmd, a.cwd), pinDiff: AT.pinDiff });
+  const t = s.create({ name: '派工', prompt: '檢查', agentId: 'em', schedule: { kind: 'every', minutes: 60 }, precheck: 'node pm/check.mjs' });
+  assert.deepEqual(Object.keys(s.byId(t.id).precheckPin.files), ['pm/check.mjs', 'pm/lib.mjs'], '鎖定指令檔與同一層的程式檔（資料檔不算）');
+  s.tick(s.byId(t.id).nextRun + 1000); await sleep(20);
+  assert.equal(ran.length, 1, '沒被改：照常執行');
+  // 資料檔變動不影響
+  fs.writeFileSync(path.join(cwd, 'pm', 'data.json'), '{"a":1}');
+  s.tick(s.byId(t.id).nextRun + 1000); await sleep(20);
+  assert.equal(ran.length, 2);
+  // 成員改了同一層的程式檔 → 不執行、通知一次、畫面看得到哪個檔
+  fs.writeFileSync(path.join(cwd, 'pm', 'lib.mjs'), 'require("child_process").exec("evil")');
+  s.tick(s.byId(t.id).nextRun + 1000); await sleep(20);
+  assert.equal(ran.length, 2, '被改過就不執行');
+  assert.deepEqual(s.byId(t.id).precheckBlocked.files, ['pm/lib.mjs']);
+  assert.equal(notes.length, 1); assert.match(notes[0].summary, /跟核准時不一樣/);
+  s.tick(s.byId(t.id).nextRun + 1000); await sleep(20);
+  assert.equal(ran.length, 2); assert.equal(notes.length, 1, '只通知一次');
+  // 重新核准 → 照新內容執行
+  s.approvePrecheck(t.id);
+  assert.equal(s.byId(t.id).precheckBlocked, undefined);
+  s.tick(s.byId(t.id).nextRun + 1000); await sleep(20);
+  assert.equal(ran.length, 3);
+  // 你在網頁改指令並存檔＝重新核准新指令
+  s.update(t.id, { precheck: 'node pm/lib.mjs' });
+  s.tick(s.byId(t.id).nextRun + 1000); await sleep(20);
+  assert.equal(ran.length, 4);
+  // 核准摘要：列出完整指令與執行位置
+  assert.match(s.approvalText({ agentId: 'em', prompt: '看', schedule: { kind: 'every', minutes: 60 }, precheck: 'node pm/check.mjs' }), /沙箱外.*\nnode pm\/check\.mjs\n（在 阿資 的工作資料夾/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('precheck skips the AI run when there is nothing to do; members can pause until a new task', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-timers-pre-'));
   const sent = [], notes = [];

@@ -514,7 +514,7 @@ exports.start = function start(ctx) {
     for (const id of pushRecipients()) await say(id, '👥 LINE 群組有人想使用 bot：' + req.name + '（#' + req.no + '）\n\n核准請傳 /line ' + req.no + ' ok，不要請傳 /line ' + req.no + ' no（沒核准前，他叫 bot 不會交給 AI）');
   });
   listen('timer-proposal', async ({ proposal, agent, desc }) => {
-    for (const id of pushRecipients()) await say(id, '⏰ ' + (agent ? agent.name : '成員') + ' 建議新增排程（#' + proposal.id + '）：\n' + desc + '｜' + proposal.prompt +
+    for (const id of pushRecipients()) await say(id, '⏰ ' + (agent ? agent.name : '成員') + ' 建議新增排程（#' + proposal.id + '）：\n' + (ctx.timers.approvalText ? ctx.timers.approvalText(proposal, 1000) : desc + '｜' + proposal.prompt) +
       '\n\n同意請傳 /timer ' + proposal.id + ' ok，不要請傳 /timer ' + proposal.id + ' no（也可以到網頁「⏰ 排程」修改後再核准）');
   });
   listen('proposal', async ({ proposal, fromName, scopeLabel }) => {

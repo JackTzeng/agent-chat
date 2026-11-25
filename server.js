@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.41.1';
+const VERSION = '3.41.2';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1154,10 +1154,11 @@ function startRun(agent, userText, opts = {}) {
   if (blocked) {
     run.segments.push({ type: 'error', text: quotaStop ? quotaStop + '\n要現在試試看，請你直接傳訊息給它（成功會自動解除）；或到「⚙️ 設定」按儲存解除。'
       : '⛔ 這位成員的設定不符合安全規則，暫停使用：\n' + blocked + '\n' + blockedHelp(blocked) });
+    run.outcome = 'error';
     if (quotaStop) agyQuotaNotifySender(agent, opts, userText);
     broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
     finish();
-    hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
+    hooks.emit('done', { outcome: run.outcome, agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
     if (opts.taskId) tasks.onTurnDone(agent, run, opts, null);
     setImmediate(pump);
     return;
@@ -1168,9 +1169,10 @@ function startRun(agent, userText, opts = {}) {
       '還沒安裝的話，在 PowerShell 輸入：' + how + '\n' +
       '已經安裝了，請在 PowerShell 輸入「where.exe ' + agent.engine + '」，把顯示的路徑填進 start.bat 的 ' +
       agent.engine.toUpperCase() + '_BIN。' });
+    run.outcome = 'error';
     broadcast({ agentId: agent.id, kind: 'segment', segment: run.segments[0] });
     finish();
-    hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
+    hooks.emit('done', { outcome: run.outcome, agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: '', relayTo: [] });
     if (opts.taskId) tasks.onTurnDone(agent, run, opts, null);
     setImmediate(pump);
     return;
@@ -1210,7 +1212,7 @@ function startRun(agent, userText, opts = {}) {
       // 工具結果：記進稽核紀錄；被擋下或失敗的顯示一行
       let c = e.id && run.calls.find((x) => x.id === e.id);
       if (!c) { c = { ...(e.call || {}), at: Date.now() }; run.calls.push(c); }
-      const m = /exit code[:\s]+(\d+)/i.exec(e.text || '');
+      const m = /exit(?:ed with)? code[:\s]+(\d+)/i.exec(e.text || ''); // Claude「exit code N」、agy「Command exited with code N」
       c.isError = e.isError; c.exitCode = e.exitCode != null ? e.exitCode : m ? Number(m[1]) : e.isError ? null : 0;
       c.output = security.redact(String(e.text || '').slice(0, 2000));
       if (e.isError && (agent.engine === 'claude' || agent.engine === 'agy')) {
@@ -1245,12 +1247,13 @@ function startRun(agent, userText, opts = {}) {
   proc.on('error', (err) => {
     emit({ kind: 'error', text: '無法啟動「' + cmd + '」：' + err.message + '。請確認已安裝並在終端機能執行。' });
   });
-  proc.on('close', async (code) => {
+  const onClose = async (code) => {
     if (run.interrupt && run.interrupt.pause) {
+      run.outcome = 'paused';
       // 專案暫停（立刻停）：這一輪先停下，記下來，重啟時接著做
       emit({ kind: 'tool', text: '⏸ 專案暫停，這一輪先停下（重啟後會接著做）' });
       finish();
-      hooks.emit('done', { agent, timerId: opts.timerId, stopped: true, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
+      hooks.emit('done', { outcome: run.outcome, agent, timerId: opts.timerId, stopped: true, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
       if (opts.taskId) tasks.noteInterrupt(agent, opts, before, '專案暫停');
       if (agent.engine === 'codex') { setTimeout(readCodexUsage, 500); codexContext(key); }
       const rec = state.pause[run.interrupt.pause] || pauseOf(agent);
@@ -1261,11 +1264,12 @@ function startRun(agent, userText, opts = {}) {
       return;
     }
     if (run.interrupt) {
+      run.outcome = 'interrupted';
       // 使用者插話：結束這一輪（不轉交、不判斷任務交接），馬上帶著指示接著做同一段對話
       const urgent = run.interrupt.urgent;
       emit({ kind: 'tool', text: urgent ? '⚡ 收到 ' + ((agentById(urgent.opts.from) || {}).name || '同事') + ' 的緊急派工，這一輪先暫停' : '⚡ 使用者插話，這一輪先暫停' });
       finish();
-      hooks.emit('done', { agent, timerId: null, stopped: false, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
+      hooks.emit('done', { outcome: run.outcome, agent, timerId: null, stopped: false, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId });
       if (opts.taskId) tasks.noteInterrupt(agent, opts, before, urgent ? urgent.text : run.interrupt.text);
       if (agent.engine === 'codex') setTimeout(readCodexUsage, 500);
       if (urgent) {
@@ -1289,13 +1293,15 @@ function startRun(agent, userText, opts = {}) {
       const tail = decodeOutput(run.stderr).trim().split(/\r?\n/).slice(-6).join('\n');
       emit({ kind: 'error', text: 'CLI 結束碼 ' + code + (tail ? '\n' + tail : '') });
     }
+    // 這一輪的結果：只有 ok 才能推進任務、寫入外部資料（待辦）、跑每輪結束後指令
+    run.outcome = run.stopped ? 'stopped' : (code !== 0 || run.segments.some((x) => x.type === 'error')) ? 'error' : 'ok';
     if (agent.engine === 'codex') { setTimeout(readCodexUsage, 500); codexContext(key); }
     saveState();
     if (opts.shift) {
       const note = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n').trim();
       if (!run.stopped) finishShift(agent, key, run, note);
       finish();
-      hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId, shift: true, pauseNote: !!opts.pauseNote });
+      hooks.emit('done', { outcome: run.outcome, agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: run.meta, relayTo: [], taskId: opts.taskId, shift: true, pauseNote: !!opts.pauseNote });
       pump();
       return;
     }
@@ -1306,21 +1312,24 @@ function startRun(agent, userText, opts = {}) {
     //    只做應用允許的事（例如待辦依成員權限寫表），不做管理者等級的動作：不自動轉交、不收【決策】、不收排程／Skill 提案。
     //    新的通訊管道只要在 dispatch 時標上 trust，就自動套用；不要再用管道名稱判斷
     const groupTurn = opts.trust === 'group' || !!(opts.line && opts.line.group);
-    if (!opts.taskId && replyText && !run.stopped && !agent.standalone && !groupTurn) harness.collect(agent, replyText, null);
+    const guard = (what, fn) => { try { fn(); } catch (e) { console.error(what + '失敗：', e); emit({ kind: 'tool', text: '⚠️ ' + what + '失敗：' + e.message }); } };
+    if (!opts.taskId && replyText && !run.stopped && !agent.standalone && !groupTurn) guard('整理守則建議與決策', () => harness.collect(agent, replyText, null));
     // 🧩【安裝 Skill】→ 建立安裝申請（等使用者核准，不會自動安裝）
-    if (replyText && !run.stopped && !groupTurn) for (const r of skills.fromReply(agent, replyText))
-      emit({ kind: 'tool', text: r.error ? '🧩 Skill 安裝申請沒有送出：' + r.error : '🧩 已送出 Skill 安裝申請 #' + r.id + '（' + r.source + ' → ' + r.targetLabel + '），下載檢查後等使用者核准' });
-    if (replyText && !run.stopped && !groupTurn) for (const r of timers.collect(agent, replyText, opts.taskId || null))
-      emit({ kind: 'tool', text: r.error ? '⏰ 排程建議沒有送出：' + r.error : '⏰ 已送出排程建議（' + timers.describe(r.proposal) + '），等你在「排程」核准' });
+    if (replyText && !run.stopped && !groupTurn) guard('Skill 安裝申請', () => { for (const r of skills.fromReply(agent, replyText))
+      emit({ kind: 'tool', text: r.error ? '🧩 Skill 安裝申請沒有送出：' + r.error : '🧩 已送出 Skill 安裝申請 #' + r.id + '（' + r.source + ' → ' + r.targetLabel + '），下載檢查後等使用者核准' }); });
+    if (replyText && !run.stopped && !groupTurn) guard('排程建議', () => { for (const r of timers.collect(agent, replyText, opts.taskId || null))
+      emit({ kind: 'tool', text: r.error ? '⏰ 排程建議沒有送出：' + r.error : '⏰ 已送出排程建議（' + timers.describe(r.proposal) + '），等你在「排程」核准' }); });
     // 📋 網頁對話的待辦管家：模型寫的【待辦】動作行，由系統（以管理員／主管身分）檢查後寫進 Google Sheet，結果附在這一輪後面
-    if (opts.todoWeb && replyText && !run.stopped) {
+    if (opts.todoWeb && replyText && !run.stopped && run.outcome !== 'ok') {
+      if (todoLib.parseReply(replyText).actions.length) emit({ kind: 'tool', text: '📋 這一輪沒有正常結束，待辦沒有寫入（請確認後再說一次）' });
+    } else if (opts.todoWeb && replyText && !run.stopped) {
       try {
         const parsed = todoLib.parseReply(replyText);
         if (parsed.actions.length) for (const n of await todoBook.execute(todoLib.WEB_OWNER, parsed.actions)) emit({ kind: 'tool', text: '📋 ' + n });
         else if (todoLib.claimsWrite(parsed.text)) emit({ kind: 'tool', text: '📋 （提醒：這則回覆沒有產生任何寫入，清單沒有變動，請再說一次。）' });
       } catch (e) { emit({ kind: 'tool', text: '📋 ⚠️ 寫入待辦失敗：' + e.message }); }
     }
-    const targets = opts.taskId || run.stopped || !replyText ? [] : findMentions(agent, replyText);
+    const targets = opts.taskId || run.stopped || run.outcome !== 'ok' || !replyText ? [] : findMentions(agent, replyText); // 出錯的那一輪不轉交（部分回覆可能不完整）
     if (groupTurn && targets.length) {
       emit({ kind: 'tool', text: '🔒 群組訊息觸發的這一輪不會自動轉交（沒有交給 ' + targets.map((t) => t.name).join('、') + '）。需要的話請你自己轉交。' });
       targets.length = 0;
@@ -1330,12 +1339,21 @@ function startRun(agent, userText, opts = {}) {
         targets.map((t) => t.name).join('、') + '。需要的話請你手動接手。' });
     }
     finish();
-    hooks.emit('done', { agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: run.meta, relayTo: hops < maxHops() ? targets : [], taskId: opts.taskId });
+    hooks.emit('done', { outcome: run.outcome, agent, timerId: opts.timerId, stopped: !!run.stopped, tg: opts.tg, line: opts.line, via: opts.via, segments: run.segments, meta: run.meta, relayTo: hops < maxHops() ? targets : [], taskId: opts.taskId });
 
     if (opts.taskId && !run.silentStop) tasks.onTurnDone(agent, run, opts, before);
     if (hops < maxHops()) for (const t of targets) dispatch(t, replyText, { from: agent.id, hops: hops + 1 });
     pump();
-  });
+  };
+  // 一輪結束的處理中途出錯：記下來、顯示在對話框，一定要把這一輪收尾（否則成員會一直卡在「工作中」，排在後面的訊息也跟著卡住）
+  proc.on('close', (code) => onClose(code).catch((err) => {
+    console.error('一輪結束的處理出錯（' + agent.name + '）：', err);
+    if (runs.get(agent.id) !== run) return pump();
+    if (!run.outcome || run.outcome === 'ok') run.outcome = 'error';
+    try { emit({ kind: 'error', text: '⚠️ 這一輪結束時系統處理出錯：' + err.message + '（成員已釋放，可以繼續使用）' }); } catch {}
+    try { finish(); } catch {}
+    pump();
+  }));
 
   proc.stdin.on('error', () => {});
   if (userDirect(opts) && !agent.standalone && agent.engine !== 'agy' && agent.id === process.env.AGENTCHAT_RECALL_AGENT) {
@@ -1536,6 +1554,7 @@ const timers = require('./timers').create({
   notify: (e) => hooks.emit('timer-alert', e),
   onProposal: (p, agent) => hooks.emit('timer-proposal', { proposal: p, agent, desc: timers.describe(p) }),
   runCheck: (agent, command) => runPrecheck(agent, command),
+  pinPrecheck: (agent, command) => afterturnLib.commandPin(command, agent.cwd), pinDiff: afterturnLib.pinDiff,
   isPaused: (agent) => !!pauseOf(agent),
 });
 // 前置檢查：在成員的工作資料夾跑一行指令（不花 AI 額度），60 秒逾時，連子程式一起關
@@ -2041,10 +2060,11 @@ const server = http.createServer(async (req, res) => {
         if (req.method === 'DELETE' && !m0[2]) { timers.dismissProposal(m0[1]); return send(res, 200, { ok: true }); }
       } catch (e) { return send(res, 400, { error: e.message }); }
     }
-    if ((m0 = p.match(/^\/api\/timers\/(\d+)(\/run|\/enable|\/disable)?$/))) {
+    if ((m0 = p.match(/^\/api\/timers\/(\d+)(\/run|\/enable|\/disable|\/repin)?$/))) {
       try {
         if (req.method === 'PUT' && !m0[2]) return send(res, 200, timers.update(m0[1], await readBody(req)));
         if (req.method === 'DELETE' && !m0[2]) { timers.remove(m0[1]); return send(res, 200, { ok: true }); }
+        if (req.method === 'POST' && m0[2] === '/repin') return send(res, 200, timers.approvePrecheck(m0[1])); // 🔒 看過被改的腳本後重新核准
         if (req.method === 'POST' && m0[2] === '/run') return send(res, 200, { result: timers.runNow(m0[1]) });
         if (req.method === 'POST' && m0[2]) return send(res, 200, timers.setEnabled(m0[1], m0[2] === '/enable'));
       } catch (e) { return send(res, 400, { error: e.message }); }
@@ -2714,7 +2734,7 @@ maintRef = maint;
 const afterTurn = afterturnLib.create({ security, proctree, agentById, state, saveState: () => saveState(), broadcast: (e) => broadcast(e), logExchange, appendAudit,
   redact: (t) => reporter.redact(t), decodeOutput });
 afterRef = afterTurn;
-hooks.on('done', (e) => { try { afterTurn.after(e.agent); } catch (err) { console.error('每輪後執行失敗：' + err.message); } });
+hooks.on('done', (e) => { if (e.outcome && e.outcome !== 'ok') return; try { afterTurn.after(e.agent); } catch (err) { console.error('每輪後執行失敗：' + err.message); } });
 setInterval(syncAgentMds, Number(process.env.AGENT_MD_POLL_MS) || 3000).unref();
 const tgCtx = {
   maint: () => maintRef,

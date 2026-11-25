@@ -485,9 +485,12 @@ function create(ctx) {
         // 群組（待辦清單能力）：模型寫的【待辦】動作行由系統檢查權限後實際寫進 Google Sheet，結果補在回覆後面
         const segs = e.segments || [];
         const parsed = todoLib.parseReply(segs.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n'));
-        const notes = parsed.actions.length ? await ctx.todo.execute(e.line.sender, parsed.actions) : [];
+        // 只有正常結束的那一輪才寫表（停止、插話、出錯的部分回覆不寫）
+        const okTurn = !e.outcome || e.outcome === 'ok';
+        const notes = parsed.actions.length && okTurn ? await ctx.todo.execute(e.line.sender, parsed.actions) : [];
+        if (parsed.actions.length && !okTurn) notes.push('⚠️ 這一輪沒有正常結束，清單沒有寫入，請再說一次。');
         const body = plain(parsed.text);
-        if (!parsed.actions.length && todoLib.claimsWrite(body)) notes.push('（提醒：這則回覆沒有產生任何寫入，清單沒有變動，請再說一次。）');
+        if (!parsed.actions.length && okTurn && todoLib.claimsWrite(body)) notes.push('（提醒：這則回覆沒有產生任何寫入，清單沒有變動，請再說一次。）');
         const errs = segs.filter((s) => s.type === 'error').map((s) => '⚠️ ' + s.text);
         if (notes.length && ctx.logExchange) ctx.logExchange(e.agent, '', '📋 系統寫入 Google Sheet 的結果：\n' + notes.join('\n'));
         await send(e.line.groupId, [body, ...notes, ...errs].filter(Boolean).join('\n\n') || '（沒有回覆內容）', e.line, parsed.options);
@@ -497,7 +500,7 @@ function create(ctx) {
       // 這位成員剛提出、還沒核准的排程（例如提醒）：直接在 LINE 問你要不要
       const props = ctx.timers.snapshot().proposals.filter((p) => p.agentId === e.agent.id && !announced.has(p.id));
       for (const p of props) announced.add(p.id);
-      if (props.length) text += '\n\n⏰ 等你核准：\n' + props.map((p) => '#' + p.id + ' ' + p.desc + '｜' + short(p.prompt, 60)).join('\n') + '\n回「同意 編號」就會排進去（例如：同意 ' + props[0].id + '），回「不要 編號」就不排。';
+      if (props.length) text += '\n\n⏰ 等你核准：\n' + props.map((p) => '#' + p.id + ' ' + (ctx.timers.approvalText ? ctx.timers.approvalText(p, 60) : p.desc + '｜' + short(p.prompt, 60))).join('\n') + '\n回「同意 編號」就會排進去（例如：同意 ' + props[0].id + '），回「不要 編號」就不排。';
       await send(e.line.userId, text, e.line);
     })().catch((err) => note('回覆失敗：' + err.message));
   };

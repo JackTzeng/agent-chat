@@ -264,20 +264,26 @@ exports.create = function create(ctx) {
     log(task, { type: 'turn', agent: agent.id, stage: opts.stageId, changes, text: short(text, 300) });
 
     if (run.stopped) { task.status = 'stopped'; log(task, { type: 'stopped' }); return changed(task, 'stopped', '任務已停止'); }
-    if (!text && errors.length) {
+    // 這一輪沒有正常結束（CLI 結束碼不是 0、有錯誤）：就算有部分文字也不能推進任務；部分文字保留在紀錄裡供查閱
+    if (run.outcome === 'error' || (!text && errors.length)) {
       task.status = 'error'; task.waitingFor = agent.id;
-      const msg = agent.name + ' 執行出錯：' + short(errors[0].text, 300);
+      const msg = agent.name + ' 執行出錯：' + short((errors[0] || {}).text || ('CLI 結束碼 ' + run.exitCode), 300) + (text ? '（已有部分回覆，保留在對話紀錄裡，但這一輪沒有正常結束）' : '');
       log(task, { type: 'error', agent: agent.id, text: msg });
       return changed(task, 'error', msg + '\n回覆內容會交給 ' + agent.name + ' 重試，或停止任務。');
     }
     if (ctx.harness && text) ctx.harness.collect(agent, text, task.id);
     const ho = parseHandoff(text);
     if (st && !st.next.length && text && !/[?？]\s*$/.test(text.trim())) { // 最後階段：寫完總結就完成（結尾是問句則視為在問使用者）
-      return withChecks(task, agent, st, () => {
-        task.status = 'done'; task.summary = text;
-        log(task, { type: 'done', agent: agent.id });
-        if (ctx.harness) { try { ctx.harness.addMemory('result', '任務 #' + task.id + '「' + task.title + '」完成：' + short(text, 400), agent.id, task.id, teamOf(task).id); } catch {} }
-        changed(task, 'done', text);
+      return withChecks(task, agent, st, (checks) => {
+        // 🔒 最後階段勾了「需要核准」：等使用者驗收，不自動完成
+        if (st.approval) {
+          task.status = 'awaiting_approval';
+          task.pending = { from: agent.id, fromStage: st.id, final: true, content: text, changes: task.stageChanges, ts: Date.now(),
+            checks: checks && checks.length ? ctx.harness.checksText(checks) : '' };
+          log(task, { type: 'awaiting', from: agent.id, stage: st.id, final: true });
+          return changed(task, 'awaiting_approval', agent.name + ' 完成最後階段「' + st.name + '」，等你驗收。\n\n' + short(text, 1200));
+        }
+        finishTask(task, agent, text);
       });
     }
     // 預算：任務總時間
@@ -431,9 +437,16 @@ exports.create = function create(ctx) {
     if (statuses && !statuses.includes(t.status)) throw new Error('任務 #' + t.id + ' 目前是「' + STATUS_TEXT[t.status] + '」');
     return t;
   }
+  function finishTask(task, agent, text) {
+    task.status = 'done'; task.summary = text; task.pending = null; task.waitingFor = null;
+    log(task, { type: 'done', agent: agent.id });
+    if (ctx.harness) { try { ctx.harness.addMemory('result', '任務 #' + task.id + '「' + task.title + '」完成：' + short(text, 400), agent.id, task.id, teamOf(task).id); } catch {} }
+    changed(task, 'done', text);
+  }
   function approve(id, note) {
     const t = need(id, ['awaiting_approval']);
     log(t, { type: 'approved', text: note || '' });
+    if (t.pending && t.pending.final) { finishTask(t, ctx.agentById(t.pending.from) || { id: t.pending.from }, t.pending.content); return t; }
     transition(t, t.pending, note);
     return t;
   }

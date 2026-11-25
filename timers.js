@@ -212,9 +212,17 @@ exports.create = function create(ctx) {
       ...(existing ? {} : { createdAt: Date.now(), createdBy: input.createdBy || 'user' }),
     };
   }
+  // 🔒 前置檢查的指紋：建立、修改（你在網頁存檔）、核准建議時記下；執行前比對
+  function pinOf(t) {
+    if (!t.precheck || !ctx.pinPrecheck) return null;
+    const agent = ctx.agentById(t.agentId);
+    return agent ? ctx.pinPrecheck(agent, t.precheck) : null;
+  }
+  function repin(t) { const p = pinOf(t); if (p) { t.precheckPin = { hash: p.hash, files: p.files, at: Date.now() }; } else delete t.precheckPin; delete t.precheckBlocked; }
   function create(input) {
     if (S.timers.length >= MAX_TIMERS) throw new Error('排程最多 ' + MAX_TIMERS + ' 個');
     const t = { id: ++S.seq, ...clean(input), runs: 0, done: false };
+    repin(t);
     t.nextRun = t.enabled ? computeNext(t, Date.now() - 1) : null;
     if (t.schedule.kind === 'once' && t.schedule.at < Date.now() - 60000) throw new Error('執行時間已經過了');
     S.timers.push(t); changed();
@@ -225,6 +233,7 @@ exports.create = function create(ctx) {
     if (!t) throw new Error('找不到這個排程');
     const merged = { ...t, ...input, schedule: input.schedule || t.schedule, days: input.days || t.days, hours: 'hours' in input ? input.hours : t.hours };
     Object.assign(t, clean(merged, t));
+    repin(t); // 你在網頁存檔＝看過並核准這個指令
     if (input.schedule) t.done = false;
     t.nextRun = t.enabled ? computeNext(t, Date.now() - 1) : null;
     changed();
@@ -299,6 +308,20 @@ exports.create = function create(ctx) {
     };
     // 手動執行一定叫醒成員；自動執行有前置檢查就先檢查
     if (!t.precheck || manual) return wake('');
+    // 🔒 指令或它用到的腳本跟核准時不一樣：不執行，等你重新核准（成員可能改了自己資料夾裡的腳本，這裡是在沙箱外執行）
+    const now = pinOf(t);
+    if (now && !t.precheckPin) { t.precheckPin = { hash: now.hash, files: now.files, at: Date.now() }; console.log('⏰ 排程「' + t.name + '」：第一次記下前置檢查的指紋（升級前就存在的排程）'); }
+    else if (now && now.hash !== t.precheckPin.hash) {
+      delete t.active;
+      const files = ctx.pinDiff ? ctx.pinDiff(t.precheckPin.files, now.files) : [];
+      const first = !t.precheckBlocked;
+      t.precheckBlocked = { at: Date.now(), files };
+      t.last = { ...(t.last || {}), at: Date.now(), status: 'failed', summary: '🔒 前置檢查的指令或腳本跟核准時不一樣，沒有執行' };
+      logRun({ timerId: t.id, name: t.name, agentId: agent.id, status: 'blocked', summary: '前置檢查被改過（' + (files.join('、') || '指令') + '），等重新核准' });
+      if (first && ctx.notify) ctx.notify({ timer: t, agent, status: 'failed', summary: '🔒 前置檢查「' + t.precheck + '」用到的檔案跟核准時不一樣（' + (files.join('、') || '指令') + '），這個排程先不執行。請到網頁「⏰ 排程」看過後按「重新核准」。' });
+      changed();
+      return 'blocked';
+    }
     t.active.checking = true;
     runPrecheck(t, agent).then((res) => {
       const out = String(res.out || '').trim();
@@ -430,6 +453,20 @@ exports.create = function create(ctx) {
     }
     return out;
   }
+  // 核准摘要（網頁、LINE、Telegram 共用同一份）：有前置檢查就完整列出指令、在哪裡、用誰的身分執行
+  function approvalText(p, max = 200) {
+    const agent = ctx.agentById(p.agentId);
+    const body = describe(p) + '｜' + (p.prompt.length > max ? p.prompt.slice(0, max) + '…' : p.prompt);
+    if (!p.precheck) return body;
+    return body + '\n⚠️ 附帶「先檢查」指令，核准後每次到點都會在 AI 沙箱外、以你的電腦帳號執行：\n' + p.precheck +
+      (agent ? '\n（在 ' + agent.name + ' 的工作資料夾 ' + agent.cwd + ' 執行；指令用到的腳本會鎖定指紋，之後被改過就不執行）' : '');
+  }
+  function approvePrecheck(id) {
+    const t = byId(id);
+    if (!t) throw new Error('找不到這個排程');
+    if (!t.precheck) throw new Error('這個排程沒有前置檢查');
+    repin(t); changed(); return t;
+  }
   function acceptProposal(id, edits = {}) {
     const i = S.proposals.findIndex((p) => p.id === Number(id));
     if (i < 0) throw new Error('找不到這個排程建議');
@@ -454,6 +491,6 @@ exports.create = function create(ctx) {
   const start = () => { if (!timer) { timer = setInterval(() => { try { tick(); } catch (e) { console.error('排程錯誤：' + e.message); } }, Number(process.env.AGENTCHAT_TIMER_TICK_MS) || 20000); timer.unref(); setTimeout(() => tick(), 3000).unref(); } };
   const stop = () => { clearInterval(timer); timer = null; };
 
-  return { create, update, remove, setEnabled, runNow, tick, onDone, collect, propose, acceptProposal, dismissProposal, resumePaused,
+  return { create, update, remove, setEnabled, runNow, tick, onDone, collect, propose, acceptProposal, approvePrecheck, approvalText, dismissProposal, resumePaused,
     snapshot, byId, list: () => S.timers, describe, promptHint, start, stop };
 };

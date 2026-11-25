@@ -372,7 +372,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.41.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.41.2'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1500,7 +1500,11 @@ function renderTaskbar() {
     if (t.status === 'awaiting_approval' && t.pending) {
       const p = t.pending, from = agentOf(p.from), toSt = stages.find((x) => x.id === p.toStage), to = toSt && agentOf(toSt.owner);
       const ch = (p.changes || []).map((c) => (c.kind === 'add' ? '新增 ' : c.kind === 'del' ? '刪除 ' : '修改 ') + c.path).join('\n');
-      card = `<div class="tb-card"><b>🔔 ${esc(label(from))} 要把工作交給 ${esc(to ? label(to) : '?')}（${esc(toSt ? toSt.name : '')}），需要你核准</b>
+      card = p.final ? `<div class="tb-card"><b>🔔 ${esc(label(from))} 完成了最後階段，等你驗收</b>
+        <div id="tbPending"></div>
+        ${ch ? `<div class="changes">變更的檔案：\n${esc(ch)}</div>` : ''}
+        <textarea id="tbNote" rows="2" placeholder="驗收時的補充，或退回的修改意見（退回時必填）"></textarea>
+        <div class="tb-actions"><button class="primary" id="tbApprove">✅ 驗收通過，任務完成</button><button id="tbReject">↩️ 退回給 ${esc(from ? from.name : '')}</button></div></div>` : `<div class="tb-card"><b>🔔 ${esc(label(from))} 要把工作交給 ${esc(to ? label(to) : '?')}（${esc(toSt ? toSt.name : '')}），需要你核准</b>
         <div id="tbPending"></div>
         ${ch ? `<div class="changes">變更的檔案：\n${esc(ch)}</div>` : ''}
         <textarea id="tbNote" rows="2" placeholder="核准時的補充，或退回的修改意見（退回時必填）"></textarea>
@@ -2679,11 +2683,11 @@ async function openTimers(keepScroll) {
   openModal(`<h2>⏰ 排程</h2>
     <p class="lead">定時叫成員做一件事，例如每小時檢查有沒有新的超標資料、每天早上整理昨天的帳。成員回「【無異常】」就不會打擾你；有異常或失敗才傳到 Telegram，而且和上次一樣的內容不重複發。每次執行都會用到 CLI 額度。</p>
     ${T.proposals.length ? `<h3 class="tmr-h">💡 成員提出的排程（要你核准）</h3><div class="hn-list">${T.proposals.map((p) => `
-      <div class="hn-item" data-p="${p.id}"><div class="grow"><b>${esc(p.agentName)}</b>：${esc(p.desc)}<br>${esc(p.prompt)}${p.precheck ? '<br><span class="tmr-prompt">🔍 先檢查：<code>' + esc(p.precheck) + '</code>（沒有輸出就不叫醒成員）</span>' : ''}</div>
+      <div class="hn-item" data-p="${p.id}"><div class="grow"><b>${esc(p.agentName)}</b>：${esc(p.desc)}<br>${esc(p.prompt)}${p.precheck ? '<br><span class="tmr-prompt">🔍 先檢查：<code>' + esc(p.precheck) + '</code>（沒有輸出就不叫醒成員）</span><br><span class="sk-bad" style="display:inline-block;margin-top:4px">⚠️ 這個指令核准後每次到點都會在 AI 沙箱外、以你的電腦帳號執行。看不懂指令在做什麼就不要核准；指令用到的腳本會鎖定，之後被改過就不執行。</span>' : ''}</div>
         <div class="acts"><button class="primary" data-pok>✅ 核准</button><button data-pedit>✏️ 修改後核准</button><button data-pno>略過</button></div></div>`).join('')}</div>` : ''}
     <div id="tmr_list" class="hn-list">${T.timers.length ? T.timers.map((t) => `
       <div class="hn-item ${t.enabled ? '' : 'off'}" data-t="${t.id}"><div class="grow"><b>${esc(t.name)}</b>｜${esc(t.agentName)}｜${esc(t.desc)}${t.active ? (t.active.checking ? '｜🔍 前置檢查中' : '｜⚙️ 進行中') : t.enabled && t.nextRun ? '｜下次 ' + fmtTime(t.nextRun) : t.paused ? '｜⏸ 成員暫停：' + esc(t.paused.reason) + '（有新任務時自動恢復）' : t.enabled ? '' : '｜⏸ 已暫停'}
-        <br><span class="tmr-prompt">${esc(t.prompt.slice(0, 140))}</span>${t.precheck ? `<br><span class="tmr-prompt">🔍 先檢查：<code>${esc(t.precheck)}</code>${t.checks ? '｜沒事跳過 ' + t.checks + ' 次' : ''}${t.last && t.last.checkedAt ? '｜最近檢查 ' + fmtTime(t.last.checkedAt) : ''}</span>` : ''}${last(t)}</div>
+        <br><span class="tmr-prompt">${esc(t.prompt.slice(0, 140))}</span>${t.precheck ? `<br><span class="tmr-prompt">🔍 先檢查：<code>${esc(t.precheck)}</code>${t.checks ? '｜沒事跳過 ' + t.checks + ' 次' : ''}${t.last && t.last.checkedAt ? '｜最近檢查 ' + fmtTime(t.last.checkedAt) : ''}</span>` : ''}${t.precheckBlocked ? `<br><span class="sk-bad" style="display:inline-block;margin-top:4px">🔒 前置檢查用到的檔案跟核准時不一樣（${esc((t.precheckBlocked.files || []).join('、') || '指令')}），這個排程先不執行。請打開檔案確認內容沒問題，再按「重新核准」。</span> <button data-trepin>🔒 重新核准</button>` : ''}${last(t)}</div>
         <div class="acts"><button data-trun title="現在就執行一次">▶ 執行</button><button data-ton title="${t.enabled ? '暫停' : '開啟'}">${t.enabled ? '⏸' : '▶️'}</button><button data-tedit>✏️</button><button data-tdel>🗑</button></div></div>`).join('')
       : '<p class="help">還沒有排程。按「＋ 新增排程」，或請成員在回覆中用【排程建議】提出（例如：【排程建議】每天 08:30｜整理昨天的帳）。</p>'}</div>
     ${T.runs.length ? `<details class="tmr-runs"><summary>最近的執行紀錄（${T.runs.length}）</summary>${T.runs.slice(0, 40).map((r) => `<div>${fmtTime(r.ts)}｜#${r.timerId} ${esc(r.name || '')}｜${TIMER_STATUS[r.status] || r.status}${r.manual ? '（手動）' : ''}${r.summary ? '：' + esc(String(r.summary).slice(0, 100)) : ''}${r.notified ? '｜📱 已通知' : r.quietReason ? '｜🔕 ' + esc(r.quietReason) : ''}</div>`).join('')}</details>` : ''}
@@ -2705,6 +2709,7 @@ async function openTimers(keepScroll) {
     el.querySelector('[data-ton]').onclick = () => act('/api/timers/' + t.id + (t.enabled ? '/disable' : '/enable'), 'POST');
     el.querySelector('[data-tedit]').onclick = () => openTimerForm(t);
     el.querySelector('[data-tdel]').onclick = () => { if (confirm('刪除排程「' + t.name + '」？')) act('/api/timers/' + t.id, 'DELETE'); };
+    if (el.querySelector('[data-trepin]')) el.querySelector('[data-trepin]').onclick = () => { if (confirm('確定看過「' + (t.precheckBlocked.files || []).join('、') + '」的內容沒問題？核准後會照新的內容在沙箱外執行。')) act('/api/timers/' + t.id + '/repin', 'POST'); };
   });
 }
 // t：要修改的排程；fromProposal：成員的建議（修改後核准）

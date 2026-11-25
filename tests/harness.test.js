@@ -37,6 +37,8 @@ let inp = ''; process.stdin.on('data', (d) => (inp += d)).on('end', () => {
   else if (inp.includes('【你現在負責的階段：測試】')) text = '測試通過\\n【守則建議→許代書】交接前先自己跑 node check.js\\n【交接】\\n給：克勞德先生（驗收）\\n內容：全部通過';
   else if (inp.includes('【你現在負責的階段：驗收】')) text = '全部完成，可以使用了。';
   o({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
+  // EXIT1：最後一輪有部分文字，但 CLI 結束碼 1（沒有 result）
+  if (inp.includes('EXIT1') && inp.includes('【你現在負責的階段：驗收】')) { process.exitCode = 1; return; }
   o({ type: 'result', subtype: 'success', session_id: 'c1', total_cost_usd: 0.02, duration_ms: 50, num_turns: 1, usage: { input_tokens: 100, output_tokens: 20 } });
 });
 `;
@@ -161,6 +163,21 @@ test('task flow with sensors, lessons, memory, budget and observability', { time
   h = await api('/api/harness');
   assert.equal(h.stats.budgetStops, 1);
   await api('/api/tasks/2/stop', 'POST', {});
+
+  // 任務 3：最後一輪有部分文字但 CLI 結束碼 1 → 出錯，不能算完成（以前會變成 done）
+  await api('/api/tasks', 'POST', { goal: 'EXIT1 最後一輪出錯' });
+  const err3 = await waitTask((x) => x.id === 3 && ['error', 'done'].includes(x.status), 30000);
+  assert.equal(err3.status, 'error', '出錯的那一輪不能完成任務');
+
+  // 任務 4：最後階段勾了「需要核准」→ 等使用者驗收，核准後才完成（以前會直接 done）
+  const wf4 = (await api('/api/config')).workflow;
+  wf4.stages.find((s) => s.id === 'accept').approval = true;
+  await api('/api/team', 'PUT', { workflow: wf4 });
+  await api('/api/tasks', 'POST', { goal: '做一個 ok 檔（要驗收）' });
+  const wait4 = await waitTask((x) => x.id === 4 && ['awaiting_approval', 'done'].includes(x.status), 30000);
+  assert.equal(wait4.status, 'awaiting_approval'); assert.equal(wait4.pending.final, true);
+  await api('/api/tasks/4/approve', 'POST', {});
+  await waitTask((x) => x.id === 4 && x.status === 'done');
 
   // 守則與記憶的 CRUD
   const g = await api('/api/harness/guides', 'POST', { text: '文件用繁體中文', scope: 'kai' });

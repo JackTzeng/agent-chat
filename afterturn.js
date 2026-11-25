@@ -66,6 +66,35 @@ function fingerprint(cfg, cwd) {
   return { hash: sha(Object.keys(map).sort().map((k) => k + '\0' + map[k]).join('\n')), files: map };
 }
 
+// 🔒 一行指令（排程的「先檢查」）的指紋：指令文字＋指令裡提到、存在的檔案（工作資料夾裡的檔案再加上同一層的程式檔）。
+// 核准時記下，之後每次執行前比對；成員（或被誘導）改了腳本 → 指紋不同 → 不執行，等你重新核准
+const PIN_FILE_MAX = 5 * 1024 * 1024;
+function commandPin(command, cwd) {
+  const files = new Set();
+  const inCwd = (f) => { const rel = path.relative(cwd, f); return !rel.startsWith('..') && !path.isAbsolute(rel); };
+  for (const raw of String(command || '').split(/\s+/)) {
+    const tok = raw.replace(/^["']+|["']+$/g, '');
+    if (!tok || tok.startsWith('-') || tok.length > 300) continue;
+    const full = path.resolve(cwd, tok); let st;
+    try { st = fs.statSync(full); } catch { continue; }
+    if (!st.isFile()) continue;
+    files.add(full);
+    if (!inCwd(full)) continue;
+    try { for (const n of fs.readdirSync(path.dirname(full))) { const f = path.join(path.dirname(full), n); if (PIN_EXT.test(n) && files.size < 200) { try { if (fs.statSync(f).isFile()) files.add(f); } catch {} } } } catch {}
+  }
+  const map = {};
+  for (const f of [...files].sort()) {
+    const key = (inCwd(f) ? path.relative(cwd, f) : f).replace(/\\/g, '/');
+    try { const st = fs.statSync(f); map[key] = st.size > PIN_FILE_MAX ? 'size:' + st.size + ':' + st.mtimeMs : sha(fs.readFileSync(f)); } catch { map[key] = 'missing'; }
+  }
+  return { hash: sha(String(command) + '\n' + Object.keys(map).map((k) => k + '\0' + map[k]).join('\n')), files: map };
+}
+// 跟核准時比：哪些檔案不一樣（給畫面與通知看）
+function pinDiff(oldFiles, newFiles) {
+  const keys = new Set([...Object.keys(oldFiles || {}), ...Object.keys(newFiles || {})]);
+  return [...keys].filter((k) => (oldFiles || {})[k] !== (newFiles || {})[k]).sort();
+}
+
 function create(ctx) {
   // ctx: { security, proctree, agentById, state, saveState, broadcast, logExchange, appendAudit, redact, decodeOutput }
   const S = () => { ctx.state.afterTurn = ctx.state.afterTurn || {}; return ctx.state.afterTurn; };
@@ -152,4 +181,4 @@ function create(ctx) {
   return { before, after, trigger, approve, clearAlert, status, normalize: (input, cwd) => normalize(input, cwd, ctx.security), fingerprint };
 }
 
-module.exports = { create, normalize, fingerprint, pinnedFiles };
+module.exports = { commandPin, pinDiff, create, normalize, fingerprint, pinnedFiles };
