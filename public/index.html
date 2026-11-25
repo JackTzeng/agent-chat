@@ -372,7 +372,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.40.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.41.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1579,7 +1579,7 @@ async function openHarness(tab) {
     const groups = teamsAll.map((t) => o('team:' + t.id, (t.icon || '👥') + ' ' + t.name + '（整組）')).join('');
     return `<select ${attr}><optgroup label="成員">${people}</optgroup>${stages ? `<optgroup label="階段（只在這個階段）">${stages}</optgroup>` : ''}<optgroup label="小組">${groups}</optgroup><optgroup label="全體">${o('all', '🌐 所有小組的成員')}</optgroup></select>`;
   };
-  const writable = (m) => m.engine === 'agy' ? m.agyAccess === 'write' : m.engine === 'codex' ? (m.sandbox || 'workspace-write') !== 'read-only' : ['acceptEdits', 'auto', 'bypassPermissions'].includes(m.permissionMode);
+  const writable = (m) => !!(m.caps && m.caps.acts); // 伺服器 caps.js 算的實際能力（和任務交接、LINE 群組檢查同一套）
   const checkedStages = wf.stages.filter((s) => (s.checks || []).length);
   const S = H.stats, turns = S.agents.reduce((n, a) => n + a.turns, 0), errs = S.agents.reduce((n, a) => n + a.errors, 0);
   const tabs = [['overview', '總覽'], ['guides', '📏 守則' + (H.proposals.length ? '<span class="hn-dot">' + H.proposals.length + '</span>' : '')],
@@ -1618,7 +1618,7 @@ async function openHarness(tab) {
   } else if (hnTab === 'perm') {
     body = `<table class="hn-t"><tr><th>成員</th><th>引擎</th><th>寫入權限</th><th>額外資料夾</th><th>輪流</th><th>狀態</th></tr>${members.map((m) => `<tr>
       <td>${esc(m.name)}</td><td>${esc(m.engine)}${m.model ? '<br><small>' + esc(m.model) + '</small>' : ''}</td>
-      <td>${writable(m) ? '✏️ 可修改檔案' : '👀 唯讀'}<br><small>${esc(m.engine === 'agy' ? 'access: ' + (m.agyAccess || 'read') : m.engine === 'codex' ? 'sandbox: ' + (m.sandbox || 'workspace-write') : 'mode: ' + (m.permissionMode || '預設'))}</small></td>
+      <td>${writable(m) ? '✏️ ' + esc(m.caps.label) : '👀 唯讀'}<br><small>${esc(m.engine === 'agy' ? 'access: ' + (m.agyAccess || 'read') : m.engine === 'codex' ? 'sandbox: ' + (m.sandbox || 'workspace-write') : 'mode: ' + (m.permissionMode || '預設'))}</small></td>
       <td>${(m.extraDirs || []).map((d) => esc(d.path) + (d.mode === 'ro' ? '（唯讀）' : '（可寫）')).join('<br>') || '—'}</td>
       <td>${m.takeTurns ? '🔁' : '—'}</td><td>${(agentOf(m.id) || {}).blocked ? '⛔ 暫停使用' : '✅'}</td></tr>`).join('')}</table>
       <p class="help">核准關卡：${wf.stages.filter((s) => s.approval).map((s) => '🔒 ' + esc(s.name)).join('、') || '沒有 🔒 階段'}${cfg.approveWritableHandoffs ? '；交給可寫入的成員一律要核准' : ''}。工作資料夾以外的位置要在 local-settings.txt 的 AGENT_ALLOWED_ROOTS 核准。權限在每位成員的「⚙️ 設定」修改。</p>`;

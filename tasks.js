@@ -1,5 +1,6 @@
 // 工作流程與任務：依照「流程定義」推動 PM → Coder → QA 等階段的交接
 'use strict';
+const caps = require('./caps');
 const fs = require('fs');
 const path = require('path');
 const { cleanChecks } = require('./harness');
@@ -308,8 +309,7 @@ exports.create = function create(ctx) {
       const pend = { from: agent.id, fromStage: st.id, toStage: target.id, content: ho.content || text, changes: task.stageChanges, ts: Date.now(),
         checks: checks && checks.length ? ctx.harness.checksText(checks) : '' };
       const nextAgent = ctx.agentById(target.owner);
-      const writableNext = nextAgent && (nextAgent.sandbox === 'workspace-write' ||
-        nextAgent.permissionMode === 'acceptEdits' || nextAgent.permissionMode === 'auto');
+      const writableNext = !!nextAgent && caps.of(nextAgent).acts; // 實際能力（含 agy write、Codex 沒填 sandbox 的預設可寫）
       // 團隊設定「交給可寫入的成員一律要核准」打開時，才對每次寫入型交接要求核准（預設只在 🔒 階段核准）
       const strict = typeof teamOf(task).approveWritableHandoffs === 'boolean' ? teamOf(task).approveWritableHandoffs : ctx.CONFIG.approveWritableHandoffs === true;
       if (st.approval || (strict && writableNext)) {

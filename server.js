@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.40.0';
+const VERSION = '3.41.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -17,6 +17,7 @@ const lineLib = require('./line');
 const maintLib = require('./maint');
 const afterturnLib = require('./afterturn');
 const todoLib = require('./todo');
+const caps = require('./caps');
 const harnessLib = require('./harness');
 const { createSecurity, inside, isProtectedEnvKey } = require('./security');
 
@@ -208,10 +209,13 @@ function insideApp(dir) {
 function groupRisk(a) {
   if (!a) return { block: '', warn: '' };
   let block = '';
-  if (a.engine === 'agy' && agy.access(a) !== 'read') block = '它是 agy 可寫成員（會改檔、執行指令）';
-  else if (a.engine === 'codex' && (a.sandbox || 'workspace-write') !== 'read-only') block = '它是 Codex 可寫成員（sandbox 不是 read-only）';
-  else if (a.engine === 'claude' && !(a.permissionMode === 'plan' || (a.permissionMode === 'default' && !(a.allowedTools || []).some((t) => /^(Bash|Write|Edit|MultiEdit|NotebookEdit)\b/.test(t)))))
-    block = '它是 Claude 可動手的成員（權限不是 plan，或允許了 Bash／寫檔工具）';
+  const c = caps.of(a);
+  if (c.acts) block = '它是可動手的成員（' + c.label + '）' + (a.engine === 'claude' ? '：Claude 權限要是 plan，或 default 且沒有允許 Bash／寫檔工具' : a.engine === 'codex' ? '：Codex sandbox 要是 read-only' : '：agy 要是唯讀');
+  // 它在回覆裡 @ 同事會自動轉交（群組那一輪系統也會擋，這裡先在設定時就說清楚）：能轉交的對象也都要是唯讀
+  else if (!a.standalone) {
+    const risky = allowedTargets(a).filter((t) => caps.of(t).acts);
+    if (risky.length) block = '它可以把工作轉交給可動手的同事（' + risky.map((t) => t.name).join('、') + '）。請改用獨立成員，或在它的「可以交接給誰」只留唯讀成員';
+  }
   const dirs = [a.cwd || './workspace', ...(a.extraDirs || []).map((d) => d.path)].filter(insideApp);
   const warn = dirs.length ? '它的資料夾（' + dirs.join('、') + '）在 Agent Chat 程式資料夾裡；群組裡的人可能誘導它去讀 agents.json 等設定檔。建議把工作資料夾改到程式資料夾外面（例如 C:\\AgentChatData\\todo）' : '';
   return { block, warn };
@@ -1298,11 +1302,13 @@ function startRun(agent, userText, opts = {}) {
 
     // 自由聊天模式：回覆裡 @ 了同事 → 自動轉交（任務模式改由流程決定）
     const replyText = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n');
-    if (!opts.taskId && replyText && !run.stopped && !agent.standalone) harness.collect(agent, replyText, null);
+    // 🔒 LINE 群組觸發的這一輪：群組裡任何人都能說話，回覆可能是被誘導寫出來的 → 不自動轉交、不收【決策】、不收排程／Skill 提案
+    const groupTurn = !!(opts.line && opts.line.group);
+    if (!opts.taskId && replyText && !run.stopped && !agent.standalone && !groupTurn) harness.collect(agent, replyText, null);
     // 🧩【安裝 Skill】→ 建立安裝申請（等使用者核准，不會自動安裝）
-    if (replyText && !run.stopped) for (const r of skills.fromReply(agent, replyText))
+    if (replyText && !run.stopped && !groupTurn) for (const r of skills.fromReply(agent, replyText))
       emit({ kind: 'tool', text: r.error ? '🧩 Skill 安裝申請沒有送出：' + r.error : '🧩 已送出 Skill 安裝申請 #' + r.id + '（' + r.source + ' → ' + r.targetLabel + '），下載檢查後等使用者核准' });
-    if (replyText && !run.stopped) for (const r of timers.collect(agent, replyText, opts.taskId || null))
+    if (replyText && !run.stopped && !groupTurn) for (const r of timers.collect(agent, replyText, opts.taskId || null))
       emit({ kind: 'tool', text: r.error ? '⏰ 排程建議沒有送出：' + r.error : '⏰ 已送出排程建議（' + timers.describe(r.proposal) + '），等你在「排程」核准' });
     // 📋 網頁對話的待辦管家：模型寫的【待辦】動作行，由系統（以管理員／主管身分）檢查後寫進 Google Sheet，結果附在這一輪後面
     if (opts.todoWeb && replyText && !run.stopped) {
@@ -1313,6 +1319,10 @@ function startRun(agent, userText, opts = {}) {
       } catch (e) { emit({ kind: 'tool', text: '📋 ⚠️ 寫入待辦失敗：' + e.message }); }
     }
     const targets = opts.taskId || run.stopped || !replyText ? [] : findMentions(agent, replyText);
+    if (groupTurn && targets.length) {
+      emit({ kind: 'tool', text: '🔒 LINE 群組訊息觸發的這一輪不會自動轉交（沒有交給 ' + targets.map((t) => t.name).join('、') + '）。需要的話請你自己轉交。' });
+      targets.length = 0;
+    }
     if (targets.length && hops >= maxHops()) {
       emit({ kind: 'tool', text: '⛔ 已達自動轉交上限（' + maxHops() + ' 次），沒有再轉給 ' +
         targets.map((t) => t.name).join('、') + '。需要的話請你手動接手。' });
@@ -1984,6 +1994,7 @@ const publicAgent = (a) => ({
   stalled: runs.has(a.id) ? !!runs.get(a.id).stalled : false, paused: !!pauseOf(a),
   ctx: ctxInfo(state.lastKey[a.id] || a.id, a.engine), shiftNo: ((state.shifts[state.lastKey[a.id] || a.id] || {}).n) || 1,
   shifting: runs.has(a.id) ? !!runs.get(a.id).opts.shift : false,
+  caps: caps.of(a),
 });
 
 const server = http.createServer(async (req, res) => {
@@ -2293,7 +2304,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/roles' && req.method === 'GET') return send(res, 200, { roles: loadRoleTemplates(), dir: path.join(DATA_DIR, 'roles') });
     if (p === '/api/config' && req.method === 'GET') {
       return send(res, 200, {
-        agents: CONFIG.agents.map(maskAgent), teams: CONFIG.teams.map((t) => ({ ...t, sharedWith: sharedWith(t) })), workflow: CONFIG.teams[0].workflow, maxRelayHops: maxHops(), urgentCooldownMin: urgentCooldownMs() / 60000, approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
+        agents: CONFIG.agents.map((a) => ({ ...maskAgent(a), caps: caps.of(a) })), teams: CONFIG.teams.map((t) => ({ ...t, sharedWith: sharedWith(t) })), workflow: CONFIG.teams[0].workflow, maxRelayHops: maxHops(), urgentCooldownMin: urgentCooldownMs() / 60000, approveWritableHandoffs: CONFIG.approveWritableHandoffs === true,
         harness: harness.cfg(),
         options: { engines: ENGINES, efforts: EFFORTS, permissionModes: PERMISSION_MODES, sandboxes: SANDBOXES, agyAccess: AGY_ACCESS },
         appRoot: ROOT, safeRoot: security.safeRoot,
