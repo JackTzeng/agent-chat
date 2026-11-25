@@ -658,6 +658,22 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   assert.equal((pF.match(/^(對方|你)：/gm) || []).length, 6, '只帶最近 3 來 3 往');
   await waitFor(idleTodo, 'todo idle F2');
 
+  // 💬 對話範圍（v3.42.0）：每個群組各用自己的對話與近期紀錄，群組 G1 說過的話不會帶進 G2
+  const pairG2 = (await J('/api/line/pair', 'POST')).pairing;
+  assert.equal(await hook([gmsg('U_wang', pairG2.code, { mention: false, gid: 'G2' })]), 200);
+  await waitFor(async () => (await J('/api/line')).groups === 2, 'G2 enabled');
+  await say('U_wang', 'QUERY 第三句', { gid: 'G2' });
+  const pG2 = lastAgyPrompt();
+  assert.doesNotMatch(pG2, /第一句|第二句/, 'G1 的對話不會出現在 G2');
+  await waitFor(idleTodo, 'todo idle G2');
+  await say('U_wang', 'QUERY 第四句');
+  const pG1 = lastAgyPrompt();
+  assert.match(pG1, /第二句/); assert.doesNotMatch(pG1, /第三句/, 'G2 的對話也不會出現在 G1');
+  await waitFor(idleTodo, 'todo idle G1 back');
+  assert.ok((await J('/api/history/todo')).history.some((m) => m.scope === 'lg:G2'), '紀錄標上對話範圍（網頁上你仍然看得到全部）');
+  assert.equal(await hook([{ type: 'leave', webhookEventId: 'e-leave-g2', source: { type: 'group', groupId: 'G2' } }]), 200);
+  await waitFor(async () => (await J('/api/line')).groups === 1, 'G2 removed');
+
   // ✉️ email 提醒預設關（要用才打開）：關掉時群組不提 email、「信箱」不收、設定主管不提總表信
   assert.equal((await J('/api/todo')).email, true);
   await J('/api/todo', 'PUT', { email: false });

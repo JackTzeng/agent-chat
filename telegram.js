@@ -185,7 +185,8 @@ async function toStandalone(ctx, cl, agent, text, msg, botKey) {
   // 使用者自己打的「【傳訊者：…】」不算數，只有系統加的那一個是真的
   if (who) body = '【傳訊者：' + who + '】' + body.replace(/【\s*傳訊者/g, '[傳訊者');
   cl.typing(chatId);
-  const r = ctx.dispatch(agent, body, { via: 'telegram', tg: { bot: botKey, chatId }, tgUser: userId });
+  const inGroup = msg.chat && (msg.chat.type === 'group' || msg.chat.type === 'supergroup');
+  const r = ctx.dispatch(agent, body, { via: 'telegram', tg: { bot: botKey, chatId }, tgUser: userId, ...(inGroup ? { scope: 'tg:' + chatId } : {}) }); // 群組各用自己的對話
   if (r === 'queued') await cl.say(chatId, '⏳ ' + agent.name + ' 還在處理上一則，這則已排隊');
 }
 const IMG_EXT = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
@@ -454,6 +455,8 @@ exports.start = function start(ctx) {
     if (failed && failed.failedAt && Date.now() - failed.failedAt < 300000) await say(chatId, '⚠️ 新版本無法啟動，已自動退回原本的版本 v' + (failed.fromVersion || version) + '。可以傳 /report 產生問題回報給 Claude 看。');
     else await say(chatId, '✅ ' + (text || '重新啟動') + '完成，現在是 v' + version);
   });
+  // 💾 狀態檔損毀、已還原並暫停整個專案
+  listen('state-recovered', async ({ text }) => { for (const id of pushRecipients()) await say(id, '⚠️ ' + text); });
   // ⚡ 緊急派工
   listen('urgent', async ({ from, to, status, reason }) => {
     const text = status === 'interrupted' ? '⚡ ' + label(from) + ' 緊急插話給 ' + label(to) + '，它先暫停手上的事處理，之後會回頭做原本的工作'

@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.41.2';
+const VERSION = '3.42.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -303,10 +303,39 @@ reloadAgents();
 const pending = [];     // 排隊中的訊息：{ agentId, text, opts }（存在 state.queue，程式重新啟動後會接著排）
 let queueFrozen = false; // 關閉程式時：先把排隊內容存好，之後不再被「停止」清掉
 let state = { sessions: {} };
-try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
+// 💾 狀態檔：先寫暫存檔再換名（寫到一半斷電，原本的檔還在）；每次正常啟動留一份 state.json.bak（上次能讀的版本）。
+// 讀不到（檔案壞掉）時：壞檔改名保留、用 .bak 還原，**整個專案先暫停**並提示你——不會靜靜當成全新狀態（以前這樣會讓暫停自動解除、排隊與待核准清空）
+let stateRecovered = null; // { from: 'bak'|'empty', corruptFile }
+function writeFileAtomic(file, text) {
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, text);
+  try { fs.renameSync(tmp, file); }
+  catch (e) { if (e.code !== 'EPERM' && e.code !== 'EACCES' && e.code !== 'EBUSY') throw e; fs.writeFileSync(file, text); try { fs.unlinkSync(tmp); } catch {} } // Windows：防毒軟體鎖住檔案時退回直接寫
+}
+(() => {
+  let raw = null;
+  try { raw = fs.readFileSync(STATE_FILE, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') console.error('⚠️ 讀不到狀態檔：' + e.message); }
+  if (raw == null) {
+    // 沒有 state.json：第一次啟動（或你自己刪掉想重來）→ 全新狀態；只有第一次存檔換名前就當機時，才用留下的 .tmp
+    try { state = JSON.parse(fs.readFileSync(STATE_FILE + '.tmp', 'utf8')); } catch {}
+    return;
+  }
+  try { state = JSON.parse(raw); try { fs.copyFileSync(STATE_FILE, STATE_FILE + '.bak'); } catch {} return; } catch {}
+  const corruptFile = STATE_FILE + '.corrupt-' + new Date().toISOString().replace(/[:.]/g, '-');
+  try { fs.renameSync(STATE_FILE, corruptFile); } catch {}
+  try { state = JSON.parse(fs.readFileSync(STATE_FILE + '.bak', 'utf8')); stateRecovered = { from: 'state.json.bak', corruptFile }; }
+  catch { state = { sessions: {} }; stateRecovered = { from: 'empty', corruptFile }; }
+})();
+if (!state || typeof state !== 'object' || Array.isArray(state)) state = { sessions: {} };
+state.sessions = state.sessions || {};
+if (stateRecovered) {
+  const why = stateRecovered.from === 'empty' ? '狀態檔損毀，而且沒有可用的備份，排隊訊息、待核准提案、對話接續都沒有了' : '狀態檔損毀，已用上次啟動時的備份還原（之後的變動可能遺失）';
+  state.pause = { all: { at: Date.now(), reason: '💾 ' + why + '。請確認沒問題後按「▶ 重啟」', mode: 'finish', via: 'system', phase: 'paused', restart: [], notes: 0 } };
+  console.error('⚠️ ' + why + (stateRecovered.corruptFile ? '；壞掉的檔案保留在 ' + stateRecovered.corruptFile : '') + '。整個專案先暫停（自動派工、排程都不會跑），確認後按「▶ 重啟」。');
+}
 const saveState = () => {
   if (!queueFrozen) state.queue = pending.map((x) => ({ agentId: x.agentId, text: x.text, opts: x.opts }));
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  writeFileAtomic(STATE_FILE, JSON.stringify(state, null, 2));
 };
 state.ctx = state.ctx || {};       // 每段對話（session）目前大約用了多少 context：{ tokens, window, at }
 state.shifts = state.shifts || {}; // 換班：{ n: 第幾班, due: 下一輪前要換班, note: 交班筆記, pendingNote: 新的一班還沒讀到筆記 }
@@ -318,15 +347,33 @@ state.hdr = state.hdr || {};       // 開頭說明去重：每段對話最近完
 state.pause = state.pause || {};   // ⏸ 專案暫停：範圍（'all' 或小組 id）→ { at, reason, mode, phase, restart: [被中途停下的工作], notes: 份數 }
 for (const k of Object.keys(state.pause)) if (state.pause[k].phase === 'pausing') state.pause[k].phase = 'paused'; // 重新啟動時正在跑的都已經停了
 if (Array.isArray(state.queue)) for (const q of state.queue) if (q && q.agentId && q.opts) pending.push(q);
+if (stateRecovered) saveState(); // 還原的內容（含暫停）馬上存回，不要等下一次變動
 
-const histFile = (id) => path.join(HIST_DIR, id + '.json');
+// 💬 對話紀錄：每位成員一個 .jsonl，一則一行只往後加（以前每加一則就把整份讀出來重寫，越聊越慢，寫到一半壞掉整份就不見）。
+// 讀的時候壞掉的那一行跳過；超過 10 MB 就把舊的改名成 <id>.1.jsonl（保留一份）重新開始
+const histFile = (id) => path.join(HIST_DIR, id + '.jsonl');
+const HIST_ROTATE_BYTES = Number(process.env.HIST_ROTATE_BYTES) || 10 * 1024 * 1024;
+function migrateHistory(id) {
+  const old = path.join(HIST_DIR, id + '.json');
+  if (!fs.existsSync(old)) return;
+  if (!fs.existsSync(histFile(id))) {
+    try { const arr = JSON.parse(fs.readFileSync(old, 'utf8')); writeFileAtomic(histFile(id), (Array.isArray(arr) ? arr : []).map((m) => JSON.stringify(m) + '\n').join('')); }
+    catch (e) { console.error('⚠️ 舊的對話紀錄 ' + id + '.json 讀不到，保留原檔：' + e.message); try { fs.renameSync(old, old + '.corrupt'); } catch {} return; }
+  }
+  try { fs.renameSync(old, old + '.migrated'); } catch {}
+}
 function loadHistory(id) {
-  try { return JSON.parse(fs.readFileSync(histFile(id), 'utf8')); } catch { return []; }
+  migrateHistory(id);
+  let raw; try { raw = fs.readFileSync(histFile(id), 'utf8'); } catch { return []; }
+  const out = [];
+  for (const line of raw.split('\n')) { if (!line.trim()) continue; try { out.push(JSON.parse(line)); } catch {} }
+  return out;
 }
 function appendHistory(id, msg) {
-  const h = loadHistory(id);
-  h.push(msg);
-  fs.writeFileSync(histFile(id), JSON.stringify(h, null, 2));
+  migrateHistory(id);
+  const f = histFile(id);
+  try { if (fs.statSync(f).size > HIST_ROTATE_BYTES) fs.renameSync(f, path.join(HIST_DIR, id + '.1.jsonl')); } catch {}
+  fs.appendFileSync(f, JSON.stringify(msg) + '\n');
 }
 
 // ---------- SSE：把事件推給所有開著的頁面（電腦、手機同步）----------
@@ -919,7 +966,9 @@ function cancelTask(taskId) {
 }
 
 // 任務、排程（ownSession）各用自己的對話，不會擠在和你的主對話裡
-const sessionKey = (agent, opts) => (opts.taskId ? 't' + opts.taskId + ':' + agent.id : opts.sessionTag ? opts.sessionTag + ':' + agent.id : agent.id);
+// 對話範圍（opts.scope）：每個群組各一段對話（LINE 群組 'lg:<群組>'、Telegram 群組 'tg:<群組>'），不跟你本人（網頁、私聊）的對話混在一起，
+// 一個群組裡說過的話不會出現在另一個群組或你的對話裡。沒有 scope＝你本人的主對話
+const sessionKey = (agent, opts) => (opts.taskId ? 't' + opts.taskId + ':' + agent.id : opts.sessionTag ? opts.sessionTag + ':' + agent.id : opts.scope ? opts.scope + ':' + agent.id : agent.id);
 
 function buildCommand(agent, sid, prompt) {
   security.checkAgent(agent);
@@ -1078,8 +1127,9 @@ function agyMeta(meta, ms) {
 
 // 🧹 每則訊息開新對話：只帶最近幾則對話的摘要（讓它接得上「下週一」這種補答），不會一輪一輪越堆越長、越吃額度
 const RECENT_TURNS = 3;
-function recentTurnsText(agent) {
-  const h = loadHistory(agent.id).filter((m) => (m.role === 'user' && m.text) || (m.role === 'assistant' && (m.segments || []).some((s) => s.type === 'text')));
+function recentTurnsText(agent, scope) {
+  // 只取同一個對話範圍的紀錄（群組 A 的話不會帶進群組 B；舊的、沒有標範圍的紀錄只算你本人的對話）
+  const h = loadHistory(agent.id).filter((m) => (m.scope || null) === (scope || null)).filter((m) => (m.role === 'user' && m.text) || (m.role === 'assistant' && (m.segments || []).some((s) => s.type === 'text')));
   const lines = [];
   for (const m of h.slice(-RECENT_TURNS * 2)) {
     const t = m.role === 'user' ? m.text : m.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n');
@@ -1102,7 +1152,7 @@ function startRun(agent, userText, opts = {}) {
     }
   }
   if (agent.freshEachTurn && !opts.shift && !opts.resume && !opts.taskId && !opts.fresh && !opts.system) {
-    opts = { ...opts, fresh: true, shown: opts.shown || userText }; userText = recentTurnsText(agent) + userText;
+    opts = { ...opts, fresh: true, shown: opts.shown || userText }; userText = recentTurnsText(agent, opts.scope) + userText;
   }
   const key = sessionKey(agent, opts);
   // 排程（沒勾「記得上次的對話」）每次都開全新的對話，不會一個鐘頭一輪地越堆越長
@@ -1110,7 +1160,7 @@ function startRun(agent, userText, opts = {}) {
   // 對話太長：先換班（寫交班筆記），原本的訊息排在換班之後
   if (!opts.shift && !opts.interject && !opts.resume && !agent.blocked && shiftDue(agent, key)) {
     pending.unshift({ agentId: agent.id, text: userText, opts });
-    return startRun(agent, '（換班）', { taskId: opts.taskId, stageId: opts.stageId, sessionTag: opts.sessionTag, shift: true, system: true });
+    return startRun(agent, '（換班）', { taskId: opts.taskId, stageId: opts.stageId, sessionTag: opts.sessionTag, scope: opts.scope, shift: true, system: true });
   }
   state.lastKey[agent.id] = key;
   const sid = state.sessions[key];
@@ -1127,7 +1177,7 @@ function startRun(agent, userText, opts = {}) {
   if (!blocked) {
     try { ({ cmd, args, stdinPrompt } = buildCommand(agent, sid, prompt)); } catch (e) { blocked = e.message; }
   }
-  const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system, interject: opts.interject, shift: opts.shift, timerId: opts.timerId };
+  const meta = { from: opts.from, via: opts.via, cc: opts.cc, taskId: opts.taskId, stageId: opts.stageId, system: opts.system, interject: opts.interject, shift: opts.shift, timerId: opts.timerId, scope: opts.scope };
 
   const shownText = opts.pauseNote ? '⏸ 專案暫停：請成員寫交班筆記，重啟後換成全新的對話接手' : opts.shift ? '🔄 換班：' + (opts.manualShift ? '你要求換班' : '對話已經很長') + '，請成員寫交班筆記，之後換成全新的對話接手' : opts.shown || userText;
   appendHistory(agent.id, { role: 'user', text: shownText, ...meta, ts: Date.now() });
@@ -1140,7 +1190,7 @@ function startRun(agent, userText, opts = {}) {
   broadcast({ agentId: agent.id, kind: 'busy', busy: true });
 
   const finish = () => {
-    appendHistory(agent.id, { role: 'assistant', segments: run.segments, meta: run.meta, taskId: opts.taskId, ts: Date.now() });
+    appendHistory(agent.id, { role: 'assistant', segments: run.segments, meta: run.meta, taskId: opts.taskId, scope: opts.scope, ts: Date.now() });
     if (agent.standalone) writeAudit(agent, run, userText);
     const errSeg = run.segments.find((x) => x.type === 'error');
     harness.record({ type: 'run', agent: agent.id, engine: agent.engine, model: agent.model || '', taskId: opts.taskId || null, stage: opts.stageId || null,
@@ -1258,7 +1308,7 @@ function startRun(agent, userText, opts = {}) {
       if (agent.engine === 'codex') { setTimeout(readCodexUsage, 500); codexContext(key); }
       const rec = state.pause[run.interrupt.pause] || pauseOf(agent);
       if (rec && opts.via !== 'timer') rec.restart.push({ agentId: agent.id, text: userText,
-        opts: { taskId: opts.taskId, stageId: opts.stageId, sessionTag: opts.sessionTag, hops: opts.hops, via: opts.via, tg: opts.tg } });
+        opts: { taskId: opts.taskId, stageId: opts.stageId, sessionTag: opts.sessionTag, scope: opts.scope, trust: opts.trust, hops: opts.hops, via: opts.via, tg: opts.tg } });
       saveState();
       pump();
       return;
@@ -1274,14 +1324,14 @@ function startRun(agent, userText, opts = {}) {
       if (agent.engine === 'codex') setTimeout(readCodexUsage, 500);
       if (urgent) {
         // 先做緊急的事（照它自己的任務與對話），做完再接著原本被打斷的工作
-        const back = { taskId: opts.taskId, stageId: opts.stageId, hops: opts.hops, via: opts.via, resume: true, system: true, timerId: opts.timerId, sessionTag: opts.sessionTag };
+        const back = { taskId: opts.taskId, stageId: opts.stageId, hops: opts.hops, via: opts.via, resume: true, system: true, timerId: opts.timerId, sessionTag: opts.sessionTag, scope: opts.scope, trust: opts.trust };
         pending.unshift({ agentId: agent.id, text: (run.interrupt.text ? run.interrupt.text + '\n\n' : '') + '（緊急的事處理完了，請繼續原本的工作）', opts: back });
         pending.unshift({ agentId: agent.id, text: urgent.text, opts: urgent.opts });
         pump();
         return;
       }
       startRun(agentById(agent.id) || agent, run.interrupt.text,
-        { taskId: opts.taskId, stageId: opts.stageId, hops: opts.hops, via: run.interrupt.via, interject: true, timerId: opts.timerId, sessionTag: opts.sessionTag });
+        { taskId: opts.taskId, stageId: opts.stageId, hops: opts.hops, via: run.interrupt.via, interject: true, timerId: opts.timerId, sessionTag: opts.sessionTag, scope: opts.scope, trust: opts.trust });
       pump();
       return;
     }
@@ -1527,8 +1577,10 @@ setInterval(() => {
 
 function resetAgent(id) {
   if (runs.has(id)) return false;
-  delete state.sessions[id]; delete state.ctx[id]; delete state.hdr[id]; delete state.shifts[id]; delete state.lastKey[id]; saveState();
-  try { fs.unlinkSync(histFile(id)); } catch {}
+  delete state.sessions[id]; delete state.ctx[id]; delete state.hdr[id]; delete state.shifts[id]; delete state.lastKey[id];
+  for (const k of Object.keys(state.sessions)) if (/^(lg|tg):/.test(k) && k.endsWith(':' + id)) { delete state.sessions[k]; delete state.ctx[k]; delete state.hdr[k]; delete state.shifts[k]; } // 群組的對話一起重來
+  saveState();
+  for (const f of [histFile(id), path.join(HIST_DIR, id + '.1.jsonl'), path.join(HIST_DIR, id + '.json')]) { try { fs.unlinkSync(f); } catch {} }
   broadcast({ agentId: id, kind: 'reset' });
   return true;
 }
@@ -2670,6 +2722,7 @@ server.on('error', (e) => {
 });
 server.listen(PORT, HOST, () => {
   updater.afterStart((n, failed) => hooks.emit('restarted', { ...n, version: VERSION, failed }));
+  if (stateRecovered) setTimeout(() => hooks.emit('state-recovered', { text: state.pause.all ? state.pause.all.reason.replace(/^💾 /, '') : '狀態檔損毀，已還原' }), 3000).unref();
   timers.start();
   if (pending.length) { console.log('   📮 接著處理上次留下的 ' + pending.length + ' 則排隊訊息' + (Object.keys(state.pause).length ? '（專案暫停中，按「▶ 重啟」才會放行）' : '')); setTimeout(pump, 1500).unref(); }
   for (const scope of Object.keys(state.pause)) console.log('   ⏸ ' + pauseScopeLabel(scope) + '暫停中');
