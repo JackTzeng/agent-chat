@@ -26,7 +26,7 @@
 ## 開發慣例
 - 不加任何 npm 相依套件；Node 18+。
 - **跑測試**：逐檔跑 `node --test tests/xxx.test.js`（`node --test tests/` 會失敗）。全部：`for f in tests/*.test.js; do node --test $f; done`。目前 25 檔全過。
-- 新增 `.js` 模組時，要把檔名加進**每個測試檔的 FILES／檔案清單**（它們會把原始碼複製到暫存資料夾跑真的伺服器），否則 `require` 找不到。
+- 測試會把原始碼複製到暫存資料夾跑真的伺服器：清單由 `tests/_files.js` 自動列出 repo 根目錄所有 `.js`（`copyServer(dir, [其他檔案])`），新增模組**不用**再改測試檔；非 .js 的檔案（例如 `agents.example.json`、`templates/…`）才要在呼叫時列出。
 - 測試用「假 CLI」（`tests/*.test.js` 裡的 MOCK_*）加真的伺服器，環境變數：`CLAUDE_BIN`／`CODEX_BIN`／`AGY_BIN`、`AGENTCHAT_NO_UPDATE_CHECK=1`、`AGENT_ENV_ALLOWLIST`。
 - 發版：同步改 `server.js` 的 `VERSION`、`public/index.html` 的 `UI_VERSION`、`CHANGELOG.md`（最上面加一節）、必要時 `README.md`；commit 訊息用「v3.x.y：做了什麼」；推到 `main`。使用者在網頁按「⬆️ 更新／重新啟動」取得新版（updater 遇到已追蹤檔案被改動會拒絕更新，所以**開發請用另一個 clone，不要直接改正在跑的那個資料夾**）。
 - `start.bat` 只能有 ASCII（cmd 讀 UTF-8 中文會出錯）；個人設定放 `local-settings.txt`（不進 git）。

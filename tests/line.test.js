@@ -11,6 +11,7 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const line = require('../line');
 const source = path.resolve(__dirname, '..');
+const { copyServer } = require('./_files');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('helpers: signature, plain text, chunking, reply text, public url', () => {
@@ -86,8 +87,7 @@ test('LINE bot through the real server', { timeout: 120000 }, async (t) => {
   const apiBase = 'http://127.0.0.1:' + api.address().port;
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-line-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'afterturn.js', 'xlsx.js', 'agents.example.json'])
-    fs.copyFileSync(path.join(source, f), path.join(dir, f));
+  copyServer(dir, ['agents.example.json']);
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({
     teams: [{ id: 'main', name: '開發組', icon: '🛠', workflow: '1. 隨便', cwd: './workspace' }],

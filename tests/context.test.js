@@ -8,6 +8,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const source = path.resolve(__dirname, '..');
+const { copyServer } = require('./_files');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const MOCK_CLAUDE = `#!/usr/bin/env node
@@ -38,8 +39,7 @@ async function freePort() {
 
 test('header dedupe + context load + fresh timer sessions', { timeout: 90000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-ctx-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'afterturn.js', 'xlsx.js', 'agents.example.json'])
-    fs.copyFileSync(path.join(source, f), path.join(dir, f));
+  copyServer(dir, ['agents.example.json']);
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   const mk = (id, role, extra = {}) => ({ id, name: id, avatar: '🤖', role, engine: 'claude', permissionMode: 'acceptEdits', cwd: './workspace', team: 'main', ...extra });
   fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({

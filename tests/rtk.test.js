@@ -8,6 +8,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { spawn, spawnSync } = require('node:child_process');
 const source = path.resolve(__dirname, '..');
+const { copyServer } = require('./_files');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 假的 rtk：依環境變數決定 hook 的回應
@@ -66,8 +67,7 @@ let inp = ''; process.stdin.on('data', (d) => (inp += d)).on('end', () => {
 
 test('only checked Claude team members get the rtk hook', { timeout: 60000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-rtk-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'afterturn.js', 'xlsx.js', 'rtkhook.js', 'agents.example.json'])
-    fs.copyFileSync(path.join(source, f), path.join(dir, f));
+  copyServer(dir, ['agents.example.json']);
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   const mk = (id, extra = {}) => ({ id, name: id, avatar: '🤖', role: 'x', engine: 'claude', permissionMode: 'acceptEdits', cwd: './workspace', team: 'main', ...extra });
   fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({

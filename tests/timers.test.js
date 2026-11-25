@@ -11,6 +11,7 @@ const net = require('node:net');
 const { spawn } = require('node:child_process');
 const T = require('../timers');
 const source = path.resolve(__dirname, '..');
+const { copyServer } = require('./_files');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const at = (y, mo, d, h, mi) => new Date(y, mo - 1, d, h, mi, 0, 0).getTime();
 const DAYMS = 86400000;
@@ -216,8 +217,7 @@ async function freePort() {
 
 test('timers through the real server: own session, quiet result, alert, proposals', { timeout: 60000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-timers-e2e-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'afterturn.js', 'xlsx.js', 'agents.example.json'])
-    fs.copyFileSync(path.join(source, f), path.join(dir, f));
+  copyServer(dir, ['agents.example.json']);
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, 'claude'), MOCK_CLAUDE, { mode: 0o755 });

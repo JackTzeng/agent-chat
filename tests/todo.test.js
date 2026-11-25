@@ -14,6 +14,7 @@ const todo = require('../todo');
 const { makeEnv, iso, Sheet } = require('./helpers/fakegoogle');
 const { makeXlsx } = require('./helpers/makexlsx');
 const source = path.resolve(__dirname, '..');
+const { copyServer } = require('./_files');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('parseReply: action lines, options, aliases; text is stripped of markers', () => {
@@ -261,8 +262,7 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   await new Promise((r) => api.listen(0, '127.0.0.1', r));
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-todo-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'afterturn.js', 'xlsx.js', 'agents.example.json'])
-    fs.copyFileSync(path.join(source, f), path.join(dir, f));
+  copyServer(dir, ['agents.example.json']);
   fs.mkdirSync(path.join(dir, 'templates', 'todo'), { recursive: true }); fs.copyFileSync(path.join(source, 'templates', 'todo', 'Code.gs'), path.join(dir, 'templates', 'todo', 'Code.gs'));
   fs.cpSync(path.join(source, 'templates', 'rules'), path.join(dir, 'templates', 'rules'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');

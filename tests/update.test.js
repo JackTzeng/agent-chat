@@ -9,6 +9,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { spawn, spawnSync } = require('node:child_process');
 const source = path.resolve(__dirname, '..');
+const { SERVER_FILES } = require('./_files');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const GIT_ENV = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
 const git = (cwd, ...args) => {
@@ -22,8 +23,7 @@ async function freePort() {
     s.listen(0, '127.0.0.1', () => { const port = s.address().port; s.close(() => resolve(port)); });
   });
 }
-const FILES = ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'afterturn.js', 'xlsx.js', 'launcher.js',
-  'agents.example.json', 'start.bat', 'local-settings.example.txt', '.gitignore'];
+const FILES = [...SERVER_FILES, 'agents.example.json', 'start.bat', 'local-settings.example.txt', '.gitignore'];
 
 test('one-click update, start.bat migration, rollback, restart and problem report', { timeout: 120000 }, async (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-update-'));

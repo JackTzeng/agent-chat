@@ -8,6 +8,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const source = path.resolve(__dirname, '..');
+const { copyServer } = require('./_files');
 
 const MOCK_CLAUDE = `#!/usr/bin/env node
 const fs = require('fs');
@@ -50,8 +51,7 @@ async function freePort() {
 
 test('auto shift writes a handover note and starts a fresh session', { timeout: 60000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-shift-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'afterturn.js', 'xlsx.js', 'agents.example.json'])
-    fs.copyFileSync(path.join(source, f), path.join(dir, f));
+  copyServer(dir, ['agents.example.json']);
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, 'claude'), MOCK_CLAUDE, { mode: 0o755 });

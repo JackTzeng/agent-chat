@@ -9,6 +9,7 @@ const net = require('node:net');
 const { spawn } = require('node:child_process');
 const cs = require('../clistatus');
 const source = path.resolve(__dirname, '..');
+const { copyServer } = require('./_files');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('parse claude mcp list: names + status only, never the command or URL', () => {
@@ -80,8 +81,7 @@ async function freePort() {
 
 test('CLI status through the real server', { timeout: 60000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-cli-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'afterturn.js', 'xlsx.js', 'agents.example.json'])
-    fs.copyFileSync(path.join(source, f), path.join(dir, f));
+  copyServer(dir, ['agents.example.json']);
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({
     teams: [{ id: 'main', name: '開發組', icon: '🛠', workflow: '1. 隨便' }],

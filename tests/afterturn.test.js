@@ -8,6 +8,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const source = path.resolve(__dirname, '..');
+const { copyServer } = require('./_files');
 
 // 假的 Claude（工作資料夾＝成員的資料夾）：ADD＝在沙箱裡記帳（改帳本檔）；TAMPER＝偷改同步程式；其他＝只回話
 const MOCK_CLAUDE = `#!/usr/bin/env node
@@ -37,8 +38,7 @@ async function freePort() { return new Promise((resolve, reject) => { const s = 
 
 test('每輪結束後執行（沙箱外）', { skip: process.platform === 'win32' ? '測試用 sh 腳本' : false, timeout: 90000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-afterturn-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'maint.js', 'xlsx.js', 'outbox.js', 'afterturn.js'])
-    fs.copyFileSync(path.join(source, f), path.join(dir, f));
+  copyServer(dir);
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   const ws = path.join(dir, 'workspace', 'lb');
   fs.mkdirSync(path.join(ws, 'app', 'data'), { recursive: true });

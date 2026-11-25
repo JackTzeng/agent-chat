@@ -10,6 +10,7 @@ const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { extractTags, cleanChecks } = require('../harness');
 const source = path.resolve(__dirname, '..');
+const { copyServer } = require('./_files');
 
 test('extractTags finds lesson and decision lines only at line start', () => {
   const t = extractTags('做完了\n【守則建議】交接前先跑測試\n【守則建議→許代書】先讀 PLAN.md\n【守則建議（給 開發組）】用 UTF-8\n- **【決策】** 用 SQLite\n文中提到【決策】不算');
@@ -62,8 +63,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('task flow with sensors, lessons, memory, budget and observability', { timeout: 60000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-harness-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'afterturn.js', 'xlsx.js', 'agents.example.json'])
-    fs.copyFileSync(path.join(source, f), path.join(dir, f));
+  copyServer(dir, ['agents.example.json']);
   fs.mkdirSync(path.join(dir, 'public'));
   fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   { // 假 CLI 只看這一輪的提示詞，所以每輪都要完整送開頭說明（開頭去重在 context.test.js 測）

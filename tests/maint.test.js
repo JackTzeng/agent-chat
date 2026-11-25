@@ -10,6 +10,7 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 const maintLib = require('../maint');
 const source = path.resolve(__dirname, '..');
+const { copyServer } = require('./_files');
 
 // 假的 Claude：維修工程師收到 FIX 就把設定檔加一條規則、整份提出；BADFILE 想改 agents.json；其他成員就回 OK
 const MOCK_CLAUDE = `#!/usr/bin/env node
@@ -56,8 +57,7 @@ test('diff 與提案格式', () => {
 
 test('維修工程師：看得到資料、只能提案、核准才寫入（網頁與 Telegram）', { timeout: 60000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-maint-'));
-  for (const f of ['server.js', 'security.js', 'tasks.js', 'telegram.js', 'harness.js', 'diag.js', 'updater.js', 'localsettings.js', 'proctree.js', 'timers.js', 'agy.js', 'clistatus.js', 'skills.js', 'line.js', 'todo.js', 'outbox.js', 'maint.js', 'afterturn.js', 'xlsx.js'])
-    fs.copyFileSync(path.join(source, f), path.join(dir, f));
+  copyServer(dir);
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({
     teams: [{ id: 'main', name: '開發組', icon: '🛠', workflow: '1. 隨便', cwd: './workspace' }],
