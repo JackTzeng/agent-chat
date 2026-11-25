@@ -144,3 +144,39 @@ test('remembered login survives a restart; normal login and password change do n
   again.logoutAll(r4);
   assert.equal(restart().authenticated(r4), false);
 });
+
+test('🔒 idle lock: no user activity for IDLE_LOCK_MIN → session expires; touch keeps it alive; 0 disables', async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const { auth } = fixture({ IDLE_LOCK_MIN: String(300 / 60000) }); // 300 毫秒
+  assert.equal(auth.idleLockMin, 300 / 60000);
+  const r = req({ host: 'localhost:3939' });
+  r.headers.cookie = auth.login(r, 'testing-password-at-least-16', true).cookie.split(';')[0];
+  assert.equal(auth.authenticated(r), true);
+  for (let i = 0; i < 4; i++) { await sleep(150); auth.touch(r); }
+  assert.equal(auth.authenticated(r), true, '有在操作（touch）就不會上鎖');
+  await sleep(150); assert.equal(auth.authenticated(r), true); // 背景查詢（只檢查登入）本身不算操作，不會延長
+  await sleep(300);
+  assert.equal(auth.authenticated(r), false, '超過閒置時間 → 要重新輸入密碼（記住這台電腦也一樣）');
+  // 預設 10 分鐘；0＝關閉
+  assert.equal(fixture().auth.idleLockMin, 10);
+  const off = fixture({ IDLE_LOCK_MIN: '0' }).auth;
+  assert.equal(off.idleLockMin, 0);
+  const r2 = req({ host: 'localhost:3939' });
+  r2.headers.cookie = off.login(r2, 'testing-password-at-least-16').cookie.split(';')[0];
+  await sleep(50); assert.equal(off.authenticated(r2), true);
+});
+
+test('🔒 idle lock survives a restart: remembered login keeps its last-activity time', () => {
+  const { root, auth, env } = fixture();
+  const r = req({ host: 'localhost:3939' });
+  r.headers.cookie = auth.login(r, 'testing-password-at-least-16', true).cookie.split(';')[0];
+  const file = path.join(root, 'data', 'remembered-logins.json');
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.ok(saved.sessions[0].la > 0, '存下最後操作時間');
+  const restart = () => createSecurity({ root, dataDir: path.join(root, 'data'), host: '0.0.0.0', port: 3939, env, log: () => {} });
+  assert.equal(restart().authenticated(r), true, '剛操作過：重開（例如一鍵更新）後不用重新輸入');
+  saved.sessions[0].la = Date.now() - 11 * 60000; fs.writeFileSync(file, JSON.stringify(saved));
+  assert.equal(restart().authenticated(r), false, '重開前已經閒置超過 10 分鐘：要重新輸入');
+  delete saved.sessions[0].la; fs.writeFileSync(file, JSON.stringify(saved));
+  assert.equal(restart().authenticated(r), false, '舊版存的記住登入（沒有操作時間）：要重新輸入一次');
+});

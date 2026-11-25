@@ -157,6 +157,9 @@
   .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: none; align-items: flex-start; justify-content: center;
     z-index: 20; overflow-y: auto; padding: 32px 12px; }
   .modal-bg.open { display: flex; }
+  /* 🔒 閒置上鎖：除了密碼視窗，其他畫面全部藏起來（不是只蓋一層半透明） */
+  body.locked > :not(#modalBg) { display: none !important; }
+  body.locked #modalBg { background: var(--bg, #f3f4f6); }
   .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; width: min(640px, 100%); padding: 20px 22px;
     box-shadow: 0 12px 40px rgba(0,0,0,.18); }
   .modal h2 { margin: 0 0 4px; font-size: 18px; }
@@ -372,7 +375,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.42.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.42.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -386,8 +389,51 @@ function toast(msg) {
 async function api(path, opts = {}) {
   const r = await fetch(withToken(path), { credentials: 'same-origin', ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } });
   const j = await r.json().catch(() => ({}));
+  if (r.status === 401 && IDLE.ready) lockScreen(); // 伺服器那邊已經上鎖（閒置太久、或在別的地方登出）
   if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
   return j;
+}
+// ---------- 🔒 閒置自動上鎖（預設 10 分鐘沒有操作；local-settings.txt 的 IDLE_LOCK_MIN 可改，0＝關閉）----------
+// 只有你真的在操作（打字、點選、移動滑鼠、捲動、觸控）才算；畫面自己更新不算。伺服器也會照同樣規則失效登入，不只是畫面蓋起來
+const IDLE = { ms: 0, lastInput: Date.now(), lastTouch: Date.now(), ready: false, locked: false };
+function startIdleLock(min) {
+  IDLE.ms = (Number(min) || 0) * 60000; IDLE.ready = true;
+  if (!IDLE.ms) return;
+  const mark = () => { IDLE.lastInput = Date.now(); };
+  for (const ev of ['mousemove', 'mousedown', 'keydown', 'touchstart', 'wheel', 'scroll']) document.addEventListener(ev, mark, { passive: true, capture: true });
+  setInterval(() => {
+    if (IDLE.locked) return;
+    const now = Date.now();
+    if (now - IDLE.lastInput >= IDLE.ms) return lockScreen();
+    // 最近一分鐘有操作：告訴伺服器「人還在」（最多每分鐘一次）
+    if (now - IDLE.lastInput < 60000 && now - IDLE.lastTouch > 50000) { IDLE.lastTouch = now; fetch(withToken('/api/auth/touch'), { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {}); }
+  }, 10000);
+}
+function lockScreen() {
+  if (IDLE.locked) return;
+  IDLE.locked = true;
+  document.body.classList.add('locked');
+  // 伺服器那邊也立刻登出這台（不用等它自己逾時）；畫面內容藏起來，解鎖後重新載入
+  fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+  $('modal').innerHTML = `<h2>🔒 已上鎖</h2>
+    <p class="lead">超過 ${Math.round(IDLE.ms / 60000) || 10} 分鐘沒有操作，畫面已上鎖。成員照常在背景工作，排程與 LINE／Telegram 不受影響。</p>
+    <form onsubmit="return false"><input type="text" name="username" value="agent-chat" autocomplete="username" hidden>
+      <div class="field"><input id="lockSecret" type="password" placeholder="管理密碼" autocomplete="current-password"></div></form>
+    <p id="lockError" class="seg-error"></p>
+    <div class="modal-actions"><button id="lockSubmit" class="primary">解鎖</button></div>`;
+  $('modal').classList.remove('wide'); $('modalBg').classList.add('open'); $('modal2Bg').classList.remove('open');
+  const submit = async () => {
+    let rem = true; try { rem = localStorage.getItem('agentchat_remember') !== '0'; } catch {}
+    $('lockSubmit').disabled = true;
+    try {
+      const r = await fetch('/api/auth/login', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: $('lockSecret').value, remember: rem }) });
+      if (!r.ok) throw new Error(r.status === 429 ? '錯太多次，請過 10 分鐘再試' : '密碼不正確');
+      location.reload();
+    } catch (e) { $('lockError').textContent = e.message; $('lockSubmit').disabled = false; $('lockSecret').select(); }
+  };
+  $('lockSubmit').onclick = submit;
+  $('lockSecret').onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+  setTimeout(() => $('lockSecret') && $('lockSecret').focus(), 50);
 }
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const agentOf = (id) => agents.find((a) => a.id === id);
@@ -860,7 +906,7 @@ function squareAvatar(file) {
 }
 
 function openModal(html) { $('modal').innerHTML = html; $('modal').classList.remove('wide'); $('modalBg').classList.add('open'); }
-function closeModal() { $('modalBg').classList.remove('open'); }
+function closeModal() { if (document.body.classList.contains('locked')) return; $('modalBg').classList.remove('open'); } // 上鎖中不能關掉密碼視窗
 // 第二層視窗：疊在原本的視窗上面（例如在成員設定裡按「＋ 新增資料表」），關掉後原本的視窗和還沒存的內容都還在
 function openModal2(html) { $('modal2').innerHTML = html; $('modal2Bg').classList.add('open'); }
 function closeModal2() { $('modal2Bg').classList.remove('open'); }
@@ -2044,7 +2090,7 @@ function connectEvents() {
     if (ev.kind === 'done') liveFinish(ev.agentId, ev.meta);
     if (stick) scrollDown(true);
   };
-  es.onerror = () => { es.close(); setTimeout(() => { connectEvents(); if (current) selectAgent(current); }, 2000); };
+  es.onerror = () => { es.close(); if (IDLE.locked) return; setTimeout(() => { if (IDLE.locked) return; connectEvents(); if (current) selectAgent(current); }, 2000); }; // 上鎖中不重連
 }
 
 async function init() {
@@ -2053,6 +2099,7 @@ async function init() {
   let saved = null; try { saved = localStorage.getItem('agentchat_current'); } catch {}
   // 網頁檔案 git pull 後馬上是新的，但伺服器要重開才會更新；版本不一致就提醒
   api('/api/info').then((i) => {
+    if (!IDLE.ready) startIdleLock(i.idleLockMin);
     $('ver').textContent = 'v' + i.version;
     if (i.version !== UI_VERSION) staleWarning(i.version);
   }).catch(() => staleWarning('舊版'));

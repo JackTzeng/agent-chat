@@ -10,6 +10,9 @@ const REMEMBER_TTL = hours(24 * 30); // 「記住這台電腦」：30 天，伺�
 const MAX_REMEMBERED = 20;
 const LOGIN_WINDOW = 10 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 5;
+// 🔒 閒置自動上鎖：網頁超過 N 分鐘沒有人操作（打字、點選、移動滑鼠）就要重新輸入密碼。背景自動更新畫面的請求不算操作。
+// local-settings.txt 的 IDLE_LOCK_MIN 可改（預設 10；0＝關閉）
+const idleMs = (env) => { const v = env.IDLE_LOCK_MIN; const n = v === undefined || v === '' ? 10 : Number(v); return Number.isFinite(n) && n > 0 ? n * 60000 : 0; };
 const DANGEROUS_MODES = new Set(['danger-full-access', 'bypassPermissions']);
 const SAFE_ENV = new Set([
   'PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP',
@@ -83,9 +86,12 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
   const sidHash = (sid) => crypto.createHash('sha256').update(String(sid)).digest('hex');
   // 換了密碼（重新產生或改 ACCESS_TOKEN），之前「記住」的登入全部失效
   const pwTag = crypto.createHash('sha256').update(Buffer.concat([Buffer.from('agentchat-remember:'), passwordHash])).digest('hex').slice(0, 32);
+  const IDLE = idleMs(env);
+  let lastRememberSave = 0;
   function saveRemembered() {
+    lastRememberSave = Date.now();
     const list = [...sessions.entries()].filter(([, v]) => v.remember && v.exp > Date.now())
-      .sort((a, b) => b[1].exp - a[1].exp).slice(0, MAX_REMEMBERED).map(([h, v]) => ({ h, exp: v.exp }));
+      .sort((a, b) => b[1].exp - a[1].exp).slice(0, MAX_REMEMBERED).map(([h, v]) => ({ h, exp: v.exp, la: v.la || 0 }));
     try {
       fs.writeFileSync(rememberFile + '.tmp', JSON.stringify({ version: 1, pw: pwTag, sessions: list }) + '\n', { mode: 0o600 });
       fs.renameSync(rememberFile + '.tmp', rememberFile);
@@ -95,7 +101,7 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     const saved = JSON.parse(fs.readFileSync(rememberFile, 'utf8'));
     if (saved.version === 1 && saved.pw === pwTag && Array.isArray(saved.sessions)) {
       for (const x of saved.sessions.slice(0, MAX_REMEMBERED))
-        if (/^[0-9a-f]{64}$/.test(x.h) && Number(x.exp) > Date.now() && Number(x.exp) <= Date.now() + REMEMBER_TTL) sessions.set(x.h, { exp: Number(x.exp), remember: true });
+        if (/^[0-9a-f]{64}$/.test(x.h) && Number(x.exp) > Date.now() && Number(x.exp) <= Date.now() + REMEMBER_TTL) sessions.set(x.h, { exp: Number(x.exp), remember: true, la: Number(x.la) || 0 }); // la：最後一次有人操作（重開後沿用；舊檔沒有＝要重新輸入密碼）
     } else if (fs.existsSync(rememberFile)) saveRemembered();
   } catch {}
   const allowed = new Set(['localhost', '127.0.0.1', '::1']);
@@ -130,8 +136,15 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     if (!sid) return false;
     const h = sidHash(sid), s = sessions.get(h);
     if (!s) return false;
-    if (s.exp < Date.now()) { sessions.delete(h); if (s.remember) saveRemembered(); return false; }
+    if (s.exp < Date.now() || (IDLE && Date.now() - (s.la || 0) > IDLE)) { sessions.delete(h); if (s.remember) saveRemembered(); return false; }
     return true;
+  }
+  // 有人在操作：網頁偵測到打字／點選時呼叫（/api/auth/touch），以及所有會改東西的請求（POST/PUT/DELETE）
+  function touch(req) {
+    const s = sessions.get(sidHash(sessionId(req)));
+    if (!s) return;
+    s.la = Date.now();
+    if (s.remember && Date.now() - lastRememberSave > 60000) saveRemembered(); // 記住的登入：最多每分鐘存一次（重開後還算數）
   }
   function cookie(req, sid, maxAge) {
     const secure = !!req.socket.encrypted || env.COOKIE_SECURE === '1';
@@ -151,7 +164,7 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     failures.delete(key);
     const sid = crypto.randomBytes(32).toString('base64url');
     const ttl = remember ? REMEMBER_TTL : SESSION_TTL;
-    sessions.set(sidHash(sid), { exp: now + ttl, remember: !!remember });
+    sessions.set(sidHash(sid), { exp: now + ttl, remember: !!remember, la: now });
     for (const [h, v] of sessions) if (v.exp < now) sessions.delete(h);
     while (sessions.size > 64) sessions.delete(sessions.keys().next().value);
     if (remember) saveRemembered();
@@ -240,7 +253,7 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     for (const v of [password, ...secrets]) if (typeof v === 'string' && v.length >= 8) s = s.split(v).join('[REDACTED]');
     return s;
   }
-  return { verifyHost, checkOrigin, authenticated, jsonRequest, login, logout, logoutAll, checkAgent,
+  return { verifyHost, checkOrigin, authenticated, touch, idleLockMin: IDLE / 60000, jsonRequest, login, logout, logoutAll, checkAgent,
     assertAllowedDir, fileWithin, safeEnvironment, redact, allowedRoots: [...allowedRoots], missingRoots, safeRoot };
 }
 module.exports = { createSecurity, inside, isProtectedEnvKey };

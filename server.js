@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.42.0';
+const VERSION = '3.42.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -2089,6 +2089,9 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return send(res, e.status || 400, { error: e.message }); }
   }
   if (p.startsWith('/api/') && !security.authenticated(req)) return send(res, 401, { error: '請先登入' });
+  // 🔒 閒置上鎖：你在網頁上的操作（會改東西的請求、網頁偵測到打字／點選時送的 touch）才算「有人在」；背景自動更新的 GET 不算
+  if (p === '/api/auth/touch' && req.method === 'POST') { security.touch(req); return send(res, 200, { ok: true }); }
+  if (p.startsWith('/api/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && p !== '/api/diag/client-error') security.touch(req);
   if (p === '/api/auth/logout' && req.method === 'POST') {
     if (!security.jsonRequest(req) || !security.checkOrigin(req)) return send(res, 403, { error: '拒絕' });
     const all = security.authenticated(req) && (await readBody(req)).all === true;
@@ -2101,7 +2104,7 @@ const server = http.createServer(async (req, res) => {
 
   let m0;
   try {
-    if (p === '/api/info') return send(res, 200, { version: VERSION, started: STARTED_AT });
+    if (p === '/api/info') return send(res, 200, { version: VERSION, started: STARTED_AT, idleLockMin: security.idleLockMin });
 
     // ---- ⏰ 排程 ----
     if (p === '/api/timers' && req.method === 'GET') return send(res, 200, timers.snapshot());
