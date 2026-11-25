@@ -372,7 +372,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.41.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.41.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -2257,6 +2257,9 @@ async function openLine() {
     <div class="sk-row"><b>呼叫詞：</b><input id="ln_gwords" value="${esc(keep.ln_gwords !== undefined ? keep.ln_gwords : L.groupWords || '')}" placeholder="選填，例如：待辦、小幫手（用頓號分隔）" style="flex:1;min-width:180px"><span class="help">訊息開頭寫這些字也算叫它（成員名稱本來就算）；@ 選不到 bot 時很好用。</span></div>
     <div class="sk-row"><span>已啟用 ${L.groups} 個群組${L.groups ? '' : '（還沒有）'}</span>${L.groups ? '<button id="ln_cgroups">清除群組</button>' : ''}<button class="primary" id="ln_todo">📋 待辦清單（Google Sheet）設定…</button></div>
     <p class="help">${q ? `本月主動推播：已用 ${q.used} ${q.type === 'limited' ? '/ ' + q.value : ''} 則（${ago(q.at)} 更新）` : `本程式這個月推播了 ${L.pushedThisMonth} 則`}${L.pushBlocked ? '　⚠️ 本月推播額度已用完，只能回覆你傳來的訊息' : ''}｜最近一次收到訊息：${ago(L.lastEventAt)}</p>
+    <h3 class="sk-h">👥 群組人員${L.peopleWaiting ? '（' + L.peopleWaiting + ' 位等你核准）' : ''}</h3>
+    <p class="help" style="margin:0 0 6px">只有<b>你核准過的人</b>在群組叫 bot 才會處理；陌生人（例如後來才被拉進群組的人）第一次叫 bot，會收到一次說明，並通知你核准（不交給 AI、不花額度）。一對一配對過的帳號一律算自己人。也可以在 LINE 私聊回「核准成員 編號」，或在 Telegram 傳 <code>/line 編號 ok</code>。</p>
+    ${(L.people || []).length ? '<div class="ln-people">' + L.people.map((x) => `<div class="sk-row"><span>${x.status === 'ok' ? '✅' : x.status === 'no' ? '🚫' : '⏳'} ${esc(x.name || '（沒有名稱）')}${x.no ? ' <small>#' + x.no + '</small>' : ''} <small class="help">${esc(x.status === 'wait' ? '等你核准' : (x.status === 'ok' ? '已核准' : '不核准') + (x.by ? '｜' + x.by : ''))}</small></span>${x.status !== 'ok' ? `<button class="primary" data-lp-ok="${esc(x.uid)}">核准</button>` : ''}${x.status !== 'no' ? `<button data-lp-no="${esc(x.uid)}">不核准</button>` : ''}<button data-lp-rm="${esc(x.uid)}" title="從名單移除：下次他叫 bot 會重新請你核准">移除</button></div>`).join('') + '</div>' : '<p class="help">（還沒有人申請）</p>'}
     <p class="help">在 LINE 上：直接傳文字給它；<code>/new</code> 開新對話、<code>/stop</code> 停止、<code>同意 3</code>／<code>不要 3</code> 核准或取消它提出的提醒。目前只收文字。</p>
     <p class="help">⚠️ 你的訊息會經過 LINE 的伺服器（日本），公開通道也會經過 Cloudflare。這台如果是公司電腦，請先確認資安規定允許；工作上的機密資料不要透過 LINE 傳給成員。</p>
     <div class="modal-actions"><span class="spacer"></span><button id="ln_close">關閉</button></div>`);
@@ -2277,6 +2280,9 @@ async function openLine() {
   $('ln_pair').onclick = () => act(() => api('/api/line/pair', { method: 'POST', body: '{}' }));
   $('ln_todo').onclick = () => openTodo();
   if ($('ln_cgroups')) $('ln_cgroups').onclick = () => { if (confirm('清除所有已啟用的群組？之後要在群組重新貼配對碼才會再啟用。')) act(() => api('/api/line', { method: 'PUT', body: JSON.stringify({ clearGroups: true }) })); };
+  document.querySelectorAll('#modal [data-lp-ok]').forEach((b) => { b.onclick = () => act(() => api('/api/line/people/' + encodeURIComponent(b.dataset.lpOk), { method: 'POST', body: JSON.stringify({ ok: true }) })); });
+  document.querySelectorAll('#modal [data-lp-no]').forEach((b) => { b.onclick = () => act(() => api('/api/line/people/' + encodeURIComponent(b.dataset.lpNo), { method: 'POST', body: JSON.stringify({ ok: false }) })); });
+  document.querySelectorAll('#modal [data-lp-rm]').forEach((b) => { b.onclick = () => { if (confirm('從名單移除？下次他在群組叫 bot 會重新請你核准。')) act(() => api('/api/line/people/' + encodeURIComponent(b.dataset.lpRm), { method: 'DELETE' })); }; });
   if ($('ln_unpair')) $('ln_unpair').onclick = () => { if (confirm('清除所有已配對的 LINE 帳號？之後要重新配對才能使用。')) act(() => api('/api/line/unpair', { method: 'POST', body: '{}' })); };
 }
 
@@ -2464,7 +2470,7 @@ async function openChannels(tab = 'overview') {
   openModal(`<h2>📡 通訊管道</h2>${channelTabs('overview')}
     <p class="lead">Telegram 和 LINE 用同一套規則：<b>① 連線</b>（bot 的 token／密鑰）→ <b>② 配對</b>（誰可以用）→ <b>③ 指派</b>（交給哪位成員）。連線與配對在上面的分頁，指派在下面這張表。</p>
     <div class="ln-chips"><span class="cli-chip">${tgOk ? '✅' : '❔'} 📱 Telegram 主 bot${TG && TG.username ? '：@' + esc(TG.username) : '：還沒連線'}${TG && TG.allowedCount ? '｜配對 ' + TG.allowedCount + ' 人' : ''}</span>
-      <span class="cli-chip">${lnOk ? '✅' : '❔'} 💚 LINE${L.bot ? '：' + esc(L.bot.name) : L.configured ? '' : '：還沒設定'}${L.allowedCount ? '｜配對 ' + L.allowedCount + ' 人' : ''}${L.groups ? '｜群組 ' + L.groups + ' 個' : ''}</span></div>
+      <span class="cli-chip">${lnOk ? '✅' : '❔'} 💚 LINE${L.bot ? '：' + esc(L.bot.name) : L.configured ? '' : '：還沒設定'}${L.allowedCount ? '｜配對 ' + L.allowedCount + ' 人' : ''}${L.peopleWaiting ? '｜👥 ' + L.peopleWaiting + ' 位等你核准' : ''}${L.groups ? '｜群組 ' + L.groups + ' 個' : ''}</span></div>
     <table class="ch-table" style="width:100%;border-collapse:collapse;margin-top:10px">
       <thead><tr><th style="text-align:left;padding:6px">成員</th><th style="text-align:left;padding:6px">接了哪些管道</th><th></th></tr></thead>
       <tbody>${C.agents.map((a) => `<tr style="border-top:1px solid var(--line,#ddd)"><td style="padding:6px;white-space:nowrap">${esc(a.avatar && a.avatar.length <= 4 ? a.avatar : '')} ${esc(a.name)}${a.standalone ? '' : ' <span class="help">（工作流程）</span>'}</td>

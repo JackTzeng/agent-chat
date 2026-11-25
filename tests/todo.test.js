@@ -269,7 +269,9 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
   fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({
     teams: [{ id: 'main', name: '開發組', icon: '🛠', workflow: '1. 隨便', cwd: './workspace' }],
-    line: { channelSecret: SECRET, channelAccessToken: TOKEN, groupAgentId: 'todo', groupWords: ['待辦'] },
+    // 👥 群組人員核准（v3.41.1）：測試用的帳號先核准；U_boss 不列，驗證「升級時沿用待辦清單成員名單」
+    line: { channelSecret: SECRET, channelAccessToken: TOKEN, groupAgentId: 'todo', groupWords: ['待辦'],
+      people: Object.fromEntries(['U_wang', 'U_evil', 'U_new_guy', 'U_newbie', 'U_nobody', 'U_spam'].map((u) => [u, { name: u, status: 'ok', at: 1 }])) },
     todo: { url: gasUrl, key: g.props.KEY, email: true }, // 這個測試要驗 email 相關流程；預設是關的（下面另外驗關掉時的行為）
     agents: [
       { id: 'pm', name: 'PM', role: 'PM', engine: 'claude', permissionMode: 'auto', cwd: './workspace', team: 'main' },
@@ -495,6 +497,22 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   assert.ok(!(await J('/api/harness')).memory.some((m) => /新流程XYZ/.test(m.text)), '群組那一輪的【決策】不進專案記憶');
   assert.ok(!(await J('/api/timers')).proposals.some((p) => /新流程/.test(p.prompt)), '群組那一輪的排程建議不收');
   await J('/api/line', 'PUT', { groupAgentId: 'todo' });
+  // S3d 陌生人（沒核准的人）叫 bot：回一次說明＋通知管理者，不交給 AI；第二次不理；核准後才處理
+  const L0 = await J('/api/line');
+  assert.ok(L0.people.some((x) => x.uid === 'U_boss' && x.status === 'ok' && /升級時沿用/.test(x.by)), '待辦清單成員分頁已有 LINE ID 的人自動算核准');
+  const ag0 = agyCalls();
+  assert.match(await say('U_unknown1', '待辦 ADD1'), /只給管理者核准過的同事使用，已經通知管理者/);
+  const nU = replies().length; assert.equal(await hook([gmsg('U_unknown1', '待辦 ADD1 再一次')]), 200); await sleep(400);
+  assert.equal(replies().length, nU, '第二次不再回'); assert.equal(agyCalls(), ag0, '沒核准不叫 AI');
+  const wait = (await J('/api/line')).people.find((x) => x.uid === 'U_unknown1');
+  assert.equal(wait.status, 'wait'); assert.ok(wait.no > 0); assert.equal((await J('/api/line')).peopleWaiting, 1);
+  await J('/api/line/people/U_unknown1', 'POST', { ok: true });
+  assert.match(await say('U_unknown1', '待辦 ADD1'), /第一次使用？請先回覆「我是/, '核准後就進到待辦應用（應用自己再要求登記）');
+  await J('/api/line/people/U_unknown1', 'POST', { ok: false });
+  const nU2 = replies().length; assert.equal(await hook([gmsg('U_unknown1', '待辦 ADD1')]), 200); await sleep(400);
+  assert.equal(replies().length, nU2, '不核准後不理');
+  await J('/api/line/people/U_unknown1', 'DELETE');
+  assert.ok(!(await J('/api/line')).people.some((x) => x.uid === 'U_unknown1'), '移除後名單沒有他');
   // S4 洗版：同一個人 10 分鐘內叫太多次 → 提醒一次，之後不理（不叫 AI、不花推播）
   for (let i = 0; i < 40; i++) await say('U_spam', 'hi ' + i);
   assert.match(await say('U_spam', 'hi again'), /傳太快/);

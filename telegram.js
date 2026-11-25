@@ -38,6 +38,7 @@ const HELP =
   '/skills　🧩 Skill 安裝申請；/skill 編號 ok（會再問一次）／no\n' +
   '/timers　⏰ 看所有排程；/timer 編號 run／on／off／ok／no\n' +
   '/fb　🐞 還沒解決的錯誤回報；/fb 編號 看內容、/fb 編號 done 備註（已解決）、doing（處理中）、open（改回未處理）\n' +
+  '/line　👥 LINE 群組人員核准；/line 看名單、/line 編號 ok 核准、/line 編號 no 不核准\n' +
   '/md　📝 維修工程師的設定檔修改提案；/md 編號 看內容、/md 編號 ok 核准、/md 編號 no 不採用\n' +
   '/report 描述　🐞 產生問題回報檔傳給你（轉給 Claude 排查）\n' +
   '/update　⬆️ 檢查更新，有新版就更新並重新啟動\n' +
@@ -509,6 +510,9 @@ exports.start = function start(ctx) {
     for (const id of pushRecipients()) await say(id, '📝 ' + p.byName + ' 提出修改提案 #' + p.id + '：' + p.file + '（＋' + p.add + ' －' + p.del + ' 行）' + (p.reason ? '\n原因：' + p.reason : '') +
       '\n\n' + p.diff + '\n\n核准請傳 /md ' + p.id + ' ok，不要請傳 /md ' + p.id + ' no（核准後才會寫入，舊版會備份）');
   });
+  listen('line-person', async ({ req }) => {
+    for (const id of pushRecipients()) await say(id, '👥 LINE 群組有人想使用 bot：' + req.name + '（#' + req.no + '）\n\n核准請傳 /line ' + req.no + ' ok，不要請傳 /line ' + req.no + ' no（沒核准前，他叫 bot 不會交給 AI）');
+  });
   listen('timer-proposal', async ({ proposal, agent, desc }) => {
     for (const id of pushRecipients()) await say(id, '⏰ ' + (agent ? agent.name : '成員') + ' 建議新增排程（#' + proposal.id + '）：\n' + desc + '｜' + proposal.prompt +
       '\n\n同意請傳 /timer ' + proposal.id + ' ok，不要請傳 /timer ' + proposal.id + ' no（也可以到網頁「⏰ 排程」修改後再核准）');
@@ -634,6 +638,16 @@ exports.start = function start(ctx) {
             const f = fbx.set(mm[1], key, mm[3]);
             return say(chatId, '已把錯誤回報 #' + f.id + ' 標成 ' + ST[f.status] + (f.note ? '（' + f.note + '）' : ''));
           } catch (e) { return say(chatId, '⚠️ ' + e.message); }
+        }
+        case 'line': {
+          const lb = ctx.line && ctx.line(); if (!lb) return say(chatId, 'LINE 功能還沒啟動');
+          const mm = arg.trim().match(/^#?(\d+)\s+(ok|no)$/i);
+          if (!mm) {
+            const ps = lb.peopleList(), ST = { ok: '✅', no: '🚫', wait: '⏳' };
+            return say(chatId, ps.length ? '👥 LINE 群組人員：\n' + ps.map((x) => ST[x.status] + ' ' + (x.no ? '#' + x.no + ' ' : '') + (x.name || x.uid.slice(0, 8))).join('\n') + '\n\n/line 編號 ok 核准｜/line 編號 no 不核准' : '👥 LINE 群組還沒有人申請使用');
+          }
+          try { const r = lb.decidePerson(mm[1], /^ok$/i.test(mm[2]), '你（Telegram）'); return say(chatId, r.status === 'ok' ? '✅ 已核准「' + (r.name || '這位') + '」' : '🚫 不核准「' + (r.name || '這位') + '」'); }
+          catch (e) { return say(chatId, '⚠️ ' + e.message); }
         }
         case 'md': {
           const mt = ctx.maint && ctx.maint(); if (!mt) return say(chatId, '維運功能還沒啟動');

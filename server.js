@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.41.0';
+const VERSION = '3.41.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1302,8 +1302,10 @@ function startRun(agent, userText, opts = {}) {
 
     // 自由聊天模式：回覆裡 @ 了同事 → 自動轉交（任務模式改由流程決定）
     const replyText = run.segments.filter((s) => s.type === 'text').map((s) => s.text).join('\n\n');
-    // 🔒 LINE 群組觸發的這一輪：群組裡任何人都能說話，回覆可能是被誘導寫出來的 → 不自動轉交、不收【決策】、不收排程／Skill 提案
-    const groupTurn = !!(opts.line && opts.line.group);
+    // 🔒 信任等級（opts.trust）：'group'＝群組裡的同事（已核准，但不是管理者本人）。這一輪的回覆可能被群組裡的話誘導，
+    //    只做應用允許的事（例如待辦依成員權限寫表），不做管理者等級的動作：不自動轉交、不收【決策】、不收排程／Skill 提案。
+    //    新的通訊管道只要在 dispatch 時標上 trust，就自動套用；不要再用管道名稱判斷
+    const groupTurn = opts.trust === 'group' || !!(opts.line && opts.line.group);
     if (!opts.taskId && replyText && !run.stopped && !agent.standalone && !groupTurn) harness.collect(agent, replyText, null);
     // 🧩【安裝 Skill】→ 建立安裝申請（等使用者核准，不會自動安裝）
     if (replyText && !run.stopped && !groupTurn) for (const r of skills.fromReply(agent, replyText))
@@ -1320,7 +1322,7 @@ function startRun(agent, userText, opts = {}) {
     }
     const targets = opts.taskId || run.stopped || !replyText ? [] : findMentions(agent, replyText);
     if (groupTurn && targets.length) {
-      emit({ kind: 'tool', text: '🔒 LINE 群組訊息觸發的這一輪不會自動轉交（沒有交給 ' + targets.map((t) => t.name).join('、') + '）。需要的話請你自己轉交。' });
+      emit({ kind: 'tool', text: '🔒 群組訊息觸發的這一輪不會自動轉交（沒有交給 ' + targets.map((t) => t.name).join('、') + '）。需要的話請你自己轉交。' });
       targets.length = 0;
     }
     if (targets.length && hops >= maxHops()) {
@@ -2189,6 +2191,13 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/line/check' && req.method === 'POST') { try { return send(res, 200, { ...(await lineBot.check()), status: lineBot.status() }); } catch (e) { return send(res, 400, { error: e.message }); } }
     if (p === '/api/line/pair' && req.method === 'POST') { if (!lineBot.status().configured) return send(res, 400, { error: '請先貼上 Channel secret 與 Channel access token 並儲存' }); lineBot.newPairCode(); return send(res, 200, lineBot.status()); }
     if (p === '/api/line/unpair' && req.method === 'POST') return send(res, 200, lineBot.unpair());
+    // 👥 群組人員核准：POST { ok: true|false } 核准／不核准；DELETE 從名單移除（下次叫 bot 會重新請你核准）
+    if ((m0 = p.match(/^\/api\/line\/people\/([\w-]{1,64})$/))) {
+      try {
+        if (req.method === 'POST') { const b = await readBody(req); lineBot.decidePerson(m0[1], b.ok === true, '你（網頁）'); return send(res, 200, lineBot.status()); }
+        if (req.method === 'DELETE') { lineBot.removePerson(m0[1]); return send(res, 200, lineBot.status()); }
+      } catch (e) { return send(res, 400, { error: e.message }); }
+    }
     if (p === '/api/line/webhook' && req.method === 'POST') { try { const b = await readBody(req); return send(res, 200, { ...(await lineBot.setupWebhook(b.publicUrl)), status: lineBot.status() }); } catch (e) { return send(res, 400, { error: e.message }); } }
     if (p === '/api/line/tunnel' && req.method === 'POST') { try { const b = await readBody(req); return send(res, 200, b.on === false ? lineBot.stopTunnel() : lineBot.startTunnel()); } catch (e) { return send(res, 400, { error: e.message }); } }
     if (p === '/api/telegram' && req.method === 'GET') return send(res, 200, telegram.status());
@@ -2714,6 +2723,7 @@ const tgCtx = {
   dispatch, userSend, stopRun, resetAgent, maxHops, usageSnapshot, tasks, interject,
   makeReport: (o) => reporter.makeReport(o), updater, timers,
   pauseProject, resumeProject, pauseStatus, skills, outbox,
+  line: () => lineBot,
 };
 telegram.start(tgCtx);
 telegram.startAgentBots(tgCtx);
