@@ -375,7 +375,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.42.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.42.2'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1853,6 +1853,7 @@ function renderUsage() {
     (FB_COUNTS && FB_COUNTS.total ? '<div class="ulink" id="fbLine" title="LINE／Telegram 使用者說的「錯誤回報」：列表、標記處理狀態">🐞 錯誤回報' + (FB_COUNTS.open + FB_COUNTS.doing ? ' <span class="hn-dot">' + (FB_COUNTS.open + FB_COUNTS.doing) + '</span>' : '') + '</div>' : '') +
     (MD_BADGE ? '<div class="ulink" id="mdLine" title="維修工程師提出的設定檔修改，核准後才會寫入">📝 待核准修改 <span class="hn-dot">' + MD_BADGE + '</span></div>' : '') +
     '<div class="ulink" id="repLine" title="出問題時產生一個回報檔，帶給 Claude 排查">🐞 問題回報</div>' +
+    '<div class="ulink" id="pwLine" title="修改登入網頁用的管理密碼">🔑 修改密碼</div>' +
     '<div class="ulink" id="logoutLine" title="登出這個瀏覽器；可以選擇登出所有裝置">🔒 登出</div></div>';
   $('usageToggle').onclick = () => { setUsageOpen(!usageOpen()); renderUsage(); };
   $('tgLine').onclick = () => openChannels('overview');
@@ -1865,6 +1866,7 @@ function renderUsage() {
   $('srcLine').onclick = () => openSources();
   $('cliLine').onclick = () => (SKILL_PENDING ? openSkills() : openCliStatus());
   $('logoutLine').onclick = openLogout;
+  $('pwLine').onclick = openPassword;
   $('usageBtn').onclick = async () => {
     $('usageBtn').textContent = '查詢中…';
     try { await api('/api/usage/refresh', { method: 'POST' }); } catch (e) { toast(e.message); }
@@ -2891,6 +2893,34 @@ async function waitRestart(msg) {
   setTimeout(tick, 1500);
 }
 
+// 🔑 修改登入密碼：要目前的密碼；成功後其他裝置（手機、記住的電腦）都要用新密碼重新登入
+async function openPassword() {
+  let info = {}; try { info = await api('/api/info'); } catch {}
+  if (info.passwordFromEnv) {
+    openModal(`<h2>🔑 修改密碼</h2><p class="lead">目前的密碼是用 <code>ACCESS_TOKEN</code> 設定的（在 local-settings.txt 或 start.bat）。請直接改那一行；或把那一行刪掉、重新啟動後，就能在這裡改。</p>
+      <div class="modal-actions"><span class="spacer"></span><button class="primary" id="pw_close">知道了</button></div>`);
+    $('pw_close').onclick = closeModal; return;
+  }
+  openModal(`<h2>🔑 修改密碼</h2>
+    <p class="lead">改好之後，其他裝置（手機、勾過「記住這台電腦」的電腦）都要用新密碼重新登入；這個瀏覽器不用。新密碼至少 10 個字元，建議用好記的一句話。</p>
+    <form onsubmit="return false"><input type="text" name="username" value="agent-chat" autocomplete="username" hidden>
+      <div class="field"><label>目前的密碼</label><input id="pw_cur" type="password" autocomplete="current-password"></div>
+      <div class="field"><label>新密碼</label><input id="pw_new" type="password" autocomplete="new-password"></div>
+      <div class="field"><label>再輸入一次新密碼</label><input id="pw_new2" type="password" autocomplete="new-password"></div></form>
+    <p id="pw_err" class="seg-error"></p>
+    <p class="help">忘記密碼時：關掉黑色視窗，刪除 data\\admin-password-hash.json 後重開 start.bat，會顯示新的隨機密碼。</p>
+    <div class="modal-actions"><span class="spacer"></span><button id="pw_cancel">取消</button><button class="primary" id="pw_ok">修改密碼</button></div>`);
+  $('pw_cancel').onclick = closeModal;
+  $('pw_ok').onclick = async () => {
+    const cur = $('pw_cur').value, nx = $('pw_new').value;
+    if (nx !== $('pw_new2').value) { $('pw_err').textContent = '兩次輸入的新密碼不一樣'; return; }
+    if (nx.length < 10) { $('pw_err').textContent = '新密碼至少 10 個字元'; return; }
+    $('pw_ok').disabled = true;
+    try { await api('/api/auth/password', { method: 'POST', body: JSON.stringify({ current: cur, next: nx }) }); closeModal(); toast('✅ 密碼已修改，其他裝置要用新密碼重新登入'); }
+    catch (e) { $('pw_err').textContent = e.message; $('pw_ok').disabled = false; }
+  };
+  setTimeout(() => $('pw_cur') && $('pw_cur').focus(), 50);
+}
 function openLogout() {
   openModal(`<h2>🔒 登出</h2>
     <p class="lead">登出後要重新輸入密碼。如果手機或別台電腦曾勾「記住這台電腦」而你不再信任它，選「登出所有裝置」。</p>

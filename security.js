@@ -61,7 +61,17 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
   fs.mkdirSync(dataDir, { recursive: true });
   const tokenFile = path.join(dataDir, 'admin-password-hash.json');
   let password = String(env.ACCESS_TOKEN || '');
-  let passwordHash;
+  const fromEnv = !!password;
+  // passwordHash：用來比對的雜湊；scryptSalt 有值＝新格式（v2，scrypt 加鹽，網頁改的密碼與新安裝用這個）；沒有＝舊格式 SHA-256（v1、ACCESS_TOKEN）
+  let passwordHash, scryptSalt = null;
+  const SCRYPT = { N: 16384, r: 8, p: 1 };
+  const scryptOf = (pw, salt) => crypto.scryptSync(String(pw), salt, 32, SCRYPT);
+  const hashOf = (pw) => (scryptSalt ? scryptOf(pw, scryptSalt) : crypto.createHash('sha256').update(String(pw)).digest());
+  function writeHashFile(flag) {
+    const body = JSON.stringify({ version: 2, scrypt: { salt: scryptSalt.toString('hex'), hash: passwordHash.toString('hex'), ...SCRYPT } }) + '\n';
+    if (flag === 'wx') return fs.writeFileSync(tokenFile, body, { mode: 0o600, flag: 'wx' });
+    fs.writeFileSync(tokenFile + '.tmp', body, { mode: 0o600 }); fs.renameSync(tokenFile + '.tmp', tokenFile);
+  }
   if (password) {
     if (password.length < 16) throw new Error('ACCESS_TOKEN 長度至少 16 個字元，建議使用隨機產生的長密碼');
     passwordHash = crypto.createHash('sha256').update(password).digest();
@@ -69,12 +79,15 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     try {
       const saved = JSON.parse(fs.readFileSync(tokenFile, 'utf8'));
       if (saved.version === 1 && /^[0-9a-f]{64}$/.test(saved.sha256)) passwordHash = Buffer.from(saved.sha256, 'hex');
+      else if (saved.version === 2 && saved.scrypt && /^[0-9a-f]{32,}$/.test(saved.scrypt.salt) && /^[0-9a-f]{64}$/.test(saved.scrypt.hash)) {
+        scryptSalt = Buffer.from(saved.scrypt.salt, 'hex'); passwordHash = Buffer.from(saved.scrypt.hash, 'hex');
+      }
     } catch (e) { if (e.code !== 'ENOENT') throw new Error('管理密碼雜湊檔損毀或無法讀取，拒絕重新產生密碼'); }
     if (!passwordHash) {
       if (fs.existsSync(tokenFile)) throw new Error('管理密碼雜湊檔損毀，請先人工檢查');
       password = crypto.randomBytes(32).toString('base64url');
-      passwordHash = crypto.createHash('sha256').update(password).digest();
-      fs.writeFileSync(tokenFile, JSON.stringify({ version: 1, sha256: passwordHash.toString('hex') }) + '\n', { mode: 0o600, flag: 'wx' });
+      scryptSalt = crypto.randomBytes(16); passwordHash = scryptOf(password, scryptSalt);
+      writeHashFile('wx');
       log('首次安全啟動。Web 登入密碼（只顯示這一次）：' + password);
       log('請安全保存；伺服器僅儲存雜湊，不會保存明文密碼。也可以用 ACCESS_TOKEN 設定新密碼。');
     }
@@ -85,7 +98,8 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
   const rememberFile = path.join(dataDir, 'remembered-logins.json');
   const sidHash = (sid) => crypto.createHash('sha256').update(String(sid)).digest('hex');
   // 換了密碼（重新產生或改 ACCESS_TOKEN），之前「記住」的登入全部失效
-  const pwTag = crypto.createHash('sha256').update(Buffer.concat([Buffer.from('agentchat-remember:'), passwordHash])).digest('hex').slice(0, 32);
+  const tagOf = () => crypto.createHash('sha256').update(Buffer.concat([Buffer.from('agentchat-remember:'), passwordHash])).digest('hex').slice(0, 32);
+  let pwTag = tagOf();
   const IDLE = idleMs(env);
   let lastRememberSave = 0;
   function saveRemembered() {
@@ -155,7 +169,7 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     const now = Date.now();
     const entry = failures.get(key);
     if (entry && entry.until > now && entry.count >= LOGIN_MAX_FAILURES) return { ok: false, blocked: true };
-    const h = crypto.createHash('sha256').update(String(supplied || '')).digest();
+    const h = hashOf(supplied || '');
     if (!crypto.timingSafeEqual(passwordHash, h)) {
       const old = entry && entry.until > now ? entry.count : 0;
       failures.set(key, { count: old + 1, until: now + LOGIN_WINDOW });
@@ -181,6 +195,32 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
   function logoutAll(req) {
     sessions.clear(); saveRemembered();
     return cookie(req, '', 0);
+  }
+  // 🔑 修改登入密碼（網頁）：要先輸入目前的密碼；成功後所有裝置（包含記住的）都要用新密碼重新登入，只有這個瀏覽器直接換成新的登入
+  function changePassword(req, current, next) {
+    if (fromEnv) throw Object.assign(new Error('目前的密碼是用 ACCESS_TOKEN 設定的（local-settings.txt 或 start.bat），請到那裡修改，或刪掉那一行後再從網頁改'), { status: 409 });
+    const key = req.socket.remoteAddress || 'unknown', now = Date.now(), entry = failures.get(key);
+    if (entry && entry.until > now && entry.count >= LOGIN_MAX_FAILURES) throw Object.assign(new Error('錯太多次，請過 10 分鐘再試'), { status: 429 });
+    if (!crypto.timingSafeEqual(passwordHash, hashOf(current || ''))) {
+      const old = entry && entry.until > now ? entry.count : 0;
+      failures.set(key, { count: old + 1, until: now + LOGIN_WINDOW });
+      throw Object.assign(new Error('目前的密碼不正確'), { status: 403 });
+    }
+    next = String(next || '');
+    if (next.length < 10) throw Object.assign(new Error('新密碼至少 10 個字元'), { status: 400 });
+    if (next.length > 200) throw Object.assign(new Error('新密碼太長（200 字以內）'), { status: 400 });
+    if (/^\s|\s$/.test(next)) throw Object.assign(new Error('新密碼前後不能有空白'), { status: 400 });
+    if (next === String(current)) throw Object.assign(new Error('新密碼跟目前的一樣'), { status: 400 });
+    const keep = sessions.get(sidHash(sessionId(req))) || {};
+    scryptSalt = crypto.randomBytes(16); passwordHash = scryptOf(next, scryptSalt); password = next;
+    writeHashFile();
+    pwTag = tagOf();
+    sessions.clear();
+    const sid = crypto.randomBytes(32).toString('base64url'), ttl = keep.remember ? REMEMBER_TTL : SESSION_TTL;
+    sessions.set(sidHash(sid), { exp: now + ttl, remember: !!keep.remember, la: now });
+    saveRemembered();
+    log('🔑 管理密碼已從網頁修改，其他裝置都要用新密碼重新登入');
+    return { cookie: cookie(req, sid, keep.remember ? Math.floor(ttl / 1000) : null) };
   }
   function jsonRequest(req) {
     return /^application\/json\b/i.test(String(req.headers['content-type'] || ''));
@@ -253,7 +293,7 @@ function createSecurity({ root, dataDir, host, port, env = process.env, log = co
     for (const v of [password, ...secrets]) if (typeof v === 'string' && v.length >= 8) s = s.split(v).join('[REDACTED]');
     return s;
   }
-  return { verifyHost, checkOrigin, authenticated, touch, idleLockMin: IDLE / 60000, jsonRequest, login, logout, logoutAll, checkAgent,
+  return { verifyHost, checkOrigin, authenticated, touch, changePassword, passwordFromEnv: fromEnv, idleLockMin: IDLE / 60000, jsonRequest, login, logout, logoutAll, checkAgent,
     assertAllowedDir, fileWithin, safeEnvironment, redact, allowedRoots: [...allowedRoots], missingRoots, safeRoot };
 }
 module.exports = { createSecurity, inside, isProtectedEnvKey };

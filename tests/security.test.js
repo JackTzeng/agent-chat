@@ -180,3 +180,55 @@ test('🔒 idle lock survives a restart: remembered login keeps its last-activit
   delete saved.sessions[0].la; fs.writeFileSync(file, JSON.stringify(saved));
   assert.equal(restart().authenticated(r), false, '舊版存的記住登入（沒有操作時間）：要重新輸入一次');
 });
+
+test('🔑 change password from the web: needs current password, saved as salted scrypt, other devices logged out', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-pw-'));
+  fs.mkdirSync(path.join(root, 'workspace'));
+  const dataDir = path.join(root, 'data'), hashFile = path.join(dataDir, 'admin-password-hash.json');
+  let shown = '';
+  const make = (env = { PATH: process.env.PATH }) => createSecurity({ root, dataDir, host: '127.0.0.1', port: 3939, env, log: (m) => { const x = /只顯示這一次）：(\S+)/.exec(m); if (x) shown = x[1]; } });
+  // 新安裝：隨機密碼，存成 scrypt 加鹽（v2）
+  let auth = make();
+  assert.ok(shown.length > 20);
+  const v2 = JSON.parse(fs.readFileSync(hashFile, 'utf8'));
+  assert.equal(v2.version, 2); assert.match(v2.scrypt.salt, /^[0-9a-f]{32}$/); assert.ok(!JSON.stringify(v2).includes(shown));
+  const me = req({ host: 'localhost:3939' }), phone = req({ host: 'localhost:3939' }, '100.1.1.1');
+  me.headers.cookie = auth.login(me, shown, true).cookie.split(';')[0];
+  phone.headers.cookie = auth.login(phone, shown, true).cookie.split(';')[0];
+  // 錯的目前密碼、太短、跟原本一樣
+  assert.throws(() => auth.changePassword(me, 'wrong', 'new-password-123'), /目前的密碼不正確/);
+  assert.throws(() => auth.changePassword(me, shown, 'short'), /至少 10 個字元/);
+  assert.throws(() => auth.changePassword(me, shown, shown), /跟目前的一樣/);
+  // 成功：這個瀏覽器換成新的登入，其他裝置（包含記住的）都失效
+  const r = auth.changePassword(me, shown, '我的新密碼 2026 年');
+  me.headers.cookie = r.cookie.split(';')[0];
+  assert.match(r.cookie, /Max-Age=/, '原本勾記住，新的登入也記住');
+  assert.equal(auth.authenticated(me), true);
+  assert.equal(auth.authenticated(phone), false, '其他裝置要重新登入');
+  assert.equal(auth.login(req(), shown).ok, false, '舊密碼不能用');
+  assert.equal(auth.login(req(), '我的新密碼 2026 年').ok, true);
+  // 重新啟動：讀得到新格式；這個瀏覽器的記住登入還在
+  auth = make();
+  assert.equal(auth.login(req(), '我的新密碼 2026 年').ok, true);
+  assert.equal(auth.authenticated(me), true);
+  // 錯太多次會鎖
+  for (let i = 0; i < 5; i++) { try { auth.changePassword(me, 'bad', 'whatever-long-1'); } catch {} }
+  assert.throws(() => auth.changePassword(me, '我的新密碼 2026 年', 'whatever-long-1'), /錯太多次/);
+});
+
+test('🔑 old SHA-256 hash file still works; ACCESS_TOKEN passwords cannot be changed from the web', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-pw1-'));
+  fs.mkdirSync(path.join(root, 'workspace')); fs.mkdirSync(path.join(root, 'data'));
+  const crypto = require('node:crypto');
+  fs.writeFileSync(path.join(root, 'data', 'admin-password-hash.json'), JSON.stringify({ version: 1, sha256: crypto.createHash('sha256').update('old-style-password').digest('hex') }));
+  const auth = createSecurity({ root, dataDir: path.join(root, 'data'), host: '127.0.0.1', port: 3939, env: { PATH: process.env.PATH }, log: () => {} });
+  const me = req({ host: 'localhost:3939' });
+  me.headers.cookie = auth.login(me, 'old-style-password').cookie.split(';')[0];
+  auth.changePassword(me, 'old-style-password', 'brand-new-password');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'data', 'admin-password-hash.json'), 'utf8')).version, 2, '改過後升級成 scrypt');
+  const { auth: envAuth } = fixture();
+  const r = req({ host: 'localhost:3939' });
+  r.headers.cookie = envAuth.login(r, 'testing-password-at-least-16').cookie.split(';')[0];
+  assert.equal(envAuth.passwordFromEnv, true);
+  assert.throws(() => envAuth.changePassword(r, 'testing-password-at-least-16', 'another-password-x'), /ACCESS_TOKEN/);
+});
