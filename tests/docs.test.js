@@ -106,6 +106,24 @@ test('掃描與檢索：允許清單、章節號優先、只讀 html、不跟隨
     const t3 = await book3.test({ path: lib.top });
     assert.ok(t3.counts.some((c) => c.ext === 'pdf' && !c.readable) && t3.counts.some((c) => c.ext === 'txt' && c.readable));
     assert.match((await book3.context({ docFolders: ['USP'], persona: '## 文件資料夾：USP\n副檔名: html, txt, pdf' }, 'USP 665')).text, /系統讀不了 pdf 檔的內容/);
+    // 排除：路徑裡有這些字的檔案不查（例如舊版備份）；沒寫排除的成員照樣查得到
+    lib.w('_backups/譯稿更新_20261113/USP_665_Plastic_Components/index.html', page('〈665〉 OLD', '<p>BACKUP-OLD 萃取 E&amp;L 舊版</p>'));
+    await book.scan('USP');
+    const exRule = docsLib.parseDocSections('## 文件資料夾：USP\n章節號: USP_{n}_\n排除: _Backups, \\tmp\\').get('USP');
+    assert.deepEqual(exRule.exclude, ['_backups', '/tmp/']);
+    assert.ok((await book.search('USP', 'BACKUP-OLD', {})).hits.some((h) => /_backups/.test(h.rel)), '沒寫排除：查得到備份');
+    const ex = await book.search('USP', 'USP 665 BACKUP-OLD 萃取', exRule);
+    assert.ok(ex.hits.length && !ex.hits.some((h) => /_backups/.test(h.rel)), JSON.stringify(ex.hits.map((h) => h.rel)));
+    fs.rmSync(path.join(lib.root, '_backups'), { recursive: true, force: true }); await book.scan('USP');
+    // 排序：資料夾／檔名對到加分；數字要整個相符（不套規則也要找得到 1665 這章，不被「內文提到 1665」的 665 搶走）
+    lib.w('USP_1665_PERLs/bilingual.html', page('〈1665〉 PERLs', '<p>本章說明塑膠組件的特性鑑定。</p><p>風險評估矩陣。</p>'));
+    lib.w('USP_665_Plastic_Components/bilingual.html', page('〈665〉 bilingual', '<p>見〈1665〉4.2.1 風險評估，〈1665〉提供一般指引，〈1665〉。</p>'));
+    await book.scan('USP');
+    const q1665 = await book.search('USP', 'USP 1665', {});
+    assert.match(q1665.hits[0].rel, /USP_1665_/, JSON.stringify(q1665.hits.map((h) => h.rel + ' ' + h.s)));
+    const q665 = await book.search('USP', '665', {});
+    assert.ok(q665.hits.length && q665.hits.every((h) => /USP_665_/.test(h.rel)), '查 665 不會因為內文的 1665 對到 ' + JSON.stringify(q665.hits.map((h) => h.rel)));
+    fs.rmSync(path.join(lib.root, 'USP_1665_PERLs'), { recursive: true, force: true }); fs.rmSync(path.join(lib.root, 'USP_665_Plastic_Components', 'bilingual.html')); await book.scan('USP');
     // 新的實例從快取讀（重開程式不用重建）
     const book2 = docsLib.create({ dataDir, appRoot, env });
     assert.equal(book2.status('USP').files, 4);

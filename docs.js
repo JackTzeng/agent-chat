@@ -34,7 +34,7 @@ function parseDocMd(text) {
 }
 function renderDocMd(form) {
   return ['# 📚 文件資料夾：這裡只寫「讀哪個資料夾」。資料夾要在 local-settings.txt 的 DOC_ALLOWED_ROOTS 裡。',
-    '# 要讀哪些檔案、多久更新、怎麼用（副檔名、更新間隔、附上時機、章節號、最多段數、每段字數、回答方式），寫在每位成員人設的「## 文件資料夾：名稱」段落。',
+    '# 要讀哪些檔案、多久更新、怎麼用（副檔名、更新間隔、排除、附上時機、章節號、最多段數、每段字數、回答方式），寫在每位成員人設的「## 文件資料夾：名稱」段落。',
     '路徑: ' + String(form.path || '').trim(), ''].join('\n');
 }
 
@@ -56,10 +56,11 @@ const list = (v) => String(v || '').split(/[,，、]+/).map((x) => x.trim()).fil
 function parseRuleLines(lines) {
   const r = { text: [] };
   for (const raw of lines) {
-    const kv = /^\s*(附上時機|章節號|最多段數|每段字數|副檔名|更新間隔)(?:（分鐘）|\(分鐘\))?\s*[:：]\s*(.*)$/.exec(raw);
+    const kv = /^\s*(附上時機|章節號|最多段數|每段字數|副檔名|更新間隔|排除)(?:（分鐘）|\(分鐘\))?\s*[:：]\s*(.*)$/.exec(raw);
     if (!kv) { r.text.push(raw); continue; }
     const v = kv[2].trim();
-    if (kv[1] === '更新間隔') { const n = parseInt(v, 10); if (n > 0) r.scanMin = Math.min(1440, n); }
+    if (kv[1] === '排除') { const ex = list(v).map((x) => x.replace(/\\/g, '/').toLowerCase()).filter(Boolean); if (ex.length) r.exclude = [...(r.exclude || []), ...ex].slice(0, 20); }
+    else if (kv[1] === '更新間隔') { const n = parseInt(v, 10); if (n > 0) r.scanMin = Math.min(1440, n); }
     else if (kv[1] === '副檔名') { const ce = cleanExts(v); if (ce.exts.length) r.exts = ce.exts; if (ce.bad.length) r.badExts = ce.bad; }
     else if (kv[1] === '附上時機') r.keywords = list(v);
     else if (kv[1] === '章節號') r.chapter = v.replace(/^[「『"`]|[」』"`]$/g, '');
@@ -278,22 +279,34 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
   function searchIn(st, q, rule = {}) {
     const terms = queryTerms(q), maxHits = rule.maxHits || DEFAULTS.maxHits;
     const exts = new Set((rule.exts || DEFAULT_EXTS).map((x) => '.' + x));
-    let pool = [...st.files.entries()].filter(([rel]) => exts.has(path.extname(rel).toLowerCase())), chapterHit = [];
+    const skip = (rel) => (rule.exclude || []).some((x) => rel.toLowerCase().includes(x)); // 「排除:」路徑裡有這些字的檔案不查（例如舊版備份資料夾）
+    let pool = [...st.files.entries()].filter(([rel]) => exts.has(path.extname(rel).toLowerCase()) && !skip(rel)), chapterHit = [];
     if (rule.chapter) {
       const nums = chapterNums(q);
       for (const n of nums) { const re = chapterRe(rule.chapter, n); if (re) chapterHit.push(...pool.filter(([rel]) => re.test(rel)).map(([rel]) => rel)); }
       chapterHit = [...new Set(chapterHit)];
       if (chapterHit.length) pool = pool.filter(([rel]) => chapterHit.includes(rel));
     }
+    // 數字要整個相符（查 665 不算到 1665）；資料夾名稱與檔名有查詢的字也加分（通常是最準的線索）
+    const isNum = (t) => /^\d+(\.\d+)?$/.test(t);
+    const numRe = new Map(terms.filter(({ t }) => isNum(t)).map(({ t }) => [t, new RegExp('(?<![\\d.])' + t.replace('.', '\\.') + '(?![\\d]|\\.\\d)', 'g')]));
+    const count = (text, t) => {
+      if (numRe.has(t)) { const re = numRe.get(t); re.lastIndex = 0; let n = 0; while (n < 3 && re.exec(text)) n++; return n; }
+      let at = text.indexOf(t), n = 0; while (at >= 0 && n < 3) { n++; at = text.indexOf(t, at + t.length); } return n;
+    };
     const scored = [];
     for (const [rel, f] of pool) {
+      const lrel = rel.toLowerCase(), inPath = new Set(terms.filter(({ t }) => count(lrel, t) > 0).map(({ t }) => t));
+      const pathBonus = terms.reduce((a, { t, w }) => a + (inPath.has(t) ? w * 1.5 : 0), 0);
       f.c.forEach((c, idx) => {
         let s = 0, hit = 0;
         for (const { t, w } of terms) {
-          let at = c.lc.indexOf(t); if (at < 0) continue;
-          hit++; let n = 1; while (n < 3 && (at = c.lc.indexOf(t, at + t.length)) >= 0) n++;
-          s += w * (1 + (n - 1) * 0.3);
+          const n = count(c.lc, t);
+          if (n) s += w * (1 + (n - 1) * 0.3);
+          if (n || inPath.has(t)) hit++;
         }
+        if (s === 0 && !pathBonus && !chapterHit.length) return;
+        s += idx === 0 ? pathBonus : pathBonus * 0.6;
         if (chapterHit.length) s += idx === 0 ? 2 : 0.5; // 章節號對到：沒有其他字也給這一章的開頭
         if (s > 0) scored.push({ rel, idx, s: s * (terms.length ? 0.5 + hit / terms.length : 1), t: c.t });
       });

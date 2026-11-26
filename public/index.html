@@ -377,7 +377,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.44.2'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.44.3'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1049,10 +1049,10 @@ async function openAgentForm(id) {
         <span class="help">它看不到檔案、不能執行指令：每次對話，系統會先讀最新的待辦清單附在訊息裡；它只負責聽懂並寫出動作行，由 Agent Chat 檢查權限後寫進 Sheet。沒勾的成員就是一般對話（在 LINE 群組裡也是）。需要先在「📋 待辦清單」連上 Google Sheet。</span>
         <label style="margin-top:10px;display:block">📊 唯讀資料表（勾選這位成員可以查的表）</label>
         <div id="f_srclist" class="tpl"></div>
+        <div class="sk-row"><button type="button" id="f_src_add">＋ 新增資料表</button><span class="help">別人的 Google 試算表或雲端硬碟上的 Excel 檔，只讀不改。怎麼讀在左下「📊 資料表」設定；<b>讀了之後怎麼判斷寫在上面的人設</b>，每張表一段「## 資料表：名稱」（可以用「＋ 插入判讀規則」從範例開始）。只在附上那張表的資料時才一起附給它，不會每輪都送。</span></div>
         <label style="margin-top:10px;display:block">📚 文件資料夾（勾選這位成員可以查的資料夾）</label>
         <div id="f_doclist" class="tpl"></div>
         <span class="help">Agent Chat 用你的帳號唯讀讀資料夾裡的文件，依問題找出相關段落附給它，它自己不需要檔案權限。資料夾在左下「📚 文件資料夾」設定；怎麼用（附上時機、章節號、段數、回答方式）寫在上面的人設，每個資料夾一段「## 文件資料夾：名稱」。</span>
-        <div class="sk-row"><button type="button" id="f_src_add">＋ 新增資料表</button><span class="help">別人的 Google 試算表或雲端硬碟上的 Excel 檔，只讀不改。怎麼讀在左下「📊 資料表」設定；<b>讀了之後怎麼判斷寫在上面的人設</b>，每張表一段「## 資料表：名稱」（可以用「＋ 插入判讀規則」從範例開始）。只在附上那張表的資料時才一起附給它，不會每輪都送。</span></div>
       </div>
       <div class="field full">
         <label>🔧 維運：它負責照顧哪些成員（選填）</label>
@@ -2607,7 +2607,7 @@ async function openMemberChannels(id, { onSaved } = {}) {
 // ---------- 📊 資料表（唯讀資料表的管理頁＋新增／編輯表單）----------
 // ---------- 📚 文件資料夾：只設定讀哪個資料夾；怎麼用寫在成員人設「## 文件資料夾：名稱」 ----------
 const DOC_RULE_EX = (n) => ['副檔名: html, htm', '更新間隔: 10', '附上時機: ' + n + ', 章, 規定, 要求', '章節號: ' + n + '_{n}_', '最多段數: 4', '每段字數: 800',
-  '- 只根據系統附上的段落回答，並註明來源檔名；提醒「以內網正式版為準」。', '- 系統讀不了 PDF；問到 PDF 的內容，請告訴使用者要自己開檔確認。', '- 找不到或讀不到時照實說，不要自己編。'].join('\n');
+  '排除: ', '- 只根據系統附上的段落回答，並註明來源檔名；提醒「以內網正式版為準」。', '- 系統讀不了 PDF；問到 PDF 的內容，請告訴使用者要自己開檔確認。', '- 找不到或讀不到時照實說，不要自己編。'].join('\n');
 async function openDocs() {
   let R; try { R = await api('/api/docs'); } catch (e) { toast(e.message); return; }
   const st = (s) => !s ? '' : s.error ? '❌ ' + esc(s.error) : s.scanning ? '⏳ 整理中…' : s.at ? '✅ 已讀 ' + s.files + ' 個檔案（' + esc((s.exts || []).join('、')) + '），' + fmtTime(s.at) + ' 更新' : '還沒整理過';
@@ -2648,7 +2648,7 @@ async function openDocForm(name) {
         <div class="sk-row"><input id="df_q" placeholder="例如：USP 665 萃取 E&L" style="flex:1"><select id="df_agent"><option value="">不套用規則</option>${cur.usedBy.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select><button type="button" id="df_search">搜尋</button></div>
         <div id="df_out" class="ln-check"></div></div>` : ''}
     </div>
-    <p class="help">這裡只設定讀哪個資料夾（存成 <code>data/docs/名稱.md</code>）。要讀哪些檔案、怎麼用，寫在每位成員人設的「## 文件資料夾：名稱」段落（例如 <code>副檔名: html, txt</code>、<code>更新間隔: 10</code>）；系統讀得懂 ${esc(R.supported.join('、'))}。🔒 只讀不寫、不跟隨捷徑、要在允許清單內是固定的安全規則。</p>
+    <p class="help">這裡只設定讀哪個資料夾（存成 <code>data/docs/名稱.md</code>）。要讀哪些檔案、怎麼用，寫在每位成員人設的「## 文件資料夾：名稱」段落（例如 <code>副檔名: html, txt</code>、<code>更新間隔: 10</code>、<code>排除: _backups</code>）；系統讀得懂 ${esc(R.supported.join('、'))}。🔒 只讀不寫、不跟隨捷徑、要在允許清單內是固定的安全規則。</p>
     <div class="modal-actions"><span class="spacer"></span><button id="df_cancel">取消</button><button class="primary" id="df_save">儲存</button></div>`);
   $('df_cancel').onclick = closeModal2;
   $('df_test').onclick = async () => {
