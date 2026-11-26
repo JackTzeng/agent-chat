@@ -377,7 +377,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.46.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.46.2'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -2047,7 +2047,7 @@ async function openAudit(id) {
     <p class="lead">每一輪的輸入、執行的指令與結束碼、回覆和錯誤（最新的在上面）。完整紀錄在 data/audit/${esc(id)}.jsonl。</p>
     <div class="hn-list">${recs.map((r) => r.type === 'docs' ? `<div class="hn-item"><div class="grow" style="white-space:normal"><b>${fmtTime(r.ts)}</b>｜📚 查文件（${esc(r.via || '')}${r.who ? '・' + esc(r.who) : ''}）：${esc((r.query || '').slice(0, 120))}<small>${(r.files || []).length ? '附上：' + esc(r.files.join('、').slice(0, 400)) : '沒有附上段落'}</small></div></div>` : r.type === 'afterTurn' ? `<div class="hn-item"><div class="grow" style="white-space:normal"><b>${fmtTime(r.ts)}</b>｜⚙️ 每輪結束後執行 <code>${esc(r.command || '')}</code>：${r.skipped ? '🔒 沒有執行（鎖定的檔案被改過：' + esc((r.changed || []).slice(0, 5).join('、')) + '）' : (r.exitCode === 0 ? '✅ 成功' : '❌ 結束碼 ' + r.exitCode + (r.timedOut ? '（逾時）' : '')) + '｜' + ((r.ms || 0) / 1000).toFixed(1) + ' 秒'}${r.out && r.exitCode !== 0 ? `<small>${esc(r.out.slice(-400))}</small>` : ''}</div></div>` : `<div class="hn-item"><div class="grow" style="white-space:normal">
       <b>${fmtTime(r.ts)}</b>｜${r.via === 'telegram' ? '📱 Telegram' + (r.tgUser ? '（' + esc(r.tgUser) + '）' : '') : '💻 網頁'}｜${(r.ms / 1000).toFixed(1)} 秒${r.cliExit ? '｜CLI 結束碼 ' + r.cliExit : ''}
-      <small>輸入：${esc(r.input.slice(0, 300))}</small>
+      <details><summary><small>輸入（AI 實際收到的內容，${r.input.length} 字，按一下展開）：${esc(r.input.slice(0, 120))}…</small></summary><pre style="white-space:pre-wrap;font-size:12px;max-height:420px;overflow:auto">${esc(r.input)}</pre></details>
       ${r.calls.map((c) => `<small>${c.isError ? '❌' : '✅'} ${esc(c.tool)}：<code>${esc(c.command)}</code>${c.exitCode != null ? '（結束碼 ' + c.exitCode + '）' : ''}${c.isError && c.output ? '<br>' + esc(c.output.slice(0, 300)) : ''}</small>`).join('')}
       <small>回覆：${esc((r.reply || '（沒有）').slice(0, 400))}</small>
       ${r.errors.length ? `<small style="color:#e5484d">錯誤：${esc(r.errors.join('；').slice(0, 400))}</small>` : ''}

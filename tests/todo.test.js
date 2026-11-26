@@ -659,6 +659,13 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   await J('/api/line/people/' + okPerson.uid + '/role', 'POST', { role: '成員' });
   lst = await J('/api/line'); assert.ok(!lst.owners.some((o) => o.uid === okPerson.uid)); assert.equal(lst.people.find((x) => x.uid === okPerson.uid).role, '成員');
   assert.equal((await call('/api/line/people/' + okPerson.uid + '/role', 'POST', { role: '老闆' })).status, 400);
+  // 👑 管理者一對一（對象有待辦清單能力）：也附清單＋系統篩好的「我的待辦」（以前完全沒附）
+  await J('/api/line', 'PUT', { agentId: 'todo' });
+  assert.match(await dmSay('U_owner', 'QUERY 我的'), /我是 你的姓名/, '管理者還沒登記姓名：先請他說「我是 姓名」');
+  assert.match(await dmSay('U_owner', '我是 老闆'), /登記好了：老闆（主管）/);
+  await dmSay('U_owner', 'QUERY 我的');
+  const pOwn = lastAgyPrompt();
+  assert.match(pOwn, /【LINE 一對一訊息（系統整理）】/); assert.match(pOwn, /發言者：老闆（主管）/); assert.match(pOwn, /【老闆 負責的未完成事項[^】]*】\n（沒有）/); assert.match(pOwn, /【目前待辦清單/);
   const pushes = () => calls.filter((c) => c.url === '/v2/bot/message/push');
   const pu0 = pushes().length, ag1 = agyCalls();
   assert.match(await dmSay('U_wang', 'QUERY 私下問'), /已經通知管理者/);
