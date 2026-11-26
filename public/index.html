@@ -377,7 +377,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.44.1'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.44.2'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -2606,11 +2606,11 @@ async function openMemberChannels(id, { onSaved } = {}) {
 
 // ---------- 📊 資料表（唯讀資料表的管理頁＋新增／編輯表單）----------
 // ---------- 📚 文件資料夾：只設定讀哪個資料夾；怎麼用寫在成員人設「## 文件資料夾：名稱」 ----------
-const DOC_RULE_EX = (n) => ['附上時機: ' + n + ', 章, 規定, 要求', '章節號: ' + n + '_{n}_', '最多段數: 4', '每段字數: 800',
+const DOC_RULE_EX = (n) => ['副檔名: html, htm', '更新間隔: 10', '附上時機: ' + n + ', 章, 規定, 要求', '章節號: ' + n + '_{n}_', '最多段數: 4', '每段字數: 800',
   '- 只根據系統附上的段落回答，並註明來源檔名；提醒「以內網正式版為準」。', '- 系統讀不了 PDF；問到 PDF 的內容，請告訴使用者要自己開檔確認。', '- 找不到或讀不到時照實說，不要自己編。'].join('\n');
 async function openDocs() {
   let R; try { R = await api('/api/docs'); } catch (e) { toast(e.message); return; }
-  const st = (s) => !s ? '' : s.error ? '❌ ' + esc(s.error) : s.scanning ? '⏳ 整理中…' : s.at ? '✅ ' + s.files + ' 個檔案（' + esc((s.exts || []).join('、')) + '，每 ' + s.scanMin + ' 分鐘更新），' + fmtTime(s.at) + ' 更新' : '還沒整理過';
+  const st = (s) => !s ? '' : s.error ? '❌ ' + esc(s.error) : s.scanning ? '⏳ 整理中…' : s.at ? '✅ 已讀 ' + s.files + ' 個檔案（' + esc((s.exts || []).join('、')) + '），' + fmtTime(s.at) + ' 更新' : '還沒整理過';
   openModal(`<h2>📚 文件資料夾</h2>
     <p class="lead">Agent Chat 用<b>你的 Windows 帳號</b>唯讀讀取資料夾裡的文件（html、txt、md，例如內網的法規、SOP），依成員收到的問題找出相關段落附給它。成員本身<b>不需要任何檔案或指令權限</b>。這裡只設定讀哪個資料夾；怎麼用寫在每位成員人設的「## 文件資料夾：名稱」段落。</p>
     <p class="help">🔒 資料夾要先加進允許清單：在程式資料夾的 <code>local-settings.txt</code> 加一行 <code>DOC_ALLOWED_ROOTS=資料夾路徑</code>（多個用分號隔開），再按「🔄 只重新啟動」。目前允許：${R.allowedRoots.length ? R.allowedRoots.map(esc).join('、') : '（還沒有）'}</p>
@@ -2643,20 +2643,18 @@ async function openDocForm(name) {
     <div class="fgrid">
       <div class="field"><label>名稱（人設段落用這個名字）</label><input id="df_name" value="${esc(name || '')}" maxlength="20" placeholder="例如：USP"></div>
       <div class="field full"><label>資料夾路徑（本機或網路路徑，會連子資料夾一起讀）</label><input id="df_path" value="${esc(f.path || '')}" placeholder="\\\\192.168.4.11\\共用\\法規　或　D:\\法規"></div>
-      <div class="field"><label>副檔名（逗號分隔）</label><input id="df_exts" value="${esc((f.exts || R.defaults.exts).join(', '))}"><span class="help">可以填：${esc(R.supported.join('、'))}（PDF、Word 系統讀不了內容）</span></div>
-      <div class="field"><label>更新間隔（分鐘）</label><input id="df_min" type="number" min="1" max="1440" value="${esc(String(f.scanMin || R.defaults.scanMin))}"><span class="help">只讀改過的檔案</span></div>
-      <div class="field full"><div class="sk-row"><button type="button" class="primary" id="df_test">🔌 測試連線</button><span class="help">數一數讀得到幾個 html（不會存任何東西）</span></div><div id="df_testout" class="ln-check"></div></div>
+      <div class="field full"><div class="sk-row"><button type="button" class="primary" id="df_test">🔌 測試連線</button><span class="help">看看讀不讀得到、裡面有哪些檔案（不會存任何東西）</span></div><div id="df_testout" class="ln-check"></div></div>
       ${cur ? `<div class="field full"><label>🔎 預覽搜尋（照某位成員的規則段落）</label>
         <div class="sk-row"><input id="df_q" placeholder="例如：USP 665 萃取 E&L" style="flex:1"><select id="df_agent"><option value="">不套用規則</option>${cur.usedBy.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select><button type="button" id="df_search">搜尋</button></div>
         <div id="df_out" class="ln-check"></div></div>` : ''}
     </div>
-    <p class="help">這些設定存在 <code>data/docs/名稱.md</code>，也可以直接用記事本改。🔒 固定的安全規則（設定檔改不了）：只讀不寫、不跟隨捷徑、資料夾要在允許清單內。</p>
+    <p class="help">這裡只設定讀哪個資料夾（存成 <code>data/docs/名稱.md</code>）。要讀哪些檔案、怎麼用，寫在每位成員人設的「## 文件資料夾：名稱」段落（例如 <code>副檔名: html, txt</code>、<code>更新間隔: 10</code>）；系統讀得懂 ${esc(R.supported.join('、'))}。🔒 只讀不寫、不跟隨捷徑、要在允許清單內是固定的安全規則。</p>
     <div class="modal-actions"><span class="spacer"></span><button id="df_cancel">取消</button><button class="primary" id="df_save">儲存</button></div>`);
   $('df_cancel').onclick = closeModal2;
   $('df_test').onclick = async () => {
     $('df_testout').textContent = '連線中…';
-    try { const r = await api('/api/docs/test', { method: 'POST', body: JSON.stringify({ form: { path: $('df_path').value, exts: $('df_exts').value } }) });
-      $('df_testout').innerHTML = `✅ 讀得到${r.account ? '（用 ' + esc(r.account) + ' 帳號）' : ''}：${r.html} 個檔案（${esc(r.exts.join('、'))}）${r.capped ? '（超過上限，只讀前面的）' : ''}${r.skipped ? '｜略過 ' + r.skipped + ' 個捷徑' : ''}<br><span class="help">例如：${esc(r.sample.join('、'))}</span>`;
+    try { const r = await api('/api/docs/test', { method: 'POST', body: JSON.stringify({ form: { path: $('df_path').value } }) });
+      $('df_testout').innerHTML = `✅ 讀得到${r.account ? '（用 ' + esc(r.account) + ' 帳號）' : ''}：${r.total} 個檔案${r.capped ? '（超過上限，只算前面的）' : ''}——${r.counts.map((c) => esc(c.ext) + ' ' + c.n + (c.readable ? '' : '（系統讀不了）')).join('、')}${r.skipped ? '｜略過 ' + r.skipped + ' 個捷徑' : ''}<br><span class="help">例如：${esc(r.sample.join('、'))}</span>`;
     } catch (e) { $('df_testout').innerHTML = '❌ ' + esc(e.message); }
   };
   if ($('df_search')) $('df_search').onclick = async () => {
@@ -2666,7 +2664,7 @@ async function openDocForm(name) {
     } catch (e) { $('df_out').innerHTML = '❌ ' + esc(e.message); }
   };
   $('df_save').onclick = async () => {
-    try { const r = await api('/api/docs/form', { method: 'PUT', body: JSON.stringify({ name: $('df_name').value.trim(), oldName: name || '', form: { path: $('df_path').value.trim(), exts: $('df_exts').value, scanMin: $('df_min').value } }) });
+    try { const r = await api('/api/docs/form', { method: 'PUT', body: JSON.stringify({ name: $('df_name').value.trim(), oldName: name || '', form: { path: $('df_path').value.trim() } }) });
       toast('✅ 已儲存「' + r.name + '」，背景整理中'); closeModal2(); if (modalShowing('doc_close')) openDocs();
     } catch (e) { toast(e.message); }
   };

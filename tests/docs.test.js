@@ -62,7 +62,7 @@ test('掃描與檢索：允許清單、章節號優先、只讀 html、不跟隨
     assert.equal(book.save('USP', '', { path: lib.top }), 'USP');
     assert.match(fs.readFileSync(path.join(dataDir, 'docs', 'USP.md'), 'utf8'), /路徑: /);
     const t0 = await book.test({ path: lib.top });
-    assert.equal(t0.html, 3, JSON.stringify(t0));
+    assert.equal(t0.counts.find((c) => c.ext === 'html').n, 3, JSON.stringify(t0));
 
     const st = await book.scan('USP');
     assert.equal(st.files, 3, '只有 3 個 html（pdf、txt、捷徑裡的都不讀）');
@@ -93,15 +93,19 @@ test('掃描與檢索：允許清單、章節號優先、只讀 html、不跟隨
     await book.scan('USP');
     assert.equal((await book.search('USP', 'USP 700', rule)).hits[0].rel.includes('USP_700_'), true);
     assert.ok((await book.search('USP', 'UPDATED-TEXT', {})).hits.length === 1);
-    // 副檔名寫在設定檔：加 txt 就讀得到 txt；系統讀不了的格式（pdf）不能存
-    assert.throws(() => book.save('USP', 'USP', { path: lib.top, exts: 'html, pdf' }), /讀不了 pdf/);
-    await assert.rejects(book.test({ path: lib.top, exts: 'docx' }), /讀不了 docx/);
-    book.save('USP', 'USP', { path: lib.top, exts: 'html, htm, txt', scanMin: 30 });
-    assert.match(fs.readFileSync(path.join(dataDir, 'docs', 'USP.md'), 'utf8'), /副檔名: html, htm, txt\n更新間隔（分鐘）: 30/);
-    assert.equal((await book.scan('USP')).files, 5);
-    assert.ok((await book.search('USP', '不該被讀到', {})).hits.some((h) => h.rel === 'USP-NF_中英對照_20260903/notes.txt'), 'txt 照原文讀');
-    book.save('USP', 'USP', { path: lib.top, exts: 'html, htm' });
-    await book.scan('USP');
+    // 讀哪些檔、多久更新寫在成員人設段落（Agent Chat 設定檔只有路徑）
+    assert.doesNotMatch(fs.readFileSync(path.join(dataDir, 'docs', 'USP.md'), 'utf8'), /^副檔名|^更新間隔/m);
+    const txtRule = docsLib.parseDocSections('## 文件資料夾：USP\n副檔名: html, txt, pdf\n更新間隔: 30').get('USP');
+    assert.deepEqual(txtRule.exts, ['html', 'txt']); assert.deepEqual(txtRule.badExts, ['pdf']); assert.equal(txtRule.scanMin, 30);
+    const book3 = docsLib.create({ dataDir: path.join(base, 'data3'), appRoot, env, rulesFor: () => [txtRule, {}] });
+    fs.mkdirSync(path.join(base, 'data3', 'docs'), { recursive: true }); fs.copyFileSync(path.join(dataDir, 'docs', 'USP.md'), path.join(base, 'data3', 'docs', 'USP.md'));
+    assert.equal((await book3.scan('USP')).files, 5, 'html＋htm（預設）＋txt');
+    assert.equal(book3.status('USP').scanMin, 10, '好幾位成員：取最短的更新間隔');
+    assert.ok((await book3.search('USP', '不該被讀到', txtRule)).hits.some((h) => h.rel === 'USP-NF_中英對照_20260903/notes.txt'), 'txt 照原文讀');
+    assert.ok(!(await book3.search('USP', '不該被讀到', {})).hits.some((h) => /notes\.txt/.test(h.rel)), '沒寫 txt 的成員看不到 txt');
+    const t3 = await book3.test({ path: lib.top });
+    assert.ok(t3.counts.some((c) => c.ext === 'pdf' && !c.readable) && t3.counts.some((c) => c.ext === 'txt' && c.readable));
+    assert.match((await book3.context({ docFolders: ['USP'], persona: '## 文件資料夾：USP\n副檔名: html, txt, pdf' }, 'USP 665')).text, /系統讀不了 pdf 檔的內容/);
     // 新的實例從快取讀（重開程式不用重建）
     const book2 = docsLib.create({ dataDir, appRoot, env });
     assert.equal(book2.status('USP').files, 4);
@@ -156,7 +160,7 @@ const fs = require('fs'); let inp = ''; process.stdin.on('data', (d) => (inp += 
   const waitFor = async (fn, what) => { for (let i = 0; i < 200; i++) { const v = await fn(); if (v) return v; await sleep(50); } throw new Error('timeout: ' + what + '\n' + stderr.slice(-800)); };
 
   assert.equal((await call('/api/docs/form', 'PUT', { name: 'USP', form: { path: path.join(path.dirname(lib.top), 'outside') } })).status, 400, '不在允許清單');
-  assert.equal((await J('/api/docs/test', 'POST', { form: { path: lib.top } })).html, 3);
+  assert.equal((await J('/api/docs/test', 'POST', { form: { path: lib.top } })).counts.find((c) => c.ext === 'html').n, 3);
   await J('/api/docs/form', 'PUT', { name: 'USP', form: { path: lib.top } });
   const s1 = await J('/api/docs/USP/rebuild', 'POST'); assert.equal(s1.files, 3);
   const sr = await J('/api/docs/search', 'POST', { name: 'USP', q: 'USP 665 萃取', agentId: 'asst' });

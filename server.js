@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.44.1';
+const VERSION = '3.44.2';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -2226,12 +2226,12 @@ const server = http.createServer(async (req, res) => {
       const names = [...new Set([...docBook.names(), ...CONFIG.agents.flatMap((a) => a.docFolders || [])])].filter(docsLib.validName).sort();
       const docs = names.map((n) => ({ name: n, form: docBook.form(n), status: docBook.status(n),
         usedBy: CONFIG.agents.filter((a) => (a.docFolders || []).includes(n)).map((a) => ({ id: a.id, name: a.name, hasRules: docsLib.parseDocSections(a.persona).has(n) })) }));
-      return send(res, 200, { docs, allowedRoots: docBook.allowedRoots(), supported: docsLib.SUPPORTED, defaults: { exts: docsLib.DEFAULT_EXTS, scanMin: docsLib.DEFAULTS.scanMin } });
+      return send(res, 200, { docs, allowedRoots: docBook.allowedRoots(), supported: docsLib.SUPPORTED });
     }
     if (p === '/api/docs/form' && req.method === 'PUT') {
       try {
         const b = await readBody(req), oldName = String(b.oldName || '').trim();
-        const fm = b.form || {}, name = docBook.save(b.name, oldName, { path: String(fm.path || '').slice(0, 500), exts: fm.exts === undefined ? undefined : String(fm.exts).slice(0, 100), scanMin: fm.scanMin });
+        const name = docBook.save(b.name, oldName, { path: String((b.form || {}).path || '').slice(0, 500) });
         if (oldName && oldName !== name) {
           for (const a of CONFIG.agents) if ((a.docFolders || []).includes(oldName)) { a.docFolders = a.docFolders.map((x) => (x === oldName ? name : x)); a.persona = String(a.persona || '').replace(new RegExp('^(##\\s*文件資料夾[:：]\\s*)' + oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'gm'), '$1' + name); writeAgentMd(a); }
           saveConfig(); reloadAgents(); agentsChanged();
@@ -2241,7 +2241,7 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { return send(res, 400, { error: e.message }); }
     }
     if (p === '/api/docs/test' && req.method === 'POST') {
-      try { const fm = (await readBody(req)).form || {}; return send(res, 200, await docBook.test({ path: String(fm.path || ''), exts: fm.exts === undefined ? undefined : String(fm.exts).slice(0, 100) })); }
+      try { return send(res, 200, await docBook.test({ path: String(((await readBody(req)).form || {}).path || '') })); }
       catch (e) { return send(res, 400, { error: e.message }); }
     }
     if (p === '/api/docs/search' && req.method === 'POST') {
@@ -2827,7 +2827,8 @@ function sourceProfileText(name) {
 // 📮 通知補送：LINE／Telegram 暫時送不出去的訊息存在 state.outbox，背景重送（outbox.js）
 const outbox = require('./outbox').create({ state, saveState: () => saveState(), broadcast: (e) => broadcast(e) });
 // 📚 文件資料夾：主程式用你的帳號唯讀讀 html，依問題附相關段落（成員不需要檔案權限）
-const docBook = docsLib.create({ dataDir: DATA_DIR, appRoot: ROOT, log: (m) => console.log(m) });
+const docBook = docsLib.create({ dataDir: DATA_DIR, appRoot: ROOT, log: (m) => console.log(m),
+  rulesFor: (n) => CONFIG.agents.filter((a) => (a.docFolders || []).includes(n)).map((a) => docsLib.parseDocSections(a.persona).get(n) || {}) });
 const docsInUse = () => [...new Set(CONFIG.agents.flatMap((a) => a.docFolders || []))].filter((n) => docBook.form(n));
 setInterval(() => docBook.tick(docsInUse()), 60000).unref();
 setTimeout(() => docBook.tick(docsInUse()), 5000).unref();
