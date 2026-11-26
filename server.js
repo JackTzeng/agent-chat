@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.44.0';
+const VERSION = '3.44.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -2226,12 +2226,12 @@ const server = http.createServer(async (req, res) => {
       const names = [...new Set([...docBook.names(), ...CONFIG.agents.flatMap((a) => a.docFolders || [])])].filter(docsLib.validName).sort();
       const docs = names.map((n) => ({ name: n, form: docBook.form(n), status: docBook.status(n),
         usedBy: CONFIG.agents.filter((a) => (a.docFolders || []).includes(n)).map((a) => ({ id: a.id, name: a.name, hasRules: docsLib.parseDocSections(a.persona).has(n) })) }));
-      return send(res, 200, { docs, allowedRoots: docBook.allowedRoots() });
+      return send(res, 200, { docs, allowedRoots: docBook.allowedRoots(), supported: docsLib.SUPPORTED, defaults: { exts: docsLib.DEFAULT_EXTS, scanMin: docsLib.DEFAULTS.scanMin } });
     }
     if (p === '/api/docs/form' && req.method === 'PUT') {
       try {
         const b = await readBody(req), oldName = String(b.oldName || '').trim();
-        const name = docBook.save(b.name, oldName, { path: String((b.form || {}).path || '').slice(0, 500) });
+        const fm = b.form || {}, name = docBook.save(b.name, oldName, { path: String(fm.path || '').slice(0, 500), exts: fm.exts === undefined ? undefined : String(fm.exts).slice(0, 100), scanMin: fm.scanMin });
         if (oldName && oldName !== name) {
           for (const a of CONFIG.agents) if ((a.docFolders || []).includes(oldName)) { a.docFolders = a.docFolders.map((x) => (x === oldName ? name : x)); a.persona = String(a.persona || '').replace(new RegExp('^(##\\s*文件資料夾[:：]\\s*)' + oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'gm'), '$1' + name); writeAgentMd(a); }
           saveConfig(); reloadAgents(); agentsChanged();
@@ -2241,7 +2241,7 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { return send(res, 400, { error: e.message }); }
     }
     if (p === '/api/docs/test' && req.method === 'POST') {
-      try { return send(res, 200, await docBook.test({ path: String(((await readBody(req)).form || {}).path || '') })); }
+      try { const fm = (await readBody(req)).form || {}; return send(res, 200, await docBook.test({ path: String(fm.path || ''), exts: fm.exts === undefined ? undefined : String(fm.exts).slice(0, 100) })); }
       catch (e) { return send(res, 400, { error: e.message }); }
     }
     if (p === '/api/docs/search' && req.method === 'POST') {

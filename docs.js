@@ -8,27 +8,41 @@
 const fs = require('fs');
 const path = require('path');
 
-const EXTS = new Set(['.html', '.htm']);
+// 系統讀得懂的文字格式（PDF、Word 沒有零相依的解析器，設定檔寫了也讀不出內容）；實際要讀哪些由設定檔「副檔名」決定
+const SUPPORTED = ['html', 'htm', 'txt', 'md'];
+const DEFAULT_EXTS = ['html', 'htm'];
 const LIMITS = { files: 5000, depth: 8, fileBytes: 8 * 1024 * 1024, totalChars: 150e6, chunk: 700 };
 const DEFAULTS = { maxHits: 4, chars: 800, scanMin: 10 };
+const isHtml = (f) => /\.html?$/i.test(f);
 const NAME_RE = /^[^\\/:*?"<>|.\x00-\x1f]{1,20}$/;
 const validName = (n) => NAME_RE.test(String(n || '').trim());
 const short = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; };
 
 // ---------- 設定檔（連線）：data/docs/<名稱>.md ----------
+function cleanExts(v) {
+  const want = (Array.isArray(v) ? v : String(v || '').split(/[,，、\s]+/)).map((x) => String(x).trim().replace(/^\./, '').toLowerCase()).filter(Boolean);
+  const bad = want.filter((x) => !SUPPORTED.includes(x));
+  return { exts: [...new Set(want.filter((x) => SUPPORTED.includes(x)))], bad };
+}
+const cleanMin = (v) => { const n = parseInt(v, 10); return n > 0 ? Math.min(1440, n) : DEFAULTS.scanMin; };
 function parseDocMd(text) {
-  const o = {};
+  const o = { exts: DEFAULT_EXTS.slice(), scanMin: DEFAULTS.scanMin };
   for (const line of String(text || '').split(/\r?\n/)) {
-    const m = /^\s*(路徑|path)\s*[:：]\s*(.+?)\s*$/i.exec(line);
-    if (m) o.path = m[2].replace(/^[「『"]|[」』"]$/g, '').trim();
+    const m = /^\s*(路徑|path|副檔名|更新間隔(?:（分鐘）|\(分鐘\))?)\s*[:：]\s*(.*?)\s*$/i.exec(line);
+    if (!m) continue;
+    if (/^(路徑|path)$/i.test(m[1])) o.path = m[2].replace(/^[「『"]|[」』"]$/g, '').trim();
+    else if (m[1] === '副檔名') { const e = cleanExts(m[2]).exts; if (e.length) o.exts = e; }
+    else o.scanMin = cleanMin(m[2]);
   }
   return o;
 }
 function renderDocMd(form) {
-  return ['# 📚 文件資料夾的連線設定：這裡只寫「讀哪個資料夾」。',
+  return ['# 📚 文件資料夾的讀取設定：讀哪個資料夾、哪些檔案、多久更新一次。改完存檔，下一次更新就生效。',
     '# 怎麼用（附上時機、章節號、最多段數、每段字數、回答方式）寫在成員人設的「## 文件資料夾：名稱」段落。',
-    '# 只讀 .html／.htm；資料夾要在 local-settings.txt 的 DOC_ALLOWED_ROOTS 裡。',
-    '路徑: ' + String(form.path || '').trim(), ''].join('\n');
+    '# 副檔名可以填：' + SUPPORTED.join('、') + '（PDF、Word 系統讀不了內容）。資料夾要在 local-settings.txt 的 DOC_ALLOWED_ROOTS 裡。',
+    '路徑: ' + String(form.path || '').trim(),
+    '副檔名: ' + (form.exts && form.exts.length ? form.exts : DEFAULT_EXTS).join(', '),
+    '更新間隔（分鐘）: ' + cleanMin(form.scanMin), ''].join('\n');
 }
 
 // ---------- 人設段落（規則）：## 文件資料夾：名稱 ----------
@@ -148,6 +162,7 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
     if (!validName(name)) throw new Error('名稱 1～20 個字，不能有 \\ / : * ? " < > | .');
     if (name !== oldName && fs.existsSync(path.join(DIR, name + '.md'))) throw new Error('已經有叫「' + name + '」的文件資料夾');
     checkRoot(f.path);
+    if (f.exts !== undefined) { const ce = cleanExts(f.exts); if (ce.bad.length) throw new Error('系統讀不了 ' + ce.bad.join('、') + ' 的內容；可以填：' + SUPPORTED.join('、')); f = { ...f, exts: ce.exts.length ? ce.exts : DEFAULT_EXTS }; }
     fs.mkdirSync(DIR, { recursive: true });
     const file = path.join(DIR, name + '.md');
     if (fs.existsSync(file)) { try { fs.mkdirSync(path.join(DIR, '.backup'), { recursive: true }); fs.copyFileSync(file, path.join(DIR, '.backup', name + '-' + now() + '.md')); } catch {} }
@@ -183,7 +198,8 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
       fs.writeFileSync(tmp, JSON.stringify({ root: st.root, at: st.at, files })); fs.renameSync(tmp, path.join(IDX, name + '.json'));
     } catch (e) { log('📚 索引存檔失敗：' + e.message); }
   }
-  async function walk(root) {
+  async function walk(root, exts = DEFAULT_EXTS) {
+    const want = new Set(exts.map((x) => '.' + x));
     const out = []; let skipped = 0;
     async function go(dir, rel, depth) {
       if (depth > LIMITS.depth || out.length >= LIMITS.files) return;
@@ -193,7 +209,7 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
         if (e.isSymbolicLink()) { skipped++; continue; } // 不跟隨捷徑／junction：不會被帶到資料夾外面
         const r = rel ? rel + '/' + e.name : e.name, full = path.join(dir, e.name);
         if (e.isDirectory()) await go(full, r, depth + 1);
-        else if (e.isFile() && EXTS.has(path.extname(e.name).toLowerCase())) out.push({ rel: r, full });
+        else if (e.isFile() && want.has(path.extname(e.name).toLowerCase())) out.push({ rel: r, full });
       }
     }
     await go(root, '', 0);
@@ -210,7 +226,7 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
       try {
         const lst = await fs.promises.lstat(root);
         if (!lst.isDirectory()) throw new Error('不是資料夾');
-        const { list: found, skipped } = await walk(root);
+        const { list: found, skipped } = await walk(root, f.exts);
         const seen = new Set(); let changed = force, total = 0, read = 0;
         for (const [, v] of st.files) for (const c of v.c) total += c.t.length;
         let i = 0;
@@ -221,7 +237,7 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
             const old = st.files.get(it.rel);
             if (!force && old && old.m === s.mtimeMs && old.s === s.size) continue;
             if (s.size > LIMITS.fileBytes) { st.files.delete(it.rel); continue; }
-            const txt = htmlToText(await fs.promises.readFile(it.full, 'utf8').catch(() => ''));
+            const raw = await fs.promises.readFile(it.full, 'utf8').catch(() => ''), txt = isHtml(it.rel) ? htmlToText(raw) : raw.replace(/\r\n/g, '\n').replace(/[ \t]+/g, ' ');
             if (old) for (const c of old.c) total -= c.t.length;
             if (total + txt.length > LIMITS.totalChars) { st.files.delete(it.rel); continue; }
             total += txt.length; read++;
@@ -248,7 +264,7 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
     let root = '', rootError = ''; try { root = checkRoot(f.path); } catch (e) { rootError = e.message; }
     const st = mem.get(name) || (root ? loadCache(name, root) : null);
     let chunks = 0; if (st) for (const [, v] of st.files) chunks += v.c.length;
-    return { name, path: f.path, files: st ? st.files.size : 0, chunks, at: st ? st.at : 0, error: rootError || (st && st.error) || '', scanning: !!(st && st.scanning), skipped: (st && st.skipped) || 0 };
+    return { name, path: f.path, exts: f.exts, scanMin: f.scanMin, files: st ? st.files.size : 0, chunks, at: st ? st.at : 0, error: rootError || (st && st.error) || '', scanning: !!(st && st.scanning), skipped: (st && st.skipped) || 0 };
   }
 
   // ---------- 搜尋 ----------
@@ -256,7 +272,7 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
     const f = form(name); if (!f) throw new Error('找不到文件資料夾「' + name + '」');
     const root = checkRoot(f.path);
     const st = loadCache(name, root);
-    const ageMs = now() - (st.at || 0), every = DEFAULTS.scanMin * 60000;
+    const ageMs = now() - (st.at || 0), every = f.scanMin * 60000;
     if (!st.at) { const p = scan(name).catch(() => {}); await Promise.race([p, new Promise((r) => setTimeout(r, waitMs))]); }
     else if (ageMs > every && !st.scanning && !(st.failedAt && now() - st.failedAt < 60000)) scan(name).catch(() => {}); // 背景更新，這次先用快取
     return st;
@@ -335,12 +351,14 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
   // 測試連線：不建索引，只數檔案
   async function test(f) {
     const root = checkRoot(f.path);
+    const ce = cleanExts(f.exts === undefined ? DEFAULT_EXTS : f.exts), exts = ce.exts.length ? ce.exts : DEFAULT_EXTS;
+    if (ce.bad.length) throw new Error('系統讀不了 ' + ce.bad.join('、') + ' 的內容；可以填：' + SUPPORTED.join('、'));
     const who = (() => { try { return '（Agent Chat 目前用 ' + (process.env.USERDOMAIN ? process.env.USERDOMAIN + '\\' : '') + require('os').userInfo().username + ' 這個帳號讀）'; } catch { return ''; } })();
     const lst = await fs.promises.lstat(root).catch((e) => { throw new Error((e.code === 'ENOENT' ? '找不到這個資料夾：請先用同一台電腦的檔案總管打開這個路徑，確認打得開（網路磁碟要先登入過）' : e.code === 'EACCES' || e.code === 'EPERM' ? '沒有權限讀這個資料夾' : '連不上（' + (e.code || e.message) + '）') + who); });
     if (!lst.isDirectory()) throw new Error('不是資料夾');
-    const { list: found, skipped } = await walk(root);
+    const { list: found, skipped } = await walk(root, exts);
     let account = ''; try { const u = require('os').userInfo(); account = (process.env.USERDOMAIN ? process.env.USERDOMAIN + '\\' : '') + u.username; } catch {}
-    return { ok: true, root, account, html: found.length, sample: found.slice(0, 5).map((x) => x.rel), skipped, capped: found.length >= LIMITS.files };
+    return { ok: true, root, account, html: found.length, exts, sample: found.slice(0, 5).map((x) => x.rel), skipped, capped: found.length >= LIMITS.files };
   }
 
   // 每分鐘看一次：有成員在用、超過更新間隔就背景更新
@@ -348,11 +366,12 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
     for (const name of usedNames) {
       const st = mem.get(name);
       if (st && (st.scanning || (st.failedAt && now() - st.failedAt < 5 * 60000))) continue;
-      if (!st || now() - (st.at || 0) > DEFAULTS.scanMin * 60000) scan(name).catch(() => {});
+      const f = form(name); if (!f) continue;
+      if (!st || now() - (st.at || 0) > f.scanMin * 60000) scan(name).catch(() => {});
     }
   }
 
   return { names, form, save, remove, scan, status, search, context, test, tick, checkRoot, allowedRoots };
 }
 
-module.exports = { create, parseDocMd, renderDocMd, parseDocSections, parseRuleLines, htmlToText, chunkText, queryTerms, chapterRe, chapterNums, validName, DEFAULTS, LIMITS, SECTION_RE };
+module.exports = { create, SUPPORTED, DEFAULT_EXTS, cleanExts, parseDocMd, renderDocMd, parseDocSections, parseRuleLines, htmlToText, chunkText, queryTerms, chapterRe, chapterNums, validName, DEFAULTS, LIMITS, SECTION_RE };

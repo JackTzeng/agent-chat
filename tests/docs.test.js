@@ -93,6 +93,15 @@ test('掃描與檢索：允許清單、章節號優先、只讀 html、不跟隨
     await book.scan('USP');
     assert.equal((await book.search('USP', 'USP 700', rule)).hits[0].rel.includes('USP_700_'), true);
     assert.ok((await book.search('USP', 'UPDATED-TEXT', {})).hits.length === 1);
+    // 副檔名寫在設定檔：加 txt 就讀得到 txt；系統讀不了的格式（pdf）不能存
+    assert.throws(() => book.save('USP', 'USP', { path: lib.top, exts: 'html, pdf' }), /讀不了 pdf/);
+    await assert.rejects(book.test({ path: lib.top, exts: 'docx' }), /讀不了 docx/);
+    book.save('USP', 'USP', { path: lib.top, exts: 'html, htm, txt', scanMin: 30 });
+    assert.match(fs.readFileSync(path.join(dataDir, 'docs', 'USP.md'), 'utf8'), /副檔名: html, htm, txt\n更新間隔（分鐘）: 30/);
+    assert.equal((await book.scan('USP')).files, 5);
+    assert.ok((await book.search('USP', '不該被讀到', {})).hits.some((h) => h.rel === 'USP-NF_中英對照_20260903/notes.txt'), 'txt 照原文讀');
+    book.save('USP', 'USP', { path: lib.top, exts: 'html, htm' });
+    await book.scan('USP');
     // 新的實例從快取讀（重開程式不用重建）
     const book2 = docsLib.create({ dataDir, appRoot, env });
     assert.equal(book2.status('USP').files, 4);
