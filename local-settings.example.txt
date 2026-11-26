@@ -6,6 +6,9 @@
 # 成員要存取 workspace 以外的資料夾時，把那些資料夾（或它們的上層資料夾）加進來，多個用分號分隔
 # AGENT_ALLOWED_ROOTS=C:\EM_reports_copy;D:\共用資料
 
+# 📚 文件資料夾：Agent Chat 可以唯讀讀取的資料夾（本機或內網路徑，只讀裡面的 html），多個用分號分隔
+# DOC_ALLOWED_ROOTS=\\192.168.1.10\共用\法規;D:\SOP
+
 # 若自動找不到 CLI，把 where.exe 查到的完整路徑填在這裡
 # CLAUDE_BIN=C:\Users\你的帳號\AppData\Roaming\npm\claude.cmd
 # CODEX_BIN=C:\Users\你的帳號\AppData\Roaming\npm\codex.cmd

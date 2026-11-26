@@ -377,7 +377,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.43.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.44.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -1049,6 +1049,9 @@ async function openAgentForm(id) {
         <span class="help">它看不到檔案、不能執行指令：每次對話，系統會先讀最新的待辦清單附在訊息裡；它只負責聽懂並寫出動作行，由 Agent Chat 檢查權限後寫進 Sheet。沒勾的成員就是一般對話（在 LINE 群組裡也是）。需要先在「📋 待辦清單」連上 Google Sheet。</span>
         <label style="margin-top:10px;display:block">📊 唯讀資料表（勾選這位成員可以查的表）</label>
         <div id="f_srclist" class="tpl"></div>
+        <label style="margin-top:10px;display:block">📚 文件資料夾（勾選這位成員可以查的資料夾）</label>
+        <div id="f_doclist" class="tpl"></div>
+        <span class="help">Agent Chat 用你的帳號唯讀讀資料夾裡的 html，依問題找出相關段落附給它，它自己不需要檔案權限。資料夾在左下「📚 文件資料夾」設定；怎麼用（附上時機、章節號、段數、回答方式）寫在上面的人設，每個資料夾一段「## 文件資料夾：名稱」。</span>
         <div class="sk-row"><button type="button" id="f_src_add">＋ 新增資料表</button><span class="help">別人的 Google 試算表或雲端硬碟上的 Excel 檔，只讀不改。怎麼讀在左下「📊 資料表」設定；<b>讀了之後怎麼判斷寫在上面的人設</b>，每張表一段「## 資料表：名稱」（可以用「＋ 插入判讀規則」從範例開始）。只在附上那張表的資料時才一起附給它，不會每輪都送。</span></div>
       </div>
       <div class="field full">
@@ -1249,6 +1252,25 @@ async function openAgentForm(id) {
     document.querySelectorAll('[data-srcedit]').forEach((el) => (el.onclick = (e) => { e.preventDefault(); openSourceForm(el.dataset.srcedit, { onSaved: (n) => { srcPicked.add(n); renderSrcList(); } }); }));
   };
   renderSrcList();
+  // 📚 文件資料夾：勾選；沒有規則段落可以一鍵插入範例
+  let docPicked = new Set(a.docFolders || []);
+  const renderDocList = async () => {
+    let R; try { R = await api('/api/docs'); } catch { R = { docs: [] }; }
+    for (const el of document.querySelectorAll('#f_doclist input:checked')) docPicked.add(el.value);
+    for (const el of document.querySelectorAll('#f_doclist input:not(:checked)')) docPicked.delete(el.value);
+    const hasSec = (n) => new RegExp('^##\\s*文件資料夾[:：]\\s*' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'm').test($('f_persona').value);
+    $('f_doclist').innerHTML = R.docs.length ? R.docs.map((x) => `<div style="margin:2px 0"><label class="opt"><input type="checkbox" value="${esc(x.name)}" ${docPicked.has(x.name) ? 'checked' : ''}> ${esc(x.name)}</label>
+      <span class="help">${hasSec(x.name) ? '✅ 人設裡有「## 文件資料夾：' + esc(x.name) + '」' : '沒有規則段落（每則訊息都會查）'}</span>
+      ${hasSec(x.name) ? '' : `<button type="button" data-docrule="${esc(x.name)}">＋ 插入規則範例</button>`}</div>`).join('') : '<span class="help">還沒有文件資料夾，到左下「📚 文件資料夾」新增。</span>';
+    document.querySelectorAll('[data-docrule]').forEach((b) => (b.onclick = () => {
+      const n = b.dataset.docrule, ta = $('f_persona');
+      ta.value = (ta.value.trim() + '\n\n## 文件資料夾：' + n + '\n' + DOC_RULE_EX(n)).trim();
+      if (editing && $('f_reset')) $('f_reset').checked = false;
+      const cb = document.querySelector('#f_doclist input[value="' + CSS.escape(n) + '"]'); if (cb) cb.checked = true;
+      toast('已在人設最後加上「## 文件資料夾：' + n + '」段落，記得按儲存'); ta.scrollIntoView({ block: 'center' }); renderDocList();
+    }));
+  };
+  renderDocList();
   $('f_src_add').onclick = () => openSourceForm(null, { onSaved: (n) => { srcPicked.add(n); renderSrcList(); } });
   if ($('f_md_on')) $('f_md_on').onclick = async () => { try { const r = await api('/api/agents/' + id + '/md', { method: 'POST', body: '{}' }); toast('📄 已建立 ' + r.file); openAgentForm(id); } catch (e) { toast(e.message); } };
   if ($('f_md_off')) $('f_md_off').onclick = async () => { if (!confirm('不再使用設定檔？（檔案會保留，之後只在網頁改）')) return; try { await api('/api/agents/' + id + '/md', { method: 'DELETE' }); toast('已停用設定檔'); openAgentForm(id); } catch (e) { toast(e.message); } };
@@ -1273,7 +1295,7 @@ async function openAgentForm(id) {
       rtk: engineSel.value === 'claude' && !$('f_standalone').checked && $('f_rtk').checked,
       brief: $('f_brief').checked,
       afterTurn: { command: $('f_at_cmd').value, args: $('f_at_args').value, ifChanged: $('f_at_if').value, timeoutSec: $('f_at_to').value, pin: $('f_at_pin').value },
-      todoKeeper: $('f_todokeeper').checked, freshEachTurn: $('f_fresh').checked, maintains: [...document.querySelectorAll('#f_maint input:checked')].map((x) => x.value), dataSources: [...document.querySelectorAll('#f_srclist input:checked')].map((x) => x.value),
+      todoKeeper: $('f_todokeeper').checked, freshEachTurn: $('f_fresh').checked, maintains: [...document.querySelectorAll('#f_maint input:checked')].map((x) => x.value), dataSources: [...document.querySelectorAll('#f_srclist input:checked')].map((x) => x.value), docFolders: [...document.querySelectorAll('#f_doclist input:checked')].map((x) => x.value),
       takeTurns: $('f_turns').checked && !$('f_standalone').checked, canInterrupt: $('f_urgent').checked && !$('f_standalone').checked, team: $('f_team').value,
       standalone: $('f_standalone').checked, personaFile: $('f_pfile').value, env: $('f_env').value,
       tools: $('f_tools').value, allowedTools: $('f_allow').value, disallowedTools: $('f_deny').value,
@@ -1852,6 +1874,7 @@ function renderUsage() {
     `<div class="ulink" id="updLine" title="檢查新版本、一鍵更新並重新啟動">⬆️ 更新${UPD_BADGE ? ' <span class="hn-dot">新</span>' : ''}</div>` +
     `<div class="ulink" id="cliLine" title="三個 CLI 的登入狀態、MCP、Skill（含安裝申請）">🧰 CLI 狀態${SKILL_PENDING ? ' <span class="hn-dot" title="有 Skill 安裝申請等你核准">' + SKILL_PENDING + '</span>' : ''}</div>` +
     '<div class="ulink" id="srcLine" title="唯讀資料表：讓成員查別人的 Google 試算表／Excel 檔">📊 資料表</div>' +
+    '<div class="ulink" id="docLine" title="文件資料夾：Agent Chat 唯讀讀取資料夾裡的 html（例如內網法規），依問題附相關段落給成員">📚 文件資料夾</div>' +
     (FB_COUNTS && FB_COUNTS.total ? '<div class="ulink" id="fbLine" title="LINE／Telegram 使用者說的「錯誤回報」：列表、標記處理狀態">🐞 錯誤回報' + (FB_COUNTS.open + FB_COUNTS.doing ? ' <span class="hn-dot">' + (FB_COUNTS.open + FB_COUNTS.doing) + '</span>' : '') + '</div>' : '') +
     (MD_BADGE ? '<div class="ulink" id="mdLine" title="維修工程師提出的設定檔修改，核准後才會寫入">📝 待核准修改 <span class="hn-dot">' + MD_BADGE + '</span></div>' : '') +
     '<div class="ulink" id="repLine" title="出問題時產生一個回報檔，帶給 Claude 排查">🐞 問題回報</div>' +
@@ -1866,6 +1889,7 @@ function renderUsage() {
   if ($('mdLine')) $('mdLine').onclick = () => openMdProposals();
   if ($('fbLine')) $('fbLine').onclick = () => openFeedback();
   $('srcLine').onclick = () => openSources();
+  $('docLine').onclick = () => openDocs();
   $('cliLine').onclick = () => (SKILL_PENDING ? openSkills() : openCliStatus());
   $('logoutLine').onclick = openLogout;
   $('pwLine').onclick = openPassword;
@@ -2022,7 +2046,7 @@ async function openAudit(id) {
   try { recs = (await api('/api/audit/' + id + '?limit=60')).records; } catch (e) { toast(e.message); return; }
   openModal(`<h2>📜 ${esc(a ? a.name : id)} 的稽核紀錄</h2>
     <p class="lead">每一輪的輸入、執行的指令與結束碼、回覆和錯誤（最新的在上面）。完整紀錄在 data/audit/${esc(id)}.jsonl。</p>
-    <div class="hn-list">${recs.map((r) => r.type === 'afterTurn' ? `<div class="hn-item"><div class="grow" style="white-space:normal"><b>${fmtTime(r.ts)}</b>｜⚙️ 每輪結束後執行 <code>${esc(r.command || '')}</code>：${r.skipped ? '🔒 沒有執行（鎖定的檔案被改過：' + esc((r.changed || []).slice(0, 5).join('、')) + '）' : (r.exitCode === 0 ? '✅ 成功' : '❌ 結束碼 ' + r.exitCode + (r.timedOut ? '（逾時）' : '')) + '｜' + ((r.ms || 0) / 1000).toFixed(1) + ' 秒'}${r.out && r.exitCode !== 0 ? `<small>${esc(r.out.slice(-400))}</small>` : ''}</div></div>` : `<div class="hn-item"><div class="grow" style="white-space:normal">
+    <div class="hn-list">${recs.map((r) => r.type === 'docs' ? `<div class="hn-item"><div class="grow" style="white-space:normal"><b>${fmtTime(r.ts)}</b>｜📚 查文件（${esc(r.via || '')}${r.who ? '・' + esc(r.who) : ''}）：${esc((r.query || '').slice(0, 120))}<small>${(r.files || []).length ? '附上：' + esc(r.files.join('、').slice(0, 400)) : '沒有附上段落'}</small></div></div>` : r.type === 'afterTurn' ? `<div class="hn-item"><div class="grow" style="white-space:normal"><b>${fmtTime(r.ts)}</b>｜⚙️ 每輪結束後執行 <code>${esc(r.command || '')}</code>：${r.skipped ? '🔒 沒有執行（鎖定的檔案被改過：' + esc((r.changed || []).slice(0, 5).join('、')) + '）' : (r.exitCode === 0 ? '✅ 成功' : '❌ 結束碼 ' + r.exitCode + (r.timedOut ? '（逾時）' : '')) + '｜' + ((r.ms || 0) / 1000).toFixed(1) + ' 秒'}${r.out && r.exitCode !== 0 ? `<small>${esc(r.out.slice(-400))}</small>` : ''}</div></div>` : `<div class="hn-item"><div class="grow" style="white-space:normal">
       <b>${fmtTime(r.ts)}</b>｜${r.via === 'telegram' ? '📱 Telegram' + (r.tgUser ? '（' + esc(r.tgUser) + '）' : '') : '💻 網頁'}｜${(r.ms / 1000).toFixed(1)} 秒${r.cliExit ? '｜CLI 結束碼 ' + r.cliExit : ''}
       <small>輸入：${esc(r.input.slice(0, 300))}</small>
       ${r.calls.map((c) => `<small>${c.isError ? '❌' : '✅'} ${esc(c.tool)}：<code>${esc(c.command)}</code>${c.exitCode != null ? '（結束碼 ' + c.exitCode + '）' : ''}${c.isError && c.output ? '<br>' + esc(c.output.slice(0, 300)) : ''}</small>`).join('')}
@@ -2581,6 +2605,70 @@ async function openMemberChannels(id, { onSaved } = {}) {
 }
 
 // ---------- 📊 資料表（唯讀資料表的管理頁＋新增／編輯表單）----------
+// ---------- 📚 文件資料夾：只設定讀哪個資料夾；怎麼用寫在成員人設「## 文件資料夾：名稱」 ----------
+const DOC_RULE_EX = (n) => ['附上時機: ' + n + ', 章, 規定, 要求', '章節號: ' + n + '_{n}_', '最多段數: 4', '每段字數: 800',
+  '- 只根據系統附上的段落回答，並註明來源檔名；提醒「以內網正式版為準」。', '- 系統只讀 html；問到 PDF 的內容，請告訴使用者 PDF 要自己開檔確認。', '- 找不到或讀不到時照實說，不要自己編。'].join('\n');
+async function openDocs() {
+  let R; try { R = await api('/api/docs'); } catch (e) { toast(e.message); return; }
+  const st = (s) => !s ? '' : s.error ? '❌ ' + esc(s.error) : s.scanning ? '⏳ 整理中…' : s.at ? '✅ ' + s.files + ' 個 html，' + fmtTime(s.at) + ' 更新' : '還沒整理過';
+  openModal(`<h2>📚 文件資料夾</h2>
+    <p class="lead">Agent Chat 用<b>你的 Windows 帳號</b>唯讀讀取資料夾裡的 <b>html</b>（例如內網的法規、SOP），依成員收到的問題找出相關段落附給它。成員本身<b>不需要任何檔案或指令權限</b>。這裡只設定讀哪個資料夾；怎麼用寫在每位成員人設的「## 文件資料夾：名稱」段落。</p>
+    <p class="help">🔒 資料夾要先加進允許清單：在程式資料夾的 <code>local-settings.txt</code> 加一行 <code>DOC_ALLOWED_ROOTS=資料夾路徑</code>（多個用分號隔開），再按「🔄 只重新啟動」。目前允許：${R.allowedRoots.length ? R.allowedRoots.map(esc).join('、') : '（還沒有）'}</p>
+    <div class="sk-row"><button class="primary" id="doc_new">＋ 新增文件資料夾</button></div>
+    ${R.docs.length ? R.docs.map((x) => `<div style="border:1px solid var(--line,#ddd);border-radius:10px;padding:10px;margin:8px 0">
+      <div><b>${esc(x.name)}</b>　<span class="help">${x.form ? esc(x.form.path || '') : '⚠️ 還沒有設定'}</span></div>
+      <div class="help">${st(x.status)}｜使用的成員：${x.usedBy.length ? x.usedBy.map((a) => esc(a.name) + (a.hasRules ? '（有規則）' : '（沒有規則段落）')).join('、') : '（沒有）'}</div>
+      <div class="sk-row" style="margin-top:6px"><button data-doced="${esc(x.name)}">✏️ 編輯／預覽搜尋</button><button data-docre="${esc(x.name)}">🔄 重建索引</button><button data-docdel="${esc(x.name)}">刪除</button></div></div>`).join('') : '<p class="help">還沒有任何文件資料夾。</p>'}
+    <div class="modal-actions"><span class="spacer"></span><button id="doc_close">關閉</button></div>`);
+  $('modal').classList.add('wide');
+  $('doc_close').onclick = closeModal;
+  $('doc_new').onclick = () => openDocForm(null);
+  document.querySelectorAll('[data-doced]').forEach((b) => (b.onclick = () => openDocForm(b.dataset.doced)));
+  document.querySelectorAll('[data-docre]').forEach((b) => (b.onclick = async () => {
+    b.disabled = true; b.textContent = '整理中…（內網檔案多會比較久）';
+    try { const r = await api('/api/docs/' + encodeURIComponent(b.dataset.docre) + '/rebuild', { method: 'POST', body: '{}' }); toast('✅ 已重建：' + r.files + ' 個 html'); } catch (e) { toast('❌ ' + e.message); }
+    if (modalShowing('doc_close')) openDocs();
+  }));
+  document.querySelectorAll('[data-docdel]').forEach((b) => (b.onclick = async () => {
+    const x = R.docs.find((y) => y.name === b.dataset.docdel);
+    if (!confirm('刪除文件資料夾「' + x.name + '」？' + (x.usedBy.length ? '\n' + x.usedBy.map((a) => a.name).join('、') + ' 會不再查這個資料夾。' : '') + '\n（只刪 Agent Chat 的設定與索引，資料夾裡的檔案不受影響）')) return;
+    try { await api('/api/docs/' + encodeURIComponent(x.name), { method: 'DELETE' }); toast('已刪除'); } catch (e) { toast(e.message); }
+    openDocs();
+  }));
+}
+async function openDocForm(name) {
+  let R; try { R = await api('/api/docs'); } catch (e) { toast(e.message); return; }
+  const cur = name ? R.docs.find((x) => x.name === name) : null, f = (cur && cur.form) || {};
+  openModal2(`<h2>📚 ${cur ? '編輯「' + esc(name) + '」' : '新增文件資料夾'}</h2>
+    <div class="fgrid">
+      <div class="field"><label>名稱（人設段落用這個名字）</label><input id="df_name" value="${esc(name || '')}" maxlength="20" placeholder="例如：USP"></div>
+      <div class="field full"><label>資料夾路徑（本機或網路路徑，會連子資料夾一起讀）</label><input id="df_path" value="${esc(f.path || '')}" placeholder="\\\\192.168.4.11\\共用\\法規　或　D:\\法規"></div>
+      <div class="field full"><div class="sk-row"><button type="button" class="primary" id="df_test">🔌 測試連線</button><span class="help">數一數讀得到幾個 html（不會存任何東西）</span></div><div id="df_testout" class="ln-check"></div></div>
+      ${cur ? `<div class="field full"><label>🔎 預覽搜尋（照某位成員的規則段落）</label>
+        <div class="sk-row"><input id="df_q" placeholder="例如：USP 665 萃取 E&L" style="flex:1"><select id="df_agent"><option value="">不套用規則</option>${cur.usedBy.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select><button type="button" id="df_search">搜尋</button></div>
+        <div id="df_out" class="ln-check"></div></div>` : ''}
+    </div>
+    <p class="help">只讀 .html／.htm，不讀 PDF；不跟隨捷徑。內容變動每 10 分鐘自動更新一次（只讀有改過的檔案），也可以按「🔄 重建索引」。存成 <code>data/docs/名稱.md</code>。</p>
+    <div class="modal-actions"><span class="spacer"></span><button id="df_cancel">取消</button><button class="primary" id="df_save">儲存</button></div>`);
+  $('df_cancel').onclick = closeModal2;
+  $('df_test').onclick = async () => {
+    $('df_testout').textContent = '連線中…';
+    try { const r = await api('/api/docs/test', { method: 'POST', body: JSON.stringify({ form: { path: $('df_path').value } }) });
+      $('df_testout').innerHTML = `✅ 讀得到${r.account ? '（用 ' + esc(r.account) + ' 帳號）' : ''}：${r.html} 個 html${r.capped ? '（超過上限，只讀前面的）' : ''}${r.skipped ? '｜略過 ' + r.skipped + ' 個捷徑' : ''}<br><span class="help">例如：${esc(r.sample.join('、'))}</span>`;
+    } catch (e) { $('df_testout').innerHTML = '❌ ' + esc(e.message); }
+  };
+  if ($('df_search')) $('df_search').onclick = async () => {
+    $('df_out').textContent = '搜尋中…（第一次要先整理資料夾，會比較久）';
+    try { const r = await api('/api/docs/search', { method: 'POST', body: JSON.stringify({ name, q: $('df_q').value, agentId: $('df_agent').value }) });
+      $('df_out').innerHTML = r.building ? '⏳ 還在整理資料夾，稍後再試' : (r.error ? '⚠️ ' + esc(r.error) + '<br>' : '') + (r.hits.length ? r.hits.map((h, i) => `<div style="margin:6px 0"><b>[${i + 1}] ${esc(h.rel)}</b> <span class="help">分數 ${h.score}</span><br><span class="help" style="white-space:pre-wrap">${esc(h.text)}</span></div>`).join('') : '沒有找到相關內容');
+    } catch (e) { $('df_out').innerHTML = '❌ ' + esc(e.message); }
+  };
+  $('df_save').onclick = async () => {
+    try { const r = await api('/api/docs/form', { method: 'PUT', body: JSON.stringify({ name: $('df_name').value.trim(), oldName: name || '', form: { path: $('df_path').value.trim() } }) });
+      toast('✅ 已儲存「' + r.name + '」，背景整理中'); closeModal2(); if (modalShowing('doc_close')) openDocs();
+    } catch (e) { toast(e.message); }
+  };
+}
 async function openSources() {
   let R; try { R = await api('/api/sources'); } catch (e) { toast(e.message); return; }
   openModal(`<h2>📊 資料表</h2>

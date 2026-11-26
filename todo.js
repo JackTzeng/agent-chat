@@ -294,12 +294,14 @@ const hasRules = (p) => !!(p && (p.due || p.mode || (p.columns || []).length || 
 //   附上時機: 設備, 儀器, 校驗（* ＝每則都附）
 //   其餘文字＝給 AI 的回答規則
 const SECTION_RE = /^##\s*資料表[:：]\s*(.+?)\s*$/;
+const DOC_SECTION_RE = /^##\s*文件資料夾[:：]/;
 function parseSourceSections(persona) {
   const sections = new Map(), keep = [];
   let cur = null;
   for (const line of String(persona || '').split(/\r?\n/)) {
     const m = SECTION_RE.exec(line);
     if (m) { cur = { name: m[1].trim(), lines: [] }; sections.set(cur.name, cur); continue; }
+    if (DOC_SECTION_RE.test(line)) { cur = { name: '', lines: [] }; continue; } // 📚 文件資料夾的規則段落（docs.js 解析）：一樣不放開頭說明
     if (cur && /^#{1,2}\s/.test(line)) cur = null; // 下一個標題：段落結束
     if (cur) cur.lines.push(line); else keep.push(line);
   }
