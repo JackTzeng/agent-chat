@@ -158,6 +158,8 @@
     z-index: 20; overflow-y: auto; padding: 32px 12px; }
   .modal-bg.open { display: flex; }
   /* 🔒 閒置上鎖：除了密碼視窗，其他畫面全部藏起來（不是只蓋一層半透明） */
+  .ln-people th, .ln-people td { padding: 5px 6px; border-bottom: 1px solid var(--line); text-align: center; vertical-align: middle; }
+  .ln-people td:first-child, .ln-people th:first-child { text-align: left; }
   body.locked > :not(#modalBg) { display: none !important; }
   body.locked #modalBg { background: var(--bg, #f3f4f6); }
   .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; width: min(640px, 100%); padding: 20px 22px;
@@ -375,7 +377,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.42.2'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.43.0'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -2310,9 +2312,16 @@ async function openLine() {
     <div class="sk-row"><b>呼叫詞：</b><input id="ln_gwords" value="${esc(keep.ln_gwords !== undefined ? keep.ln_gwords : L.groupWords || '')}" placeholder="選填，例如：待辦、小幫手（用頓號分隔）" style="flex:1;min-width:180px"><span class="help">訊息開頭寫這些字也算叫它（成員名稱本來就算）；@ 選不到 bot 時很好用。</span></div>
     <div class="sk-row"><span>已啟用 ${L.groups} 個群組${L.groups ? '' : '（還沒有）'}</span>${L.groups ? '<button id="ln_cgroups">清除群組</button>' : ''}<button class="primary" id="ln_todo">📋 待辦清單（Google Sheet）設定…</button></div>
     <p class="help">${q ? `本月主動推播：已用 ${q.used} ${q.type === 'limited' ? '/ ' + q.value : ''} 則（${ago(q.at)} 更新）` : `本程式這個月推播了 ${L.pushedThisMonth} 則`}${L.pushBlocked ? '　⚠️ 本月推播額度已用完，只能回覆你傳來的訊息' : ''}｜最近一次收到訊息：${ago(L.lastEventAt)}</p>
-    <h3 class="sk-h">👥 群組人員${L.peopleWaiting ? '（' + L.peopleWaiting + ' 位等你核准）' : ''}</h3>
-    <p class="help" style="margin:0 0 6px">只有<b>你核准過的人</b>在群組叫 bot 才會處理；陌生人（例如後來才被拉進群組的人）第一次叫 bot，會收到一次說明，並通知你核准（不交給 AI、不花額度）。一對一配對過的帳號一律算自己人。也可以在 LINE 私聊回「核准成員 編號」，或在 Telegram 傳 <code>/line 編號 ok</code>。</p>
-    ${(L.people || []).length ? '<div class="ln-people">' + L.people.map((x) => `<div class="sk-row"><span>${x.status === 'ok' ? '✅' : x.status === 'no' ? '🚫' : '⏳'} ${esc(x.name || '（沒有名稱）')}${x.no ? ' <small>#' + x.no + '</small>' : ''} <small class="help">${esc(x.status === 'wait' ? '等你核准' : (x.status === 'ok' ? '已核准' : '不核准') + (x.by ? '｜' + x.by : ''))}</small></span>${x.status !== 'ok' ? `<button class="primary" data-lp-ok="${esc(x.uid)}">核准</button>` : ''}${x.status !== 'no' ? `<button data-lp-no="${esc(x.uid)}">不核准</button>` : ''}<button data-lp-rm="${esc(x.uid)}" title="從名單移除：下次他叫 bot 會重新請你核准">移除</button></div>`).join('') + '</div>' : '<p class="help">（還沒有人申請）</p>'}
+    <h3 class="sk-h" id="ln_people">👤 使用者權限${L.peopleWaiting ? '（' + L.peopleWaiting + ' 件等你處理）' : ''}</h3>
+    <p class="help" style="margin:0 0 6px">誰能使用 LINE bot、是什麼角色，<b>一律以這裡為準</b>（待辦清單 Google Sheet 的「成員」分頁會自動同步過去，只給提醒信用；在 Sheet 上改角色不算數）。陌生人第一次叫 bot 會通知你核准，不交給 AI。<b>主管</b>可以指派事項給別人、改別人的期限、取消事項；<b>成員</b>只能改自己的。<b>一對一</b>：勾了才能私下傳訊息給 bot，由群組那位唯讀成員回應、權限跟在群組一樣。也可以在 LINE 私聊回「核准成員 編號」，或在 Telegram 傳 <code>/line 編號 ok</code>。</p>
+    <div class="ln-people" style="overflow-x:auto"><table class="hn-table" style="width:100%;font-size:13px"><thead><tr><th style="text-align:left">名字</th><th>狀態</th><th>角色</th><th>一對一</th><th></th></tr></thead><tbody>
+    ${(L.owners || []).map((o) => `<tr><td>👑 ${esc(o.name || '管理者（…' + o.uid.slice(-4) + '）')}</td><td>管理者</td><td>主管</td><td>✅</td><td><button data-lo-rm="${esc(o.uid)}" title="取消這個帳號的配對（不再是管理者）">取消配對</button></td></tr>`).join('')}
+    ${(L.people || []).map((x) => { const ok = x.status === 'ok'; return `<tr><td>${esc(x.named ? x.name : (x.lineName || x.name || '（沒有名稱）'))}${x.named && x.lineName && x.lineName !== x.name ? ' <small class="help">' + esc(x.lineName) + '</small>' : ''}${!x.named ? ' <small class="help">（還沒說「我是 姓名」）</small>' : ''}${x.no ? ' <small>#' + x.no + '</small>' : ''}</td>
+      <td>${ok ? '✅ 已核准' : x.status === 'no' ? '🚫 停用' : '⏳ 等你核准'}${ok && x.dmAsked ? '<br><small>想一對一</small>' : ''}</td>
+      <td><select data-lp-role="${esc(x.uid)}" ${ok ? '' : 'disabled'}><option ${x.role !== '主管' ? 'selected' : ''}>成員</option><option ${x.role === '主管' ? 'selected' : ''}>主管</option></select></td>
+      <td><input type="checkbox" data-lp-dm="${esc(x.uid)}" ${x.dm ? 'checked' : ''} ${ok ? '' : 'disabled'}></td>
+      <td style="white-space:nowrap">${!ok ? `<button class="primary" data-lp-ok="${esc(x.uid)}">核准</button>` : ''}${x.status !== 'no' ? `<button data-lp-no="${esc(x.uid)}">停用</button>` : ''}<button data-lp-rm="${esc(x.uid)}" title="從名單移除：下次他叫 bot 會重新請你核准">移除</button></td></tr>`; }).join('')}
+    </tbody></table>${(L.owners || []).length || (L.people || []).length ? '' : '<p class="help">（還沒有人）</p>'}</div>
     <p class="help">在 LINE 上：直接傳文字給它；<code>/new</code> 開新對話、<code>/stop</code> 停止、<code>同意 3</code>／<code>不要 3</code> 核准或取消它提出的提醒。目前只收文字。</p>
     <p class="help">⚠️ 你的訊息會經過 LINE 的伺服器（日本），公開通道也會經過 Cloudflare。這台如果是公司電腦，請先確認資安規定允許；工作上的機密資料不要透過 LINE 傳給成員。</p>
     <div class="modal-actions"><span class="spacer"></span><button id="ln_close">關閉</button></div>`);
@@ -2333,9 +2342,13 @@ async function openLine() {
   $('ln_pair').onclick = () => act(() => api('/api/line/pair', { method: 'POST', body: '{}' }));
   $('ln_todo').onclick = () => openTodo();
   if ($('ln_cgroups')) $('ln_cgroups').onclick = () => { if (confirm('清除所有已啟用的群組？之後要在群組重新貼配對碼才會再啟用。')) act(() => api('/api/line', { method: 'PUT', body: JSON.stringify({ clearGroups: true }) })); };
-  document.querySelectorAll('#modal [data-lp-ok]').forEach((b) => { b.onclick = () => act(() => api('/api/line/people/' + encodeURIComponent(b.dataset.lpOk), { method: 'POST', body: JSON.stringify({ ok: true }) })); });
-  document.querySelectorAll('#modal [data-lp-no]').forEach((b) => { b.onclick = () => act(() => api('/api/line/people/' + encodeURIComponent(b.dataset.lpNo), { method: 'POST', body: JSON.stringify({ ok: false }) })); });
-  document.querySelectorAll('#modal [data-lp-rm]').forEach((b) => { b.onclick = () => { if (confirm('從名單移除？下次他在群組叫 bot 會重新請你核准。')) act(() => api('/api/line/people/' + encodeURIComponent(b.dataset.lpRm), { method: 'DELETE' })); }; });
+  const lp = (uid, method, body) => act(() => api('/api/line/people/' + encodeURIComponent(uid), { method, body: body ? JSON.stringify(body) : undefined }));
+  document.querySelectorAll('#modal [data-lp-ok]').forEach((b) => { b.onclick = () => lp(b.dataset.lpOk, 'POST', { ok: true }); });
+  document.querySelectorAll('#modal [data-lp-no]').forEach((b) => { b.onclick = () => { if (confirm('停用這個人？之後他叫 bot 不會有任何回應（群組與一對一都是）。')) lp(b.dataset.lpNo, 'POST', { ok: false }); }; });
+  document.querySelectorAll('#modal [data-lp-rm]').forEach((b) => { b.onclick = () => { if (confirm('從名單移除？下次他叫 bot 會重新請你核准。')) lp(b.dataset.lpRm, 'DELETE'); }; });
+  document.querySelectorAll('#modal [data-lp-dm]').forEach((b) => { b.onchange = () => lp(b.dataset.lpDm, 'POST', { dm: b.checked }); });
+  document.querySelectorAll('#modal [data-lp-role]').forEach((b) => { b.onchange = () => act(async () => { await api('/api/line/people/' + encodeURIComponent(b.dataset.lpRole) + '/role', { method: 'POST', body: JSON.stringify({ role: b.value }) }); toast('✅ 已改成' + b.value + '（Google Sheet 會同步）'); }); });
+  document.querySelectorAll('#modal [data-lo-rm]').forEach((b) => { b.onclick = () => { if (confirm('取消這個帳號的配對？它就不再是管理者，要重新配對才能用。')) act(() => api('/api/line/owners/' + encodeURIComponent(b.dataset.loRm), { method: 'DELETE' })); }; });
   if ($('ln_unpair')) $('ln_unpair').onclick = () => { if (confirm('清除所有已配對的 LINE 帳號？之後要重新配對才能使用。')) act(() => api('/api/line/unpair', { method: 'POST', body: '{}' })); };
 }
 

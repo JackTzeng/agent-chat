@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.42.2';
+const VERSION = '3.43.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1578,7 +1578,7 @@ setInterval(() => {
 function resetAgent(id) {
   if (runs.has(id)) return false;
   delete state.sessions[id]; delete state.ctx[id]; delete state.hdr[id]; delete state.shifts[id]; delete state.lastKey[id];
-  for (const k of Object.keys(state.sessions)) if (/^(lg|tg):/.test(k) && k.endsWith(':' + id)) { delete state.sessions[k]; delete state.ctx[k]; delete state.hdr[k]; delete state.shifts[k]; } // 群組的對話一起重來
+  for (const k of Object.keys(state.sessions)) if (/^(lg|tg|ld):/.test(k) && k.endsWith(':' + id)) { delete state.sessions[k]; delete state.ctx[k]; delete state.hdr[k]; delete state.shifts[k]; } // 群組的對話一起重來
   saveState();
   for (const f of [histFile(id), path.join(HIST_DIR, id + '.1.jsonl'), path.join(HIST_DIR, id + '.json')]) { try { fs.unlinkSync(f); } catch {} }
   broadcast({ agentId: id, kind: 'reset' });
@@ -2273,9 +2273,21 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/line/pair' && req.method === 'POST') { if (!lineBot.status().configured) return send(res, 400, { error: '請先貼上 Channel secret 與 Channel access token 並儲存' }); lineBot.newPairCode(); return send(res, 200, lineBot.status()); }
     if (p === '/api/line/unpair' && req.method === 'POST') return send(res, 200, lineBot.unpair());
     // 👥 群組人員核准：POST { ok: true|false } 核准／不核准；DELETE 從名單移除（下次叫 bot 會重新請你核准）
+    // 👥 使用者與權限：名單（含管理者）＋待辦應用的角色（有設定待辦清單才讀 Sheet）
+    // 👤 使用者權限（唯一依據）：名單、核准／停用、角色、一對一；Google Sheet「成員」分頁由這裡同步過去
+    if (p === '/api/line/people' && req.method === 'GET') {
+      await lineBot.ensureMigrated();
+      const st = lineBot.status();
+      return send(res, 200, { people: st.people, owners: st.owners, groupAgentName: st.groupAgentName, todoConfigured: todoBook.configured() });
+    }
+    if ((m0 = p.match(/^\/api\/line\/people\/([\w-]{1,64})\/role$/)) && req.method === 'POST') {
+      try { const b = await readBody(req); return send(res, 200, { ok: true, person: await lineBot.setPersonRole(m0[1], String(b.role || ''), '你（網頁）') }); }
+      catch (e) { return send(res, 400, { error: e.message }); }
+    }
+    if ((m0 = p.match(/^\/api\/line\/owners\/([\w-]{1,64})$/)) && req.method === 'DELETE') return send(res, 200, { owners: lineBot.removeOwner(m0[1]) });
     if ((m0 = p.match(/^\/api\/line\/people\/([\w-]{1,64})$/))) {
       try {
-        if (req.method === 'POST') { const b = await readBody(req); lineBot.decidePerson(m0[1], b.ok === true, '你（網頁）'); return send(res, 200, lineBot.status()); }
+        if (req.method === 'POST') { const b = await readBody(req); if (typeof b.dm === 'boolean') lineBot.setPersonDm(m0[1], b.dm); else lineBot.decidePerson(m0[1], b.ok === true, '你（網頁）'); return send(res, 200, lineBot.status()); }
         if (req.method === 'DELETE') { lineBot.removePerson(m0[1]); return send(res, 200, lineBot.status()); }
       } catch (e) { return send(res, 400, { error: e.message }); }
     }

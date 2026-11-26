@@ -626,6 +626,52 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   assert.equal(agyCalls(), agyBeforeRole, '指定主管不經過 AI');
   assert.ok(g.sheets.get('紀錄').data.some((r) => r.includes('指定主管')), '紀錄分頁有記');
 
+  // 👤 使用者權限是唯一依據（v3.43.0）：Sheet 上改角色不算數；在 Agent Chat 改才算，並同步寫回 Sheet
+  await waitFor(idleTodo, 'todo idle P0');
+  const pl0 = await J('/api/line/people');
+  const bossP = pl0.people.find((x) => x.uid === 'U_boss');
+  assert.equal(bossP.role, '主管'); assert.equal(bossP.named, true); assert.equal(bossP.name, '王主任', '升級時從 Sheet 搬進姓名與角色');
+  assert.equal(pl0.people.find((x) => x.uid === 'U_wang').role, '成員');
+  g.sheets.get('成員').data.find((r) => r[0] === '小王')[2] = '主管'; // 有人直接在 Sheet 上改
+  assert.match(await say('U_wang', 'ASSIGN'), /只有主管可以把事項指派給別人/, 'Sheet 上改的不算');
+  await J('/api/line/people/U_wang/role', 'POST', { role: '主管' });
+  assert.equal((await J('/api/line/people')).people.find((x) => x.uid === 'U_wang').role, '主管');
+  await J('/api/line/people/U_wang/role', 'POST', { role: '成員' });
+  assert.equal(roleOf('小王'), '成員', '改回成員，Sheet 也同步回來');
+  assert.equal((await call('/api/line/people/U_nobody_x/role', 'POST', { role: '主管' })).status, 400);
+
+  // 👥 同事一對一：要你勾「一對一」；沒勾 → 通知管理者一次；勾了 → 由群組那位唯讀成員回應，權限跟群組一樣
+  const dmHook = (uid, text) => hook([{ type: 'message', webhookEventId: 'd' + (++evSeq), replyToken: 'rtd' + evSeq, source: { type: 'user', userId: uid }, message: { type: 'text', id: 'd' + evSeq, text } }]);
+  const dmSay = async (uid, text) => { const n = replies().length; assert.equal(await dmHook(uid, text), 200); await waitFor(() => replies().length === n + 1, '一對一回覆「' + text + '」'); return lastText(); };
+  const pc = (await J('/api/line/pair', 'POST')).pairing;
+  assert.match(await dmSay('U_owner', pc.code), /配對成功/);
+  const pushes = () => calls.filter((c) => c.url === '/v2/bot/message/push');
+  const pu0 = pushes().length, ag1 = agyCalls();
+  assert.match(await dmSay('U_wang', 'QUERY 私下問'), /已經通知管理者/);
+  await waitFor(() => pushes().length > pu0, '通知管理者');
+  assert.ok(pushes().slice(pu0).some((c) => c.body.to === 'U_owner' && /想一對一使用/.test(JSON.stringify(c.body))));
+  const nD = replies().length; assert.equal(await dmHook('U_wang', 'QUERY 再問'), 200); await sleep(300);
+  assert.equal(replies().length, nD, '還沒開放：第二次不回'); assert.equal(agyCalls(), ag1, '沒開放不叫 AI');
+  assert.ok((await J('/api/line/people')).people.find((x) => x.uid === 'U_wang').dmAsked);
+  await J('/api/line/people/U_wang', 'POST', { dm: true });
+  await waitFor(idleTodo, 'todo idle DM');
+  await dmSay('U_wang', 'QUERY 私下問');
+  const pDm = lastAgyPrompt();
+  assert.match(pDm, /【LINE 一對一訊息（系統整理）】/); assert.match(pDm, /發言者：小王（成員）/);
+  assert.match(replies().at(-1).body.replyToken, /^rtd/, '回到他的一對一');
+  assert.ok((await J('/api/history/todo')).history.some((m) => m.scope === 'ld:U_wang'), '每個同事各自一段對話');
+  await waitFor(idleTodo, 'todo idle DM2');
+  assert.match(await dmSay('U_wang', '/stop'), /只有管理者能用/);
+  assert.match(await dmSay('U_wang', '核准成員 1'), /只有管理者能用/);
+  // 停用：群組與一對一都不理；重新核准就恢復
+  await J('/api/line/people/U_wang', 'POST', { ok: false });
+  const nS = replies().length, ag2 = agyCalls();
+  assert.equal(await hook([gmsg('U_wang', 'QUERY 停用後')]), 200); assert.equal(await dmHook('U_wang', 'QUERY 停用後'), 200); await sleep(400);
+  assert.equal(replies().length, nS, '停用後不回'); assert.equal(agyCalls(), ag2);
+  await J('/api/line/people/U_wang', 'POST', { ok: true });
+  assert.equal((await J('/api/line/people')).people.find((x) => x.uid === 'U_wang').status, 'ok');
+  await J('/api/line/unpair', 'POST');
+
   // S7 一鍵把工作資料夾搬出程式資料夾：警告消失，被誘導讀 ../../agents.json 也讀不到
   await waitFor(idleTodo, 'todo idle S7');
   fs.writeFileSync(path.join(dir, 'workspace', 'todo', 'memo.txt'), 'keep me');
