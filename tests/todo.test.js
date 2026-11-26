@@ -648,6 +648,17 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   const dmSay = async (uid, text) => { const n = replies().length; assert.equal(await dmHook(uid, text), 200); await waitFor(() => replies().length === n + 1, '一對一回覆「' + text + '」'); return lastText(); };
   const pc = (await J('/api/line/pair', 'POST')).pairing;
   assert.match(await dmSay('U_owner', pc.code), /配對成功/);
+  // 💻 網頁上的我是：只能選已核准、有姓名的人；選了之後網頁對話用他的名字
+  assert.equal((await call('/api/line/web-person', 'POST', { uid: 'U_nobody' })).status, 400);
+  const okPerson = (await J('/api/line/people')).people.find((x) => x.status === 'ok' && x.named);
+  assert.ok(okPerson, '有已核准、有姓名的人可以測');
+  await J('/api/line/web-person', 'POST', { uid: okPerson.uid }); assert.equal((await J('/api/line')).webPerson, okPerson.uid); await J('/api/line/web-person', 'POST', { uid: '' });
+  // 👑 身分三種：網頁可以把已核准的人設成管理者、再改回成員（同一個人只出現一列）
+  await J('/api/line/people/' + okPerson.uid + '/role', 'POST', { role: '管理者' });
+  let lst = await J('/api/line'); assert.ok(lst.owners.some((o) => o.uid === okPerson.uid && o.name === okPerson.name), '管理者列顯示登記姓名');
+  await J('/api/line/people/' + okPerson.uid + '/role', 'POST', { role: '成員' });
+  lst = await J('/api/line'); assert.ok(!lst.owners.some((o) => o.uid === okPerson.uid)); assert.equal(lst.people.find((x) => x.uid === okPerson.uid).role, '成員');
+  assert.equal((await call('/api/line/people/' + okPerson.uid + '/role', 'POST', { role: '老闆' })).status, 400);
   const pushes = () => calls.filter((c) => c.url === '/v2/bot/message/push');
   const pu0 = pushes().length, ag1 = agyCalls();
   assert.match(await dmSay('U_wang', 'QUERY 私下問'), /已經通知管理者/);
@@ -791,4 +802,9 @@ test('我的待辦由系統篩好（姓名、LINE 顯示名稱、唯一部分相
   assert.equal(todo.webOwner({ allowedUserIds: ['U1'], people: { U1: { name: 'Jack', named: true } } }).name, 'Jack');
   assert.equal(todo.webOwner({ allowedUserIds: ['U1'], people: { U1: { name: 'x', named: false } } }).name, '管理員', '還沒登記姓名就用管理員');
   assert.equal(todo.webOwner({ allowedUserIds: ['U1'], people: { U1: { name: 'Jack', named: true } } }).role, '主管');
+  // 網頁上的我是：選的人優先（不一定是管理者）
+  assert.equal(todo.webOwner({ allowedUserIds: ['U1'], webPerson: 'U2', people: { U1: { name: 'Jack', named: true }, U2: { name: '彥村', named: true } } }).name, '彥村');
+  assert.equal(todo.webOwner({ allowedUserIds: ['U1'], webPerson: 'U1', ownerNames: { U1: 'Jack Tzeng' }, people: {} }).name, 'Jack Tzeng', '管理者沒登記姓名就用 LINE 名稱');
+  assert.equal(todo.webOwner({ webPerson: 'U2', people: { U2: { name: '彥村', named: true } } }).role, '主管', '網頁一律主管權限');
+  assert.match(todo.mineSection(todo.WEB_OWNER, open, mem, Date.now()).join('\n'), /網頁對話還認不出你是誰[\s\S]*網頁上的我是/);
 });

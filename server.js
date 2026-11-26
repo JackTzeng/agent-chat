@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.46.0';
+const VERSION = '3.46.1';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -2334,8 +2334,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { people: st.people, owners: st.owners, groupAgentName: st.groupAgentName, todoConfigured: todoBook.configured() });
     }
     if ((m0 = p.match(/^\/api\/line\/people\/([\w-]{1,64})\/role$/)) && req.method === 'POST') {
-      try { const b = await readBody(req); return send(res, 200, { ok: true, person: await lineBot.setPersonRole(m0[1], String(b.role || ''), '你（網頁）') }); }
+      try { const b = await readBody(req); return send(res, 200, { ok: true, person: await lineBot.setPersonRole(m0[1], String(b.role || ''), '你（網頁）', { web: true }) }); }
       catch (e) { return send(res, 400, { error: e.message }); }
+    }
+    if (p === '/api/line/web-person' && req.method === 'POST') {
+      try { return send(res, 200, { ok: true, webPerson: lineBot.setWebPerson(String((await readBody(req)).uid || '')) }); } catch (e) { return send(res, 400, { error: e.message }); }
     }
     if ((m0 = p.match(/^\/api\/line\/owners\/([\w-]{1,64})$/)) && req.method === 'DELETE') return send(res, 200, { owners: lineBot.removeOwner(m0[1]) });
     if ((m0 = p.match(/^\/api\/line\/people\/([\w-]{1,64})$/))) {

@@ -116,8 +116,24 @@ function create(ctx) {
   }
   // 管理者（一對一配對過的帳號）：顯示在同一頁；名字存在 line.ownerNames
   const ownerNames = () => (cfg().ownerNames = cfg().ownerNames || {});
-  function ownersList() { return allowed().map((uid) => ({ uid, name: ownerNames()[uid] || '' })); }
+  // 管理者的名字：他在 LINE 說過「我是 姓名」（或升級時從 Sheet 搬來）的登記姓名優先，沒有才用 LINE 顯示名稱
+  function ownersList() { return allowed().map((uid) => { const p = people()[uid] || {}; return { uid, name: (p.named && p.name) || ownerNames()[uid] || '', lineName: ownerNames()[uid] || p.lineName || '' }; }); }
   function removeOwner(uid) { cfg().allowedUserIds = allowed().filter((x) => x !== uid); delete ownerNames()[uid]; ctx.saveConfig(); changed(); return ownersList(); }
+  // 💻 網頁上的我是誰（網頁對話查／寫待辦用這個人的姓名）：任何已核准、有姓名的人或管理者都可以選，不一定要是管理者
+  function setWebPerson(uid) {
+    uid = String(uid || '');
+    if (uid) { const p = people()[uid], owner = allowed().includes(uid); if (!owner && !(p && p.status === 'ok')) throw new Error('要選已核准的人'); if (!((p && p.named && p.name) || ownerNames()[uid])) throw new Error('這個人還沒有登記姓名（在 LINE 說「我是 姓名」）'); }
+    if (uid) cfg().webPerson = uid; else delete cfg().webPerson;
+    ctx.saveConfig(); changed(); return uid;
+  }
+  // 管理者一律是主管：把 Google Sheet「成員」分頁裡管理者的角色同步成主管（Sheet 只是副本；啟動時做一次）
+  async function syncOwnerRoles() {
+    if (!ctx.todo || !ctx.todo.configured() || !allowed().length) return 0;
+    const mem = await ctx.todo.members(); let n = 0;
+    for (const uid of allowed()) { const m = mem.find((x) => x.userId === uid); if (m && m.role !== '主管') { await ctx.todo.setRole(uid, '主管', 'Agent Chat 管理者'); n++; } }
+    if (n) console.log('💚 LINE：已把 ' + n + ' 位管理者在 Google Sheet 的角色同步成主管');
+    return n;
+  }
   function removePerson(uid) { if (!people()[uid]) throw new Error('找不到這位'); delete people()[uid]; ctx.saveConfig(); changed(); return peopleList(); }
   // 升級時（只做一次）：待辦清單「成員」分頁已經有 LINE ID 的人，連同姓名與角色搬進這裡（之後以這裡為準，Sheet 只是同步過去的副本）
   async function migratePeople() {
@@ -149,16 +165,35 @@ function create(ctx) {
     try { await ctx.todo.setRole(uid, id.role, 'Agent Chat 使用者權限'); }
     catch (e) { note('同步角色到 Google Sheet 失敗：' + e.message); }
   }
-  async function setPersonRole(uid, role, by) {
-    if (!ROLES.includes(role)) throw new Error('角色只能是成員或主管');
-    if (allowed().includes(uid)) throw new Error('管理者一律是主管');
-    const p = people()[uid];
-    if (!p || p.status !== 'ok') throw new Error('要先核准，才能設定角色');
-    p.role = role; p.roleBy = String(by || ''); p.roleAt = Date.now();
+  // 身分三種：成員、主管（待辦清單的權限）、管理者（主管權限＋可以在 LINE 一對一遙控 Agent Chat）。
+  // 管理者＝allowedUserIds；只有網頁（{ web: true }）能設定或取消，群組裡「設定主管」「取消主管」碰不到管理者
+  async function setPersonRole(uid, role, by, { web = false } = {}) {
+    if (![...ROLES, '管理者'].includes(role)) throw new Error('身分只能是成員、主管或管理者');
+    const isOwner = allowed().includes(uid);
+    let p = people()[uid];
+    if (isOwner && !web) throw new Error('管理者一律是主管（要改請到網頁的使用者權限）');
+    if (role === '管理者') {
+      if (!web) throw new Error('管理者只能在網頁設定');
+      if (!isOwner) {
+        if (!p || p.status !== 'ok') throw new Error('要先核准，才能設成管理者');
+        cfg().allowedUserIds = [...allowed(), uid];
+        if (!ownerNames()[uid]) ownerNames()[uid] = p.lineName || p.name || '';
+      }
+    } else {
+      if (isOwner) {
+        cfg().allowedUserIds = allowed().filter((x) => x !== uid);
+        if (!p) p = people()[uid] = { name: ownerNames()[uid] || '', named: false, lineName: ownerNames()[uid] || '', status: 'ok', at: Date.now(), by: String(by || '') };
+        delete ownerNames()[uid];
+      }
+      if (!p || p.status !== 'ok') throw new Error('要先核准，才能設定身分');
+      p.role = role;
+    }
+    if (p) { p.roleBy = String(by || ''); p.roleAt = Date.now(); }
     ctx.saveConfig(); changed();
     await syncSheet(uid);
-    return { uid, name: p.named ? p.name : p.lineName || p.name || '', role };
+    return { uid, name: p && p.named ? p.name : (p && (p.lineName || p.name)) || ownerNames()[uid] || '', role: roleOf(uid), owner: allowed().includes(uid) };
   }
+
   // 「我是 王小明」登記成功：記下姓名（管理者沒有核准紀錄時一起建立）
   function setPersonName(uid, name, lineName) {
     const p = people()[uid] || (people()[uid] = { status: allowed().includes(uid) ? 'ok' : 'wait', at: Date.now(), role: '成員' });
@@ -751,7 +786,7 @@ function create(ctx) {
       groups: groupIds().length, groupAgentId: c.groupAgentId || '', groupAgentName: (groupAgent() || {}).name || '', groupAgentTodo: (groupAgent() || {}).todoKeeper === true, groupAgentEffId: (groupAgent() || {}).id || '', groupRisk: groupAgent() && ctx.groupRisk ? ctx.groupRisk(groupAgent()) : null, groupWords: groupWords().join('、'), todo: ctx.todo ? ctx.todo.status() : null,
       port: port(), listening, publicUrl: c.publicUrl || '', webhookUrl: c.publicUrl ? c.publicUrl + '/line/webhook' : '',
       webhook: s.webhook || null, bot: s.bot || null, quota: s.quota || null, pushedThisMonth: s.pushedMonth === month() ? s.pushed || 0 : 0, pushBlocked: s.pushBlocked === month(),
-      tunnel: { wanted: !!c.tunnel, state: tun.state, url: tun.url, error: tun.error }, people: peopleList(), owners: ownersList(), peopleWaiting: peopleList().filter((x) => x.status === 'wait' || (x.status === 'ok' && x.dmAsked)).length, lastEventAt: s.lastEventAt || null, lastError: s.lastError || '', lastErrorAt: s.lastErrorAt || null,
+      tunnel: { wanted: !!c.tunnel, state: tun.state, url: tun.url, error: tun.error }, people: peopleList(), owners: ownersList(), webPerson: cfg().webPerson || '', peopleWaiting: peopleList().filter((x) => x.status === 'wait' || (x.status === 'ok' && x.dmAsked)).length, lastEventAt: s.lastEventAt || null, lastError: s.lastError || '', lastErrorAt: s.lastErrorAt || null,
     };
   }
   function update(body) {
@@ -786,10 +821,11 @@ function create(ctx) {
     ctx.hooks.on('timer-alert', onTimerAlert);
     if (ctx.outbox) ctx.outbox.register('line', pushForOutbox);
     if (configured()) { startServer(); if (cfg().tunnel) startTunnel(); }
+    const t = setTimeout(() => { syncOwnerRoles().catch((e) => note('同步管理者角色到 Google Sheet 失敗：' + e.message)); }, 3000); if (t.unref) t.unref();
   }
   function stop() { if (ctx.outbox) ctx.outbox.unregister('line', pushForOutbox); ctx.hooks.off('done', onDone); ctx.hooks.off('timer-alert', onTimerAlert); stopTunnel(); stopServer(); }
 
-  return { start, stop, status, update, check, setupWebhook, newPairCode, unpair, startTunnel: () => { cfg().tunnel = true; ctx.saveConfig(); startTunnel(); return status(); },
+  return { setWebPerson, syncOwnerRoles, start, stop, status, update, check, setupWebhook, newPairCode, unpair, startTunnel: () => { cfg().tunnel = true; ctx.saveConfig(); startTunnel(); return status(); },
     stopTunnel: () => { cfg().tunnel = false; ctx.saveConfig(); stopTunnel(); return status(); }, handleBody, port, groupAgent, peopleList, decidePerson, removePerson, setPersonDm, ownersList, removeOwner, identity, setPersonRole, migratePeople, ensureMigrated };
 }
 

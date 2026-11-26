@@ -377,7 +377,7 @@ const ALL = '__all';
 const OFFICE = '__office';
 let officeMode = false;
 try { officeMode = localStorage.getItem('agentchat_office') === '1'; } catch {}
-const UI_VERSION = '3.46.0'; // 要和 server.js 的 VERSION 一致
+const UI_VERSION = '3.46.1'; // 要和 server.js 的 VERSION 一致
 let agents = [];
 let current = null;
 const unread = new Set();
@@ -2337,14 +2337,17 @@ async function openLine() {
     <p class="help">${q ? `本月主動推播：已用 ${q.used} ${q.type === 'limited' ? '/ ' + q.value : ''} 則（${ago(q.at)} 更新）` : `本程式這個月推播了 ${L.pushedThisMonth} 則`}${L.pushBlocked ? '　⚠️ 本月推播額度已用完，只能回覆你傳來的訊息' : ''}｜最近一次收到訊息：${ago(L.lastEventAt)}</p>
     <h3 class="sk-h" id="ln_people">👤 使用者權限${L.peopleWaiting ? '（' + L.peopleWaiting + ' 件等你處理）' : ''}</h3>
     <p class="help" style="margin:0 0 6px">誰能使用 LINE bot、是什麼角色，<b>一律以這裡為準</b>（待辦清單 Google Sheet 的「成員」分頁會自動同步過去，只給提醒信用；在 Sheet 上改角色不算數）。陌生人第一次叫 bot 會通知你核准，不交給 AI。<b>主管</b>可以指派事項給別人、改別人的期限、取消事項；<b>成員</b>只能改自己的。<b>一對一</b>：勾了才能私下傳訊息給 bot，由群組那位唯讀成員回應、權限跟在群組一樣。也可以在 LINE 私聊回「核准成員 編號」，或在 Telegram 傳 <code>/line 編號 ok</code>。</p>
-    <div class="ln-people" style="overflow-x:auto"><table class="hn-table" style="width:100%;font-size:13px"><thead><tr><th style="text-align:left">名字</th><th>狀態</th><th>角色</th><th>一對一</th><th></th></tr></thead><tbody>
-    ${(L.owners || []).map((o) => `<tr><td>👑 ${esc(o.name || '管理者（…' + o.uid.slice(-4) + '）')}</td><td>管理者</td><td>主管</td><td>✅</td><td><button data-lo-rm="${esc(o.uid)}" title="取消這個帳號的配對（不再是管理者）">取消配對</button></td></tr>`).join('')}
-    ${(L.people || []).map((x) => { const ok = x.status === 'ok'; return `<tr><td>${esc(x.named ? x.name : (x.lineName || x.name || '（沒有名稱）'))}${x.named && x.lineName && x.lineName !== x.name ? ' <small class="help">' + esc(x.lineName) + '</small>' : ''}${!x.named ? ' <small class="help">（還沒說「我是 姓名」）</small>' : ''}${x.no ? ' <small>#' + x.no + '</small>' : ''}</td>
+    <div class="ln-people" style="overflow-x:auto"><table class="hn-table" style="width:100%;font-size:13px"><thead><tr><th style="text-align:left">名字</th><th>狀態</th><th>身分</th><th>一對一</th><th></th></tr></thead><tbody>
+    ${(L.owners || []).map((o) => `<tr><td>👑 ${esc(o.name || '（…' + o.uid.slice(-4) + '，還沒登記姓名）')}${o.lineName && o.lineName !== o.name ? ' <small class="help">' + esc(o.lineName) + '</small>' : ''}</td><td>✅ 已核准</td>
+      <td><select data-lp-role="${esc(o.uid)}" data-was="管理者"><option>成員</option><option>主管</option><option selected>管理者</option></select></td><td>✅<br><small class="help">一定可以</small></td><td></td></tr>`).join('')}
+    ${(L.people || []).filter((x) => !(L.owners || []).some((o) => o.uid === x.uid)).map((x) => { const ok = x.status === 'ok'; return `<tr><td>${esc(x.named ? x.name : (x.lineName || x.name || '（沒有名稱）'))}${x.named && x.lineName && x.lineName !== x.name ? ' <small class="help">' + esc(x.lineName) + '</small>' : ''}${!x.named ? ' <small class="help">（還沒說「我是 姓名」）</small>' : ''}${x.no ? ' <small>#' + x.no + '</small>' : ''}</td>
       <td>${ok ? '✅ 已核准' : x.status === 'no' ? '🚫 停用' : '⏳ 等你核准'}${ok && x.dmAsked ? '<br><small>想一對一</small>' : ''}</td>
-      <td><select data-lp-role="${esc(x.uid)}" ${ok ? '' : 'disabled'}><option ${x.role !== '主管' ? 'selected' : ''}>成員</option><option ${x.role === '主管' ? 'selected' : ''}>主管</option></select></td>
+      <td><select data-lp-role="${esc(x.uid)}" data-was="${x.role === '主管' ? '主管' : '成員'}" ${ok ? '' : 'disabled'}><option ${x.role !== '主管' ? 'selected' : ''}>成員</option><option ${x.role === '主管' ? 'selected' : ''}>主管</option><option>管理者</option></select></td>
       <td><input type="checkbox" data-lp-dm="${esc(x.uid)}" ${x.dm ? 'checked' : ''} ${ok ? '' : 'disabled'}></td>
       <td style="white-space:nowrap">${!ok ? `<button class="primary" data-lp-ok="${esc(x.uid)}">核准</button>` : ''}${x.status !== 'no' ? `<button data-lp-no="${esc(x.uid)}">停用</button>` : ''}<button data-lp-rm="${esc(x.uid)}" title="從名單移除：下次他叫 bot 會重新請你核准">移除</button></td></tr>`; }).join('')}
     </tbody></table>${(L.owners || []).length || (L.people || []).length ? '' : '<p class="help">（還沒有人）</p>'}</div>
+    <p class="help" style="margin:4px 0">身分：<b>成員</b>＝只能改自己的待辦｜<b>主管</b>＝可以指派給別人、改別人的期限、取消事項｜<b>👑 管理者</b>＝主管的權限，再加上可以在 LINE 一對一遙控 Agent Chat（核准別人、/new、/stop…）。Google Sheet 只記成員／主管，管理者在 Sheet 上會寫成主管。</p>
+    <div class="sk-row" style="margin-top:6px"><label for="ln_webme">💻 網頁上的我是：</label><select id="ln_webme"><option value="">（自動：有登記姓名的管理者）</option>${(L.owners || []).filter((o) => o.name).map((o) => `<option value="${esc(o.uid)}" ${L.webPerson === o.uid ? 'selected' : ''}>👑 ${esc(o.name)}</option>`).join('')}${(L.people || []).filter((x) => x.status === 'ok' && x.named && x.name && !(L.owners || []).some((o) => o.uid === x.uid)).map((x) => `<option value="${esc(x.uid)}" ${L.webPerson === x.uid ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select><span class="help">在 Agent Chat 網頁跟成員說話時，用這個人的名字查「我的待辦」、寫待辦（網頁一律有主管權限）</span></div>
     <p class="help">在 LINE 上：直接傳文字給它；<code>/new</code> 開新對話、<code>/stop</code> 停止、<code>同意 3</code>／<code>不要 3</code> 核准或取消它提出的提醒。目前只收文字。</p>
     <p class="help">⚠️ 你的訊息會經過 LINE 的伺服器（日本），公開通道也會經過 Cloudflare。這台如果是公司電腦，請先確認資安規定允許；工作上的機密資料不要透過 LINE 傳給成員。</p>
     <div class="modal-actions"><span class="spacer"></span><button id="ln_close">關閉</button></div>`);
@@ -2370,7 +2373,13 @@ async function openLine() {
   document.querySelectorAll('#modal [data-lp-no]').forEach((b) => { b.onclick = () => { if (confirm('停用這個人？之後他叫 bot 不會有任何回應（群組與一對一都是）。')) lp(b.dataset.lpNo, 'POST', { ok: false }); }; });
   document.querySelectorAll('#modal [data-lp-rm]').forEach((b) => { b.onclick = () => { if (confirm('從名單移除？下次他叫 bot 會重新請你核准。')) lp(b.dataset.lpRm, 'DELETE'); }; });
   document.querySelectorAll('#modal [data-lp-dm]').forEach((b) => { b.onchange = () => lp(b.dataset.lpDm, 'POST', { dm: b.checked }); });
-  document.querySelectorAll('#modal [data-lp-role]').forEach((b) => { b.onchange = () => act(async () => { await api('/api/line/people/' + encodeURIComponent(b.dataset.lpRole) + '/role', { method: 'POST', body: JSON.stringify({ role: b.value }) }); toast('✅ 已改成' + b.value + '（Google Sheet 會同步）'); }); });
+  document.querySelectorAll('#modal [data-lp-role]').forEach((b) => { b.onchange = () => {
+    const was = b.dataset.was, to = b.value;
+    if (to === '管理者' && !confirm('設成管理者後，他可以在 LINE 一對一遙控 Agent Chat（核准別人、停止成員…）。確定？')) { b.value = was; return; }
+    if (was === '管理者' && !confirm('取消他的管理者身分，改成「' + to + '」？' + ((L.owners || []).length <= 1 ? '\n⚠️ 他是唯一的管理者，取消後 LINE 上就沒有人能遙控 Agent Chat（網頁照常可以）。' : ''))) { b.value = was; return; }
+    act(async () => { await api('/api/line/people/' + encodeURIComponent(b.dataset.lpRole) + '/role', { method: 'POST', body: JSON.stringify({ role: to }) }); toast('✅ 已改成' + to + '（Google Sheet 會同步）'); });
+  }; });
+  if ($('ln_webme')) $('ln_webme').onchange = () => act(async () => { await api('/api/line/web-person', { method: 'POST', body: JSON.stringify({ uid: $('ln_webme').value }) }); toast('✅ 網頁上的你：' + ($('ln_webme').selectedOptions[0].textContent)); });
   document.querySelectorAll('#modal [data-lo-rm]').forEach((b) => { b.onclick = () => { if (confirm('取消這個帳號的配對？它就不再是管理者，要重新配對才能用。')) act(() => api('/api/line/owners/' + encodeURIComponent(b.dataset.loRm), { method: 'DELETE' })); }; });
   if ($('ln_unpair')) $('ln_unpair').onclick = () => { if (confirm('清除所有已配對的 LINE 帳號？之後要重新配對才能使用。')) act(() => api('/api/line/unpair', { method: 'POST', body: '{}' })); };
 }

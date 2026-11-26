@@ -613,6 +613,7 @@ function create(ctx) {
   // 負責人用跟登記待辦同一套姓名比對（canonOwner：姓名、LINE 顯示名稱、唯一的部分相符）
 function mineSection(sender, open, mem, now) {
   if (!sender || !sender.name) return [];
+  if (sender === WEB_OWNER) return ['【網頁對話還認不出你是誰】問到「我的待辦」時，請告訴使用者：到「📡 通訊管道 → 💚 LINE → 👤 使用者權限」的「網頁上的我是」選自己的名字，網頁就能查自己的待辦。（目前待辦清單照常附在下面）'];
   const me = canonOwner(sender.name, mem).name.toLowerCase(), raw = String(sender.name).trim().toLowerCase();
   const mine = open.filter((x) => { const o = String(x.owner || '').trim(); if (!o) return false; const c = canonOwner(o, mem).name.toLowerCase(); return c === me || c === raw || o.toLowerCase() === raw; });
   return ['【' + safe(sender.name, 20) + ' 負責的未完成事項（系統依帳號篩好；問「我的待辦」時照抄這一段）】',
@@ -621,6 +622,9 @@ function mineSection(sender, open, mem, now) {
 // 網頁對話的發言者：管理者在 LINE「使用者權限」登記的姓名（例如 Jack），網頁問「我的待辦」也對得上；還沒登記就是「管理員」
 function webOwner(line) {
   const L = line || {}, people = L.people || {};
+  // 1. 你在「使用者權限」選的「網頁上的我是」（不一定要是管理者）；2. 有登記姓名的管理者；3. 都沒有＝管理員
+  const wp = L.webPerson && people[L.webPerson], wn = wp && wp.named && wp.name ? wp.name : L.webPerson && (L.ownerNames || {})[L.webPerson];
+  if (wn) return { userId: 'web', name: String(wn).slice(0, 30), role: '主管' };
   for (const uid of L.allowedUserIds || []) { const p = people[uid]; if (p && p.named && p.name) return { userId: 'web', name: String(p.name).slice(0, 30), role: '主管' }; }
   return WEB_OWNER;
 }
