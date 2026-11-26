@@ -39,6 +39,9 @@ test('html 轉文字、查詢用詞、章節號、人設段落', () => {
   assert.ok(!docsLib.chapterRe('USP_{n}_', '66').test('X/USP_665_Plastic/index.html'));
   assert.deepEqual(docsLib.chapterNums('〈665〉 與 <1663>，版本 2.5'), ['665', '1663']);
   const persona = '你是助理。\n\n## 文件資料夾：USP\n附上時機: USP, 章\n章節號: USP_{n}_\n最多段數: 2\n- 以內網正式版為準\n\n## 其他\n保留';
+  const md = docsLib.parseDocMd('# 註解\n路徑: D:\\法規\n副檔名: html, txt\n附上時機: 法規\n- 回答規則');
+  assert.equal(md.path, 'D:\\法規'); assert.deepEqual(md.rule.exts, ['html', 'txt']); assert.deepEqual(md.rule.keywords, ['法規']); assert.match(md.rules, /^副檔名: html, txt\n附上時機: 法規\n- 回答規則$/);
+  assert.equal(docsLib.parseDocMd(docsLib.renderDocMd({ path: 'D:\\x', rules: '副檔名: md' })).rule.exts[0], 'md');
   const r = docsLib.parseDocSections(persona).get('USP');
   assert.deepEqual(r.keywords, ['USP', '章']); assert.equal(r.chapter, 'USP_{n}_'); assert.equal(r.maxHits, 2); assert.match(r.text, /以內網正式版為準/);
   const stripped = todoLib.stripSourceSections(persona);
@@ -189,7 +192,7 @@ const fs = require('fs'); let inp = ''; process.stdin.on('data', (d) => (inp += 
   const cfg = (await J('/api/config')).agents.find((a) => a.id === 'asst');
   await J('/api/agents/asst', 'PUT', { ...cfg, docFolders: ['USP'] });
   assert.deepEqual((await J('/api/config')).agents.find((a) => a.id === 'asst').docFolders, ['USP']);
-  const list = await J('/api/docs'); assert.equal(list.docs[0].usedBy[0].hasRules, true);
+  const list = await J('/api/docs'); assert.equal(list.docs[0].usedBy[0].ownRules, true, '人設有自己的段落＝覆蓋');
   await J('/api/chat/asst', 'POST', { text: 'USP 665 萃取 E&L 怎麼做' });
   const prompt = await waitFor(() => { const l = fs.readFileSync(log, 'utf8').trim(); return l && JSON.parse(l.split('\n').at(-1)).prompt; }, 'prompt');
   assert.match(prompt, /【文件資料夾：USP】/); assert.match(prompt, /USP_665_Plastic_Components\/index\.html/); assert.match(prompt, /RULE-TEXT 以內網正式版為準/);
@@ -198,7 +201,44 @@ const fs = require('fs'); let inp = ''; process.stdin.on('data', (d) => (inp += 
   // 稽核紀錄
   const audit = await waitFor(async () => (await J('/api/audit/asst')).records.find((x) => x.type === 'docs'), 'audit');
   assert.equal(audit.via, 'web'); assert.ok(audit.files.some((f) => /USP_665_/.test(f)));
+  // 規則寫在資料夾自己的設定檔（v3.45）：成員人設沒有段落就用資料夾的規則
+  await J('/api/docs/form', 'PUT', { name: 'USP', oldName: 'USP', form: { path: lib.top, rules: '章節號: USP_{n}_\n最多段數: 2\n- TABLE-RULE 註明來源' } });
+  assert.match(fs.readFileSync(path.join(dir, 'data', 'docs', 'USP.md'), 'utf8'), /^路徑: [\s\S]*- TABLE-RULE 註明來源/m);
+  assert.equal((await J('/api/docs')).docs[0].hasRules, true);
+  await J('/api/agents/asst', 'PUT', { ...(await J('/api/config')).agents.find((a) => a.id === 'asst'), persona: 'ASSIST-PERSONA' });
+  await J('/api/chat/asst', 'POST', { text: 'USP 665 萃取' });
+  const p2 = await waitFor(() => { const l = fs.readFileSync(log, 'utf8').trim().split('\n'); const x = JSON.parse(l.at(-1)).prompt; return /TABLE-RULE/.test(x) && x; }, 'table rule prompt');
+  assert.ok(!/RULE-TEXT/.test(p2)); assert.match(p2, /USP_665_/);
   // 刪除：成員的勾選一起拿掉
   await J('/api/docs/USP', 'DELETE');
   assert.equal((await J('/api/config')).agents.find((a) => a.id === 'asst').docFolders, undefined);
+});
+
+test('遷移（v3.45）：成員人設裡的規則段落搬到資料表／文件資料夾自己的設定檔；不一樣的留著', { timeout: 30000 }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-rulemig-'));
+  copyServer(dir);
+  fs.mkdirSync(path.join(dir, 'public')); fs.writeFileSync(path.join(dir, 'public', 'index.html'), '<h1>test</h1>');
+  fs.mkdirSync(path.join(dir, 'data', 'sources'), { recursive: true }); fs.mkdirSync(path.join(dir, 'data', 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'data', 'sources', '表A.md'), '---\n網址: https://docs.google.com/spreadsheets/d/AAAAAAAAAAAAAAAAAAAAAAAAA1/edit\n---\n');
+  fs.writeFileSync(path.join(dir, 'data', 'docs', 'D.md'), '路徑: D:\\法規\n');
+  const S1 = '整理: 到期｜日期欄=H｜範圍=7天\n附上時機: 儀器\n- RULE-ONE', S2 = '附上時機: 儀器\n- RULE-TWO';
+  const ag = (id, persona, extra = {}) => ({ id, name: id, role: 'x', engine: 'claude', permissionMode: 'plan', cwd: './workspace/' + id, standalone: true, persona, dataSources: ['表A'], ...extra });
+  fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({ teams: [{ id: 'main', name: '組', icon: '🛠', workflow: '1.', cwd: './workspace' }], sourceRulesMigrated: true, agents: [
+    ag('a1', '人設一\n\n## 資料表：表A\n' + S1 + '\n\n## 文件資料夾：D\n副檔名: html\n- DOC-RULE\n\n## 其他\n保留一', { docFolders: ['D'] }),
+    ag('a2', '人設二\n\n## 資料表：表A\n' + S1),
+    ag('a3', '人設三\n\n## 資料表：表A\n' + S2),
+  ] }));
+  const port = await freePort();
+  const proc = spawn(process.execPath, ['server.js'], { cwd: dir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), ACCESS_TOKEN: 'mig-test-password-long', CLAUDE_BIN: '', CODEX_BIN: '', AGY_BIN: '', AGENTCHAT_NO_UPDATE_CHECK: '1' } });
+  let stderr = ''; proc.stderr.on('data', (s) => { stderr += s; });
+  t.after(async () => { if (proc.exitCode === null) { proc.kill(); await Promise.race([new Promise((r) => proc.once('exit', r)), sleep(3000)]); } fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 }); });
+  let cfg; for (let i = 0; i < 200; i++) { try { cfg = JSON.parse(fs.readFileSync(path.join(dir, 'agents.json'), 'utf8')); if (cfg.rulesToTableMigrated) break; } catch {} await sleep(50); }
+  assert.ok(cfg.rulesToTableMigrated, stderr);
+  const p = (id) => cfg.agents.find((a) => a.id === id).persona;
+  assert.equal(p('a1'), '人設一\n\n## 其他\n保留一'); assert.equal(p('a2'), '人設二'); assert.match(p('a3'), /## 資料表：表A\n附上時機: 儀器\n- RULE-TWO/, '規則不一樣的留著');
+  const tbl = fs.readFileSync(path.join(dir, 'data', 'sources', '表A.md'), 'utf8');
+  assert.match(tbl, /---\n整理: 到期｜日期欄=H｜範圍=7天\n附上時機: 儀器\n- RULE-ONE\n?$/);
+  assert.match(fs.readFileSync(path.join(dir, 'data', 'docs', 'D.md'), 'utf8'), /路徑: D:\\法規\n\n副檔名: html\n- DOC-RULE/);
+  assert.ok(fs.readdirSync(path.join(dir, 'data', 'sources', '.backup')).length >= 1, '改前有備份');
 });

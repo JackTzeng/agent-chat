@@ -332,11 +332,12 @@ test('LINE group → agy → Google Sheet, end to end', { timeout: 150000 }, asy
   let st = await J('/api/line'); assert.equal(st.groups, 0); assert.equal(st.groupAgentName, '待辦管家'); assert.equal(st.todo.configured, true);
   const raw = JSON.stringify(st) + JSON.stringify(await J('/api/todo')) + JSON.stringify(await J('/api/config'));
   assert.ok(!raw.includes(g.props.KEY) && !raw.includes(SECRET) && !raw.includes(TOKEN), '不回傳任何密鑰');
-  // 📊 遷移：舊資料表設定檔裡的規則搬到用它的成員人設；資料表只剩怎麼讀
+  // 📊 遷移（v3.45）：判讀規則放在資料表自己的設定檔（舊格式自動轉成新寫法）；成員人設不再有這段
   const chatP = (await J('/api/config')).agents.find((a) => a.id === 'chat').persona;
-  assert.match(chatP, /^你是小幫手。\n\n## 資料表：舊表\n整理: 到期｜日期欄=H｜完成欄=P｜完成字=已完成｜範圍=7天\n列出: 名稱 = B\n附上時機: 舊表專用詞\n- 舊的回答規則 OLDRULE$/);
+  assert.equal(chatP, '你是小幫手。');
   const oldMd = fs.readFileSync(path.join(dir, 'data', 'sources', '舊表.md'), 'utf8');
-  assert.match(oldMd, /^網址: https:\/\/docs\.google\.com\/spreadsheets\/d\/OLDSHEET/m); assert.match(oldMd, /^分頁: 一廠, 三廠$/m); assert.doesNotMatch(oldMd, /到期欄|OLDRULE/);
+  assert.match(oldMd, /^網址: https:\/\/docs\.google\.com\/spreadsheets\/d\/OLDSHEET/m); assert.match(oldMd, /^分頁: 一廠, 三廠$/m); assert.doesNotMatch(oldMd, /^到期欄/m);
+  assert.match(oldMd, /---\n整理: 到期｜日期欄=H｜完成欄=P｜完成字=已完成｜範圍=7天\n列出: 名稱 = B\n附上時機: 舊表專用詞\n- 舊的回答規則 OLDRULE\n?$/);
   assert.ok(fs.readdirSync(path.join(dir, 'data', 'sources', '.backup')).some((f) => f.startsWith('舊表-')), '舊版有備份');
 
   // 📄 成員設定檔：會對外的 bot 自動集中到 data/agents/<名稱>.md；改檔幾秒內生效、格式壞掉不套用、網頁儲存寫回並留備份

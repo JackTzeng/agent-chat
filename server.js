@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.44.3';
+const VERSION = '3.45.0';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -2183,8 +2183,8 @@ const server = http.createServer(async (req, res) => {
       let files = []; try { files = fs.readdirSync(SOURCE_DIR).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3)); } catch {}
       const names = [...new Set([...files, ...CONFIG.agents.flatMap((a) => a.dataSources || [])])].filter(validSourceName).sort();
       const sources = names.map((n) => { const t = sourceProfileText(n), pr = t && todoLib.parseSourceProfile(t.text);
-        return { name: n, exists: !!t, custom: !!(t && t.custom), form: todoLib.formFromProfile(pr), legacyRules: todoLib.hasRules(pr),
-          usedBy: CONFIG.agents.filter((a) => (a.dataSources || []).includes(n)).map((a) => ({ id: a.id, name: a.name, hasRules: todoLib.parseSourceSections(a.persona).rules.has(n) })) }; });
+        return { name: n, exists: !!t, custom: !!(t && t.custom), form: todoLib.formFromProfile(pr), hasRules: todoLib.hasRules(pr),
+          usedBy: CONFIG.agents.filter((a) => (a.dataSources || []).includes(n)).map((a) => ({ id: a.id, name: a.name, ownRules: todoLib.parseSourceSections(a.persona).rules.has(n) })) }; });
       // 判讀規則的範例（插入成員人設用）：templates/rules/*.md
       const ruleExamples = {}; try { for (const f of fs.readdirSync(path.join(ROOT, 'templates', 'rules')).filter((x) => x.endsWith('.md')).sort()) ruleExamples[f.slice(0, -3)] = fs.readFileSync(path.join(ROOT, 'templates', 'rules', f), 'utf8').replace(/^<!--[\s\S]*?-->\s*/, '').trim(); } catch {}
       return send(res, 200, { sources, ruleExamples, todoConfigured: todoBook.configured() });
@@ -2225,13 +2225,13 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/docs' && req.method === 'GET') {
       const names = [...new Set([...docBook.names(), ...CONFIG.agents.flatMap((a) => a.docFolders || [])])].filter(docsLib.validName).sort();
       const docs = names.map((n) => ({ name: n, form: docBook.form(n), status: docBook.status(n),
-        usedBy: CONFIG.agents.filter((a) => (a.docFolders || []).includes(n)).map((a) => ({ id: a.id, name: a.name, hasRules: docsLib.parseDocSections(a.persona).has(n) })) }));
+        usedBy: CONFIG.agents.filter((a) => (a.docFolders || []).includes(n)).map((a) => ({ id: a.id, name: a.name, ownRules: docsLib.parseDocSections(a.persona).has(n) })), hasRules: !!String((docBook.form(n) || {}).rules || '').trim() }));
       return send(res, 200, { docs, allowedRoots: docBook.allowedRoots(), supported: docsLib.SUPPORTED });
     }
     if (p === '/api/docs/form' && req.method === 'PUT') {
       try {
         const b = await readBody(req), oldName = String(b.oldName || '').trim();
-        const name = docBook.save(b.name, oldName, { path: String((b.form || {}).path || '').slice(0, 500) });
+        const name = docBook.save(b.name, oldName, { path: String((b.form || {}).path || '').slice(0, 500), rules: String((b.form || {}).rules || '').slice(0, 20000) });
         if (oldName && oldName !== name) {
           for (const a of CONFIG.agents) if ((a.docFolders || []).includes(oldName)) { a.docFolders = a.docFolders.map((x) => (x === oldName ? name : x)); a.persona = String(a.persona || '').replace(new RegExp('^(##\\s*文件資料夾[:：]\\s*)' + oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'gm'), '$1' + name); writeAgentMd(a); }
           saveConfig(); reloadAgents(); agentsChanged();
@@ -2247,7 +2247,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/docs/search' && req.method === 'POST') {
       try {
         const b = await readBody(req), name = String(b.name || ''), agent = b.agentId ? agentById(String(b.agentId)) : null;
-        const rule = agent ? docsLib.parseDocSections(agent.persona).get(name) || {} : {};
+        const rule = agent ? docBook.ruleFor(agent, name) : docBook.tableRule(name);
         const r = await docBook.search(name, String(b.q || '').slice(0, 300), rule, { waitMs: 30000 });
         return send(res, 200, { ...r, hits: r.hits.map((h) => ({ rel: h.rel, score: Math.round(h.s * 10) / 10, text: h.t.slice(0, rule.chars || docsLib.DEFAULTS.chars) })) });
       } catch (e) { return send(res, 400, { error: e.message }); }
@@ -2828,7 +2828,7 @@ function sourceProfileText(name) {
 const outbox = require('./outbox').create({ state, saveState: () => saveState(), broadcast: (e) => broadcast(e) });
 // 📚 文件資料夾：主程式用你的帳號唯讀讀 html，依問題附相關段落（成員不需要檔案權限）
 const docBook = docsLib.create({ dataDir: DATA_DIR, appRoot: ROOT, log: (m) => console.log(m),
-  rulesFor: (n) => CONFIG.agents.filter((a) => (a.docFolders || []).includes(n)).map((a) => docsLib.parseDocSections(a.persona).get(n) || {}) });
+  rulesFor: (n, ruleFor) => CONFIG.agents.filter((a) => (a.docFolders || []).includes(n)).map((a) => ruleFor(a, n)) });
 const docsInUse = () => [...new Set(CONFIG.agents.flatMap((a) => a.docFolders || []))].filter((n) => docBook.form(n));
 setInterval(() => docBook.tick(docsInUse()), 60000).unref();
 setTimeout(() => docBook.tick(docsInUse()), 5000).unref();
@@ -2862,17 +2862,45 @@ if (!CONFIG.sourceRulesMigrated) {
   for (const n of files) {
     const f = path.join(SOURCE_DIR, n + '.md'); let pr;
     try { pr = todoLib.parseSourceProfile(fs.readFileSync(f, 'utf8')); } catch { continue; }
-    const users = CONFIG.agents.filter((a) => (a.dataSources || []).includes(n));
-    if (!pr || !todoLib.hasRules(pr) || !users.length) continue; // 沒人用的先不動（照舊能讀）
-    for (const a of users) {
-      if (todoLib.parseSourceSections(a.persona).rules.has(n)) continue;
-      a.persona = (String(a.persona || '').trim() + '\n\n' + todoLib.rulesSectionFromProfile(n, pr)).trim();
-      if (a.configMd) writeAgentMd(a);
-      console.log('📊 「' + n + '」的判讀規則搬到 ' + a.name + ' 的人設（## 資料表：' + n + '）');
-    }
+    if (!pr || !todoLib.hasRules(pr)) continue;
+    // v3.45 起規則就放在資料表設定檔：舊寫法（到期欄:、欄位: …）轉成新寫法留在原檔，不搬進成員人設
     backupAgentMd(f); fs.writeFileSync(f, todoLib.renderSourceMd(todoLib.formFromProfile(pr)));
   }
   CONFIG.sourceRulesMigrated = true; saveConfig(); reloadAgents();
+}
+// v3.45：判讀規則搬回資料表／文件資料夾自己的設定檔（只做一次）。表的設定檔還沒有規則時，拿成員人設裡的段落搬過去；
+// 跟搬過去一模一樣的段落從人設拿掉，不一樣的留著（那位成員繼續用自己的規則）。改之前都會備份
+function takeSection(persona, headRe) {
+  const lines = String(persona || '').split(/\r?\n/), keep = []; let body = null, cur = null;
+  for (const line of lines) {
+    if (headRe.test(line)) { cur = []; continue; }
+    if (cur && /^#{1,2}\s/.test(line)) { if (body === null) body = cur.join('\n').trim(); cur = null; }
+    if (cur) cur.push(line); else keep.push(line);
+  }
+  if (cur && body === null) body = cur.join('\n').trim();
+  return { body, rest: keep.join('\n').replace(/\n{3,}/g, '\n\n').trim() };
+}
+if (!CONFIG.rulesToTableMigrated) {
+  const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const move = (kind, names, usersOf, hasTableRules, writeTable) => {
+    for (const n of names) {
+      const headRe = new RegExp('^##\\s*' + kind + '[:：]\\s*' + reEsc(n) + '\\s*$');
+      const users = usersOf(n).map((a) => ({ a, ...takeSection(a.persona, headRe) })).filter((u) => u.body !== null);
+      if (!users.length || hasTableRules(n)) continue;
+      const body = users[0].body;
+      try { writeTable(n, body); } catch (e) { console.error('規則搬到「' + n + '」的設定檔失敗：' + e.message); continue; }
+      for (const u of users) if (u.body === body) { u.a.persona = u.rest; if (u.a.configMd) writeAgentMd(u.a); }
+      console.log('📦 「' + n + '」的' + (kind === '資料表' ? '判讀' : '使用') + '規則搬到它自己的設定檔' + (users.some((u) => u.body !== body) ? '（' + users.filter((u) => u.body !== body).map((u) => u.a.name).join('、') + ' 的規則不一樣，留在人設繼續用）' : ''));
+    }
+  };
+  let srcNames = []; try { srcNames = fs.readdirSync(SOURCE_DIR).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3)).filter(validSourceName); } catch {}
+  move('資料表', srcNames, (n) => CONFIG.agents.filter((a) => (a.dataSources || []).includes(n)),
+    (n) => { const t = sourceProfileText(n); return !!(t && todoLib.hasRules(todoLib.parseSourceProfile(t.text))); },
+    (n, body) => { const f = path.join(SOURCE_DIR, n + '.md'), pr = todoLib.parseSourceProfile(fs.readFileSync(f, 'utf8')); if (!pr) throw new Error('設定檔格式不對'); backupAgentMd(f); fs.writeFileSync(f, todoLib.renderSourceMd({ ...todoLib.formFromProfile(pr), rules: body })); });
+  move('文件資料夾', docBook.names(), (n) => CONFIG.agents.filter((a) => (a.docFolders || []).includes(n)),
+    (n) => !!String((docBook.form(n) || {}).rules || '').trim(),
+    (n, body) => { const f = path.join(DATA_DIR, 'docs', n + '.md'); backupAgentMd(f); fs.writeFileSync(f, docsLib.renderDocMd({ path: docBook.form(n).path, rules: body })); });
+  CONFIG.rulesToTableMigrated = true; saveConfig(); reloadAgents(); todoBook.drop();
 }
 setImmediate(syncAgentMds); // 關機期間被改過的設定檔，開機時先套用（等其他模組都建好）
 const maint = maintLib.create({ state, saveState: () => saveState(), hooks, broadcast: (e) => broadcast(e), agentById, agents: AGENTS, AGENT_MD_DIR, SOURCE_DIR,

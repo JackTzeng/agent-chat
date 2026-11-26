@@ -165,6 +165,10 @@ function parseSourceProfile(text) {
     else if (/^(範圍|windows)$/i.test(k)) p.windows = v.split(/[,，、]+/).map((x) => x.trim()).filter(Boolean);
     else if (/^(欄位|column)$/i.test(k) && v) { const [label, spec] = v.includes('=') ? v.split('=').map((x) => x.trim()) : [v, v]; p.columns.push({ label, parts: spec.split('+').map((x) => x.trim()).filter(Boolean) }); }
   }
+  // 兩條 --- 之後＝這張表的判讀規則（跟成員人設「## 資料表：」段落同一種寫法）；成員人設有自己的段落時，那位成員改用自己的
+  const r = parseRuleLines(m[2].split(/\r?\n/).filter((l) => !/^\s*#\s/.test(l)));
+  for (const [k, v] of Object.entries(r)) if (k !== 'rules' && (Array.isArray(v) ? v.length : v !== undefined && v !== '')) p[k] = v;
+  p.rules = r.rules || '';
   return p.due || p.url || p.urlRaw || p.mode ? p : null;
 }
 const letterIndex = (s) => [...s].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
@@ -276,15 +280,17 @@ function openCasesSummary(src, prof, text, now = Date.now()) {
 const one = (v) => String(v == null ? '' : v).replace(/[\r\n]+/g, ' ').trim();
 const list = (a) => (Array.isArray(a) ? a : String(a || '').split(/[,，、]+/)).map(one).filter(Boolean);
 function renderSourceMd(f) {
-  const L = ['---', '# 資料表的連線設定（只管怎麼讀）。讀了之後怎麼判斷，寫在各成員人設裡的「## 資料表：名稱」段落'];
+  const L = ['---', '# 上面這段是怎麼讀這張表；下面兩條 --- 之後是這張表的判讀規則（整理、列出、附上時機、回答方式）。', '# 某位成員要用不同規則時，在他的人設另寫「## 資料表：名稱」段落，那位成員就改用自己的。'];
   if (one(f.url)) L.push('網址: ' + one(f.url));
   const tabs = (f.tabs || []).map((t) => ({ label: one(t.label).replace(/^[「『"]|[」』"]$/g, ''), spec: one(t.spec || t.label).replace(/^[「『"]|[」』"]$/g, '') })).filter((t) => t.spec);
   if (tabs.length) L.push('分頁: ' + tabs.map((t) => (t.label && t.label !== t.spec ? t.label + ' = ' + t.spec : t.spec)).join(', '));
   if (parseInt(f.headerRow, 10) > 0) L.push('標題列: ' + parseInt(f.headerRow, 10));
-  L.push('---', String(f.note || '').trim());
+  L.push('---', String(f.rules != null ? f.rules : f.note || '').trim());
   return L.join('\n').trim() + '\n';
 }
-function formFromProfile(p) { return p ? { url: p.url || p.urlRaw || '', tabs: p.tabList || [], headerRow: p.headerRow || 0, note: '' } : null; }
+function formFromProfile(p) { return p ? { url: p.url || p.urlRaw || '', tabs: p.tabList || [], headerRow: p.headerRow || 0, rules: rulesBodyFromProfile(p) } : null; }
+// 設定檔裡的規則 → 表單上顯示的文字（不含「## 資料表：」標題）
+function rulesBodyFromProfile(p) { return hasRules(p) ? rulesSectionFromProfile('x', p).split('\n').slice(1).join('\n') : ''; }
 const hasRules = (p) => !!(p && (p.due || p.mode || (p.columns || []).length || (p.keywords || []).length || String(p.rules || '').trim()));
 
 // 成員人設裡的「## 資料表：名稱」段落 → 這位成員讀這張表的規則
@@ -604,4 +610,4 @@ function create(ctx) {
 // 在網頁（Agent Chat 的對話框）跟待辦管家說話的人＝管理這台 Agent Chat 的你：視同主管
 const WEB_OWNER = { userId: 'web', name: '管理員', role: '主管' };
 
-module.exports = { create, urlProblem, WEB_OWNER, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS, claimsWrite, sourceSummary, parseSourceProfile, profileSummary, openCasesSummary, sourceRelevant, renderSourceMd, formFromProfile, parseSourceSections, stripSourceSections, rulesSectionFromProfile, mergeProfile, hasRules };
+module.exports = { create, rulesBodyFromProfile, urlProblem, WEB_OWNER, parseReply, normDate, fmtDue, canonOwner, safe, MAX_ACTIONS, claimsWrite, sourceSummary, parseSourceProfile, profileSummary, openCasesSummary, sourceRelevant, renderSourceMd, formFromProfile, parseSourceSections, stripSourceSections, rulesSectionFromProfile, mergeProfile, hasRules };
