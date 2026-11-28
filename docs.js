@@ -221,12 +221,15 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
     await go(root, '', 0);
     return { list: out, skipped };
   }
-  function scan(name, { force = false } = {}) {
+  // 兩次掃描至少隔 1 分鐘（按「重建索引」force 例外）：不管誰呼叫，都不會變成一直掃的迴圈
+  const MIN_GAP_MS = env.DOC_MIN_SCAN_GAP_MS != null && env.DOC_MIN_SCAN_GAP_MS !== '' ? Number(env.DOC_MIN_SCAN_GAP_MS) : 60000; // 測試用可調
+  function scan(name, { force = false, reason = '' } = {}) {
     const f = form(name); if (!f) return Promise.reject(new Error('找不到文件資料夾「' + name + '」'));
     let root; try { root = checkRoot(f.path); } catch (e) { const st = loadCache(name, ''); st.error = e.message; return Promise.reject(e); }
     const st = loadCache(name, root);
     if (st.root !== root) { st.root = root; st.files = new Map(); }
     if (st.scanning) return st.scanning;
+    if (!force && st.at && now() - st.at < MIN_GAP_MS && st.root === root) return Promise.resolve(status(name));
     st.scanning = (async () => {
       const t0 = now();
       try {
@@ -255,7 +258,8 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
         for (const rel of [...st.files.keys()]) if (!seen.has(rel)) { st.files.delete(rel); changed = true; }
         st.at = now(); st.error = ''; st.skipped = skipped; st.exts = exts.join(',');
         if (changed) saveCache(name, st);
-        log('📚 文件資料夾「' + name + '」更新完成：' + st.files.size + ' 個 html（這次讀了 ' + read + ' 個，' + Math.round((now() - t0) / 1000) + ' 秒）');
+        const first = !st.loggedOnce; st.loggedOnce = true;
+        if (changed || first || force) log('📚 文件資料夾「' + name + '」' + (first ? '整理完成' : '更新完成') + '：' + st.files.size + ' 個檔案（這次讀了 ' + read + ' 個，' + Math.round((now() - t0) / 1000) + ' 秒' + (reason ? '；' + reason : '') + '）');
         return status(name);
       } catch (e) {
         st.error = e.code === 'ENOENT' ? '找不到這個資料夾' : e.code === 'EACCES' || e.code === 'EPERM' ? '沒有權限讀這個資料夾' : e.code ? '連不上（' + e.code + '）' : e.message;
@@ -279,8 +283,8 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
     const root = checkRoot(f.path);
     const st = loadCache(name, root);
     const ageMs = now() - (st.at || 0), every = scanEvery(name);
-    if (!st.at || (st.exts && st.exts !== wantExts(name).join(','))) { const p = scan(name).catch(() => {}); await Promise.race([p, new Promise((r) => setTimeout(r, waitMs))]); } // 第一次，或成員改了要讀的副檔名
-    else if (ageMs > every && !st.scanning && !(st.failedAt && now() - st.failedAt < 60000)) scan(name).catch(() => {}); // 背景更新，這次先用快取
+    if (!st.at || (st.exts && st.exts !== wantExts(name).join(','))) { const p = scan(name, { reason: st.at ? '成員改了要讀的副檔名' : '第一次查詢' }).catch(() => {}); await Promise.race([p, new Promise((r) => setTimeout(r, waitMs))]); } // 第一次，或成員改了要讀的副檔名
+    else if (ageMs > every && !st.scanning && !(st.failedAt && now() - st.failedAt < 60000)) scan(name, { reason: '查詢時發現超過更新間隔' }).catch(() => {}); // 背景更新，這次先用快取
     return st;
   }
   function searchIn(st, q, rule = {}) {
@@ -385,7 +389,7 @@ function create({ dataDir, appRoot, env = process.env, log = () => {}, now = () 
       const st = mem.get(name);
       if (st && (st.scanning || (st.failedAt && now() - st.failedAt < 5 * 60000))) continue;
       if (!form(name)) continue;
-      if (!st || now() - (st.at || 0) > scanEvery(name)) scan(name).catch(() => {});
+      if (!st || now() - (st.at || 0) > scanEvery(name)) scan(name, { reason: '定時更新' }).catch(() => {});
     }
   }
 

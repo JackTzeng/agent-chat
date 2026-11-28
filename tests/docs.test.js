@@ -54,7 +54,7 @@ test('掃描與檢索：允許清單、章節號優先、只讀 html、不跟隨
   try {
     const lib = makeLibrary(base);
     const dataDir = path.join(base, 'data'), appRoot = path.join(base, 'app'); fs.mkdirSync(appRoot);
-    const env = { DOC_ALLOWED_ROOTS: lib.top };
+    const env = { DOC_ALLOWED_ROOTS: lib.top, DOC_MIN_SCAN_GAP_MS: '0' };
     const book = docsLib.create({ dataDir, appRoot, env });
     // 允許清單與路徑檢查
     assert.throws(() => book.save('壞', '', { path: path.join(base, 'outside') }), /允許清單/);
@@ -241,4 +241,22 @@ test('遷移（v3.45）：成員人設裡的規則段落搬到資料表／文件
   assert.match(tbl, /---\n整理: 到期｜日期欄=H｜範圍=7天\n附上時機: 儀器\n- RULE-ONE\n?$/);
   assert.match(fs.readFileSync(path.join(dir, 'data', 'docs', 'D.md'), 'utf8'), /路徑: D:\\法規\n\n副檔名: html\n- DOC-RULE/);
   assert.ok(fs.readdirSync(path.join(dir, 'data', 'sources', '.backup')).length >= 1, '改前有備份');
+});
+
+test('掃描不會變成迴圈：兩次掃描至少隔 1 分鐘（重建索引例外）；沒有變動就不印日誌', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-docgap-'));
+  try {
+    const lib = makeLibrary(base); let T = Date.now(); const logs = [];
+    const book = docsLib.create({ dataDir: path.join(base, 'data'), appRoot: path.join(base, 'app'), env: { DOC_ALLOWED_ROOTS: lib.top }, now: () => T, log: (m) => logs.push(m) });
+    fs.mkdirSync(path.join(base, 'app'));
+    book.save('USP', '', { path: lib.top });
+    await book.scan('USP', { reason: '第一次查詢' }); assert.equal(logs.length, 1); assert.match(logs[0], /整理完成：3 個檔案（這次讀了 3 個，\d+ 秒；第一次查詢）/);
+    for (let i = 0; i < 20; i++) { T += 2000; await book.scan('USP'); book.tick(['USP']); }
+    assert.equal(logs.length, 1, '1 分鐘內再叫幾次都不會真的掃');
+    T += 11 * 60000; book.tick(['USP']); await new Promise((r) => setTimeout(r, 300));
+    assert.equal(logs.length, 1, '過了更新間隔有掃，但沒有變動就不印');
+    lib.w('USP_9_New/index.html', page('9', '<p>NEW</p>')); T += 11 * 60000; book.tick(['USP']); await new Promise((r) => setTimeout(r, 300));
+    assert.equal(logs.length, 2); assert.match(logs[1], /更新完成：4 個檔案（這次讀了 1 個.*定時更新）/);
+    T += 1000; await book.scan('USP', { force: true, reason: '你按了重建索引' }); assert.equal(logs.length, 3, '重建索引不受 1 分鐘限制');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });

@@ -1,7 +1,7 @@
 // Agent Chat — 把 Claude Code 與 Codex CLI 包成聊天介面
 // 不需要 npm install，只要 Node.js 18 以上。啟動：node server.js
 'use strict';
-const VERSION = '3.46.2';
+const VERSION = '3.46.3';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -2237,7 +2237,7 @@ const server = http.createServer(async (req, res) => {
           for (const a of CONFIG.agents) if ((a.docFolders || []).includes(oldName)) { a.docFolders = a.docFolders.map((x) => (x === oldName ? name : x)); a.persona = String(a.persona || '').replace(new RegExp('^(##\\s*文件資料夾[:：]\\s*)' + oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'gm'), '$1' + name); writeAgentMd(a); }
           saveConfig(); reloadAgents(); agentsChanged();
         }
-        docBook.scan(name).catch(() => {});
+        docBook.scan(name, { force: true, reason: '儲存了設定' }).catch(() => {});
         return send(res, 200, { ok: true, name });
       } catch (e) { return send(res, 400, { error: e.message }); }
     }
@@ -2255,7 +2255,7 @@ const server = http.createServer(async (req, res) => {
     }
     if ((m0 = p.match(/^\/api\/docs\/([^/]+)\/rebuild$/)) && req.method === 'POST') {
       const name = decodeURIComponent(m0[1]);
-      try { return send(res, 200, await docBook.scan(name, { force: true })); } catch (e) { return send(res, 400, { error: e.message }); }
+      try { return send(res, 200, await docBook.scan(name, { force: true, reason: '你按了重建索引' })); } catch (e) { return send(res, 400, { error: e.message }); }
     }
     if ((m0 = p.match(/^\/api\/docs\/([^/]+)$/)) && req.method === 'DELETE') {
       const name = decodeURIComponent(m0[1]);
